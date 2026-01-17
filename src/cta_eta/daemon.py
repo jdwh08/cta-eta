@@ -20,7 +20,9 @@ Usage example:
 """
 
 import logging
+import signal
 from abc import ABC, abstractmethod
+from types import FrameType
 
 
 class BaseDaemon(ABC):
@@ -59,9 +61,10 @@ class BaseDaemon(ABC):
 
         This is the main entry point for the daemon. It:
         1. Logs startup event
-        2. Sets running flag to True
-        3. Calls run() method (implemented by subclass)
-        4. Catches and logs exceptions
+        2. Registers signal handlers for graceful shutdown
+        3. Sets running flag to True
+        4. Calls run() method (implemented by subclass)
+        5. Catches and logs exceptions
 
         The daemon runs until stop() is called (typically via signal handler).
         """
@@ -69,6 +72,11 @@ class BaseDaemon(ABC):
             f"Starting {self.__class__.__name__} daemon",
             extra={"extra_fields": {"daemon_class": self.__class__.__name__}}
         )
+
+        # Register signal handlers for graceful shutdown
+        signal.signal(signal.SIGTERM, self._signal_handler)
+        signal.signal(signal.SIGINT, self._signal_handler)
+
         self.running = True
 
         try:
@@ -98,12 +106,26 @@ class BaseDaemon(ABC):
         """
         pass
 
+    def _signal_handler(self, signum: int, frame: FrameType | None) -> None:
+        """Handle shutdown signals (SIGTERM, SIGINT).
+
+        Args:
+            signum: Signal number received
+            frame: Current stack frame (unused)
+        """
+        signal_name = signal.Signals(signum).name
+        self.logger.info(
+            f"Received {signal_name}, initiating graceful shutdown",
+            extra={"extra_fields": {"signal": signal_name, "signal_number": signum}}
+        )
+        self.stop()
+
     def stop(self) -> None:
         """Stop the daemon gracefully.
 
         This method is called during shutdown (typically by signal handler).
-        It sets the running flag to False and logs the shutdown event.
-        Safe to call multiple times (idempotent).
+        It sets the running flag to False, calls _save_state() hook, and
+        logs the shutdown event. Safe to call multiple times (idempotent).
         """
         if not self.running:
             return  # Already stopped
@@ -113,6 +135,15 @@ class BaseDaemon(ABC):
             extra={"extra_fields": {"daemon_class": self.__class__.__name__}}
         )
         self.running = False
+        self._save_state()
+
+    def _save_state(self) -> None:
+        """Save current daemon state - placeholder for Task 3.
+
+        Subclasses can override _get_state() to provide state to persist.
+        This method will be implemented in Task 3 with JSON serialization.
+        """
+        pass
 
     @abstractmethod
     def _get_state(self) -> dict[str, str | int | float]:
