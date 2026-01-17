@@ -1,0 +1,67 @@
+# CTA ETA Data Collection Configuration
+# Operational settings (version-controlled)
+# Secrets stored in .env (git-ignored)
+
+[collection]
+# Train position polling interval in seconds
+# CTA Train Tracker API updates ~every 10-15 seconds
+train_interval_seconds = 15
+
+# Weather data polling interval in minutes
+# Weather changes slowly, hourly updates sufficient
+weather_interval_minutes = 30
+
+[retry]
+# Maximum retry attempts for transient API failures
+# Using stamina decorator with exponential backoff
+max_retry_attempts = 10
+
+# Initial backoff delay in seconds
+initial_backoff_seconds = 1
+
+# Maximum backoff delay in seconds
+max_backoff_seconds = 60
+
+# Backoff multiplier for exponential backoff
+backoff_multiplier = 2
+
+[storage]
+# Local path for Parquet file storage
+# Can be absolute or relative to project root
+data_path = "data"
+
+# Partitioning strategy for time-series data
+# Options: "daily", "hourly", "weekly"
+partition_by = "daily"
+
+# Enable Parquet compression for storage efficiency
+compression = "snappy"
+
+# Maximum file size in MB before rotation
+max_file_size_mb = 100
+
+[logging]
+# Logging level: DEBUG, INFO, WARNING, ERROR, CRITICAL
+log_level = "INFO"
+
+# Enable JSON format for structured logging
+# Useful for parsing and analysis tools
+json_format = true
+
+# Log file path (relative to project root or absolute)
+log_path = "logs/cta_eta.log"
+
+# Enable console output in addition to file logging
+console_output = true
+
+[cache]
+# TTL (time-to-live) for static data cache in hours
+# Stations list, track geometry, station-to-weather mappings
+static_data_ttl_hours = 24
+
+# TTL for weather station mappings in hours
+# Map ~300 CTA stations to ~50 weather grid points
+weather_mapping_ttl_hours = 168  # 1 week
+
+# Enable in-memory caching for frequently accessed data
+enable_memory_cache = true
