@@ -1,4 +1,4 @@
-"""Structured JSON logging for production-grade observability."""
+"""Structured JSON logging for production observability."""
 
 import json
 import logging
@@ -18,10 +18,18 @@ F = TypeVar("F", bound=Callable[..., Any])
 class JSONFormatter(logging.Formatter):
     """Custom formatter that outputs log records as JSON."""
 
-    def format(self, record: logging.LogRecord) -> str:  # type: ignore[override]
-        """Format log record as JSON with timestamp, level, logger, message, and extra fields."""
+    def format(self, record: logging.LogRecord) -> str:
+        """Format log record as JSON with timestamp, level, logger, message, and extra fields.
+
+        Args:
+            record: logging.LogRecord
+
+        Returns:
+            str: JSON string
+        """
         # Format timestamp with milliseconds in ISO 8601 format
         from datetime import datetime, timezone
+
         dt = datetime.fromtimestamp(record.created, tz=timezone.utc)
         timestamp = dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
@@ -39,9 +47,8 @@ class JSONFormatter(logging.Formatter):
 
         # Add extra fields from the record
         if hasattr(record, "extra_fields"):
-            extra_fields = getattr(record, "extra_fields")
-            if isinstance(extra_fields, dict):
-                log_data.update(extra_fields)
+            extra_fields: dict[str, Any] = getattr(record, "extra_fields")
+            log_data.update(extra_fields)
 
         return json.dumps(log_data)
 
@@ -49,10 +56,19 @@ class JSONFormatter(logging.Formatter):
 class HumanReadableFormatter(logging.Formatter):
     """Human-readable formatter for development."""
 
-    def format(self, record: logging.LogRecord) -> str:  # type: ignore[override]
-        """Format log record in human-readable format."""
+    def format(self, record: logging.LogRecord) -> str:
+        """Format log record in human-readable format.
+
+        Args:
+            record: logging.LogRecord
+
+        Returns:
+            str: Human-readable string
+        """
         timestamp = self.formatTime(record, "%Y-%m-%d %H:%M:%S")
-        message = f"[{timestamp}] {record.levelname:8s} {record.name}: {record.getMessage()}"
+        message = (
+            f"[{timestamp}] {record.levelname:8s} {record.name}: {record.getMessage()}"
+        )
 
         # Add context variables if present
         context = _log_context.get()
@@ -61,7 +77,7 @@ class HumanReadableFormatter(logging.Formatter):
 
         # Add extra fields from the record
         if hasattr(record, "extra_fields"):
-            extra_fields = getattr(record, "extra_fields")
+            extra_fields: dict[str, Any] = getattr(record, "extra_fields")
             message += f" | extra={extra_fields}"
 
         return message
@@ -147,7 +163,9 @@ class log_context:
             _log_context.reset(self.token)
 
 
-def log_api_call(logger: logging.Logger) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+def log_api_call(
+    logger: logging.Logger,
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Decorator that logs API call lifecycle with timing and metadata.
 
     Logs:
@@ -169,8 +187,14 @@ def log_api_call(logger: logging.Logger) -> Callable[[Callable[..., Any]], Calla
 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         @wraps(func)
-        def wrapper(*args: object, **kwargs: object) -> Any:  # type: ignore[misc]
+        def wrapper(*args: object, **kwargs: object) -> Any:
             # Extract URL if available (common in API functions)
+
+            # Check that __name__ exists and is a string
+            if not hasattr(func, "__name__"):
+                raise ValueError(
+                    f"func must have a __name__ attribute, got {type(func)}"
+                )
             func_name = func.__name__
 
             # Log API call start
@@ -188,7 +212,7 @@ def log_api_call(logger: logging.Logger) -> Callable[[Callable[..., Any]], Calla
             )
 
             try:
-                result = func(*args, **kwargs)  # type: ignore[misc]
+                result = func(*args, **kwargs)
                 elapsed_ms = (time.perf_counter() - start_time) * 1000
 
                 # Log API call success
