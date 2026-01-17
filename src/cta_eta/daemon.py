@@ -19,9 +19,11 @@ Usage example:
     daemon.start()  # Runs until SIGTERM/SIGINT received
 """
 
+import json
 import logging
 import signal
 from abc import ABC, abstractmethod
+from pathlib import Path
 from types import FrameType
 
 
@@ -48,6 +50,8 @@ class BaseDaemon(ABC):
     def __init__(self, config: dict[str, dict[str, str | int | float | bool]], logger: logging.Logger) -> None:
         """Initialize daemon with configuration and logger.
 
+        Loads persisted state from previous run if available.
+
         Args:
             config: Configuration dictionary with daemon settings
             logger: Logger instance for structured logging
@@ -55,6 +59,9 @@ class BaseDaemon(ABC):
         self.config = config
         self.logger = logger
         self.running = False
+
+        # Load persisted state from previous run
+        self._load_state()
 
     def start(self) -> None:
         """Start the daemon and run main loop.
@@ -138,12 +145,73 @@ class BaseDaemon(ABC):
         self._save_state()
 
     def _save_state(self) -> None:
-        """Save current daemon state - placeholder for Task 3.
+        """Save current daemon state to JSON file.
 
-        Subclasses can override _get_state() to provide state to persist.
-        This method will be implemented in Task 3 with JSON serialization.
+        Calls _get_state() to retrieve state from subclass, then writes
+        to .daemon_state/{ClassName}.json. Creates directory if needed.
+        Logs errors but doesn't crash on I/O failures.
         """
-        pass
+        try:
+            state = self._get_state()
+            state_dir = Path(".daemon_state")
+            state_dir.mkdir(exist_ok=True)
+
+            state_file = state_dir / f"{self.__class__.__name__}.json"
+            with state_file.open("w") as f:
+                json.dump(state, f, indent=2)
+
+            self.logger.info(
+                f"Saved daemon state to {state_file}",
+                extra={"extra_fields": {"state_file": str(state_file)}}
+            )
+        except Exception as e:
+            self.logger.error(
+                f"Failed to save daemon state: {e}",
+                extra={
+                    "extra_fields": {
+                        "error_type": type(e).__name__,
+                        "error_message": str(e)
+                    }
+                }
+            )
+
+    def _load_state(self) -> dict[str, str | int | float] | None:
+        """Load persisted daemon state from JSON file.
+
+        Reads state from .daemon_state/{ClassName}.json if it exists.
+        Returns None if file doesn't exist or is corrupt.
+
+        Returns:
+            Dictionary with persisted state, or None if unavailable
+        """
+        try:
+            state_file = Path(".daemon_state") / f"{self.__class__.__name__}.json"
+            if not state_file.exists():
+                self.logger.info(
+                    "No previous state found, starting fresh",
+                    extra={"extra_fields": {"state_file": str(state_file)}}
+                )
+                return None
+
+            with state_file.open("r") as f:
+                state = json.load(f)
+
+            self.logger.info(
+                f"Loaded daemon state from {state_file}",
+                extra={"extra_fields": {"state_file": str(state_file), "state_keys": list(state.keys())}}
+            )
+            return state
+        except Exception as e:
+            self.logger.error(
+                f"Failed to load daemon state: {e}",
+                extra={
+                    "extra_fields": {
+                        "error_type": type(e).__name__,
+                        "error_message": str(e)
+                    }
+                }
+            )
+            return None
 
     @abstractmethod
     def _get_state(self) -> dict[str, str | int | float]:
