@@ -71,13 +71,17 @@ log_path = "logs/cta_eta.log"
 console_output = true
 
 [cache]
-# TTL (time-to-live) for static data cache in hours
-# Stations list, track geometry, station-to-weather mappings
-static_data_ttl_hours = 24
+# Cache directory for operational state (separate from collected data)
+directory = ".cache"
 
-# TTL for weather station mappings in hours
-# Map ~300 CTA stations to ~50 weather grid points
-weather_mapping_ttl_hours = 168  # 1 week
+# TTL for CTA stations list in seconds (7 days)
+# Stations rarely change, refresh weekly
+stations_ttl = 604800
 
-# Enable in-memory caching for frequently accessed data
-enable_memory_cache = true
+# TTL for track geometry in seconds (30 days)
+# Track layout is very stable, refresh monthly
+track_geometry_ttl = 2592000
+
+# TTL for station-to-weather grid mapping in seconds (7 days)
+# Maps ~300 CTA stations to ~50 weather grid points
+weather_mapping_ttl = 604800
