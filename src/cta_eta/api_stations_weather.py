@@ -4,6 +4,7 @@
 import csv
 import os
 import time
+from pathlib import Path
 
 import httpx
 import stamina
@@ -19,6 +20,7 @@ client = httpx.Client()
 
 @stamina.retry(on=httpx.HTTPStatusError, attempts=10)
 def get_stations() -> list[dict[str, str | float]]:
+    """Get the coordinates for all CTA stations."""
     stations = client.get(
         stations_url,
         headers={
@@ -44,29 +46,32 @@ def get_stations() -> list[dict[str, str | float]]:
     return stations_list
 
 
-# Example output:
-# [
-#     {
-#         "id": "900",
-#         "lines": "Red, Yellow, Purple, Evanston Express",
-#         "name": "Howard",
-#         "address": "1649 W. Howard Street",
-#         "latitude": 42.01906322017403,
-#         "longitude": -87.6728924507902,
-#     },
-#     ...
-# ]
+"""
+Example output:
+[
+    {
+        "id": "900",
+        "lines": "Red, Yellow, Purple, Evanston Express",
+        "name": "Howard",
+        "address": "1649 W. Howard Street",
+        "latitude": 42.01906322017403,
+        "longitude": -87.6728924507902,
+    },
+    ...
+]
+"""
 
 # Get weather for all stations
 weather_url = "https://api.open-meteo.com/v1/forecast"
 
 
-# TODO: It turns out you can do one API call where you haev a big list of latitudes and longitudes (comma separated) and get the weather for all of them at once.
+# TODO: It turns out you can do one API call where you have a big list of latitudes and longitudes (comma separated) and get the weather for all of them at once.
 # It doesn't remove the API call limiit (since this gets treated as 159.2 API calls), but it would be a lot more efficient.
 
 
 @stamina.retry(on=httpx.HTTPStatusError, attempts=10)
 def get_weather(latitude: float, longitude: float) -> dict[str, str | float]:
+    """Get the weather for a given latitude and longitude."""
     weather = client.get(
         weather_url,
         params={
@@ -112,14 +117,14 @@ for station in stations_list:
     weathers.append(weather)
     time.sleep(1)
 
-# Join weather to stations; note that they have the same position indexs
+# Join weather to stations; note that they have the same position indices
 stations_weather: list[dict[str, str | float]] = [
     {**station, **weather}
     for station, weather in zip(stations_list, weathers, strict=True)
 ]
 
 # Write stations_weather to a CSV file
-with open("stations_weather.csv", "w") as f:
+with Path("stations_weather.csv").open("w") as f:
     writer = csv.writer(f)
     writer.writerow(stations_weather[0].keys())
     for station_weather in stations_weather:
@@ -139,12 +144,12 @@ with open("stations_weather.csv", "w") as f:
 # https://api.weather.gov/points/41.7224,-87.6244
 
 # 2. Get the hourly forecast from the forecastHourly endpoint:
-# fh_url = response.json()["properties"]["forecastHourly"]
+# e.g., fh_url = response.json()["properties"]["forecastHourly"]
 # call this url
 
-# forecast_hourly = response.json()["properties"]["periods"][0-...]
+# e.g., forecast_hourly = response.json()["properties"]["periods"][0-...]
 # should provide startTime/endTime, temperature, ["probabilityOfPrecipitation"]["value"], ["dewpoint"]["value"]
-# ["relativeHumidity"]["value"], ["windSpeed"], ["windDirection"], ["shortForecast"]
+# e.g., ["relativeHumidity"]["value"], ["windSpeed"], ["windDirection"], ["shortForecast"]
 # note that we should check the units for dewpoint and temperatureUnit so that they are all in fahrenheit instead of wmoUnit:degC
 # windspeed should also be extracted from string ("20 mph" -> 20)
 

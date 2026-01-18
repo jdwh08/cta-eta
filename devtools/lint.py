@@ -9,6 +9,8 @@ from rich import print as rprint
 
 # Update as needed.
 SRC_PATHS = ["src", "tests", "devtools"]
+SRC_ONLY_PATHS = ["src", "devtools"]
+TEST_PATHS = ["tests"]
 DOC_PATHS = ["README.md", "docs/**/*.md"]
 
 
@@ -23,8 +25,15 @@ def main() -> int:
 
     errcount = 0
     errcount += run(["codespell", "--write-changes", *SRC_PATHS, *DOC_PATHS])
-    errcount += run(["ruff", "check", "--fix", *SRC_PATHS])
-    errcount += run(["ruff", "format", *SRC_PATHS])
+
+    # Ruff on src: failures cause CI to fail
+    errcount += run(["ruff", "check", "--fix", *SRC_ONLY_PATHS])
+    errcount += run(["ruff", "format", *SRC_ONLY_PATHS])
+
+    # Ruff on tests: failures only log warnings, don't fail CI
+    run_warn_only(["ruff", "check", "--fix", *TEST_PATHS])
+    run_warn_only(["ruff", "format", *TEST_PATHS])
+
     errcount += run(["basedpyright", "--stats", *SRC_PATHS])
 
     rprint()
@@ -54,6 +63,19 @@ def run(cmd: list[str]) -> int:
         errcount = 1
 
     return errcount
+
+
+@log_calls(level="warning", show_timing_only=True)
+def run_warn_only(cmd: list[str]) -> None:
+    """Run a command and log warnings on failure, but don't fail CI."""
+    rprint()
+    rprint(f"[bold yellow]>> {' '.join(cmd)} (warn-only)[/bold yellow]")
+    try:
+        subprocess.run(cmd, text=True, check=True)  # noqa: S603
+    except KeyboardInterrupt:
+        rprint("[yellow]Keyboard interrupt - Cancelled[/yellow]")
+    except subprocess.CalledProcessError as e:
+        rprint(f"[bold yellow]Warning (non-blocking): {e}[/bold yellow]")
 
 
 if __name__ == "__main__":

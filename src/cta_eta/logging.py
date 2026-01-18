@@ -5,7 +5,7 @@ import logging
 import time
 from collections.abc import Callable
 from contextvars import ContextVar, Token
-from datetime import UTC
+from datetime import UTC, datetime
 from functools import wraps
 from typing import Any, TypeVar, cast
 
@@ -33,8 +33,6 @@ class JSONFormatter(logging.Formatter):
 
         """
         # Format timestamp with milliseconds in ISO 8601 format
-        from datetime import datetime
-
         dt = datetime.fromtimestamp(record.created, tz=UTC)
         timestamp = dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 

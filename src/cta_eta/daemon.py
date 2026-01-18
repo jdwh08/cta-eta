@@ -117,7 +117,7 @@ class BaseDaemon(ABC):
         allowing the loop to exit gracefully.
         """
 
-    def _signal_handler(self, signum: int, frame: FrameType | None) -> None:
+    def _signal_handler(self, signum: int, frame: FrameType | None) -> None:  # noqa: ARG002
         """Handle shutdown signals (SIGTERM, SIGINT).
 
         Args:

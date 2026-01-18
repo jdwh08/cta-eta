@@ -1,4 +1,4 @@
-### VERY ROUGH CODE TO GET CTA TRAIN POSITIONS
+"""CTA Train Position API Example Code."""
 
 # Get stations and their coordinates
 import os
@@ -18,7 +18,8 @@ CTA_LINES: Final[list[str]] = ["red", "blue", "brn", "g", "org", "p", "pink", "y
 
 
 @stamina.retry(on=httpx.HTTPStatusError, attempts=10)
-def get_train_position(line: str) -> dict[str, str | float]:
+def get_train_position() -> dict[str, str | float]:
+    """Get the train position for a given line."""
     train_position = client.get(
         train_position_url,
         params={
@@ -32,38 +33,40 @@ def get_train_position(line: str) -> dict[str, str | float]:
     return train_position
 
 
-# Example output:
-# {
-#     "ctatt": {
-#         "tmst": "2026-01-14T20:34:15",
-#         "errCd": "0",
-#         "errNm": null,
-#         "route": [
-#             {
-#                 "@name": "p",
-#                 "train": [
-#                     {
-#                         "rn": "519",
-#                         "destSt": "30176",
-#                         "destNm": "Howard",
-#                         "trDr": "5",
-#                         "nextStaId": "40400",
-#                         "nextStpId": "30079",
-#                         "nextStaNm": "Noyes",
-#                         "prdt": "2026-01-14T20:33:52",
-#                         "arrT": "2026-01-14T20:34:52",
-#                         "isApp": "1",
-#                         "isDly": "0",
-#                         "flags": null,
-#                         "lat": "42.06106",
-#                         "lon": "-87.68393",
-#                         "heading": "150"
-#                     },
-#                     ...
-#                 ]
-#             },
-#             ...
-#         ]
+"""
+Example output:
+{
+    "ctatt": {
+        "tmst": "2026-01-14T20:34:15",
+        "errCd": "0",
+        "errNm": null,
+        "route": [
+            {
+                "@name": "p",
+                "train": [
+                    {
+                        "rn": "519",
+                        "destSt": "30176",
+                        "destNm": "Howard",
+                        "trDr": "5",
+                        "nextStaId": "40400",
+                        "nextStpId": "30079",
+                        "nextStaNm": "Noyes",
+                        "prdt": "2026-01-14T20:33:52",
+                        "arrT": "2026-01-14T20:34:52",
+                        "isApp": "1",
+                        "isDly": "0",
+                        "flags": null,
+                        "lat": "42.06106",
+                        "lon": "-87.68393",
+                        "heading": "150"
+                    },
+                    ...
+                ]
+            },
+            ...
+        ]
+"""
 
 
 # We'll need to poll this API every ~15-20 seconds to get the latest train positions.

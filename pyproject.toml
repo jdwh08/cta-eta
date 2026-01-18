@@ -115,6 +115,8 @@ src = ["src"]
 select = ["ALL"]
 extend-select = ["B"]
 ignore = [
+    "D203",  # Incorrect blank line before class (incompatible with D211)
+    "D213",  # Multi Line Summary Second Line (incompatible with D212)
     "E402",   # https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file/
     "E731", # https://docs.astral.sh/ruff/rules/lambda-assignment/
     "FBT",    # flake8-boolean-trap
