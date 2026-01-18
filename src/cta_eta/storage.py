@@ -17,7 +17,7 @@ import io
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 from zoneinfo import ZoneInfo
 
 import fsspec
@@ -39,6 +39,7 @@ class StorageBackend(ABC):
         Raises:
             PermissionError: If write access denied
             OSError: If write operation fails
+
         """
         ...
 
@@ -56,6 +57,7 @@ class StorageBackend(ABC):
             FileNotFoundError: If path does not exist
             PermissionError: If read access denied
             OSError: If read operation fails
+
         """
         ...
 
@@ -72,6 +74,7 @@ class StorageBackend(ABC):
         Raises:
             PermissionError: If list access denied
             OSError: If list operation fails
+
         """
         ...
 
@@ -84,6 +87,7 @@ class StorageBackend(ABC):
 
         Returns:
             True if path exists, False otherwise
+
         """
         ...
 
@@ -96,6 +100,7 @@ class LocalStorage(StorageBackend):
 
         Args:
             base_path: Base directory for all storage operations
+
         """
         self.base_path = Path(base_path)
         self.base_path.mkdir(parents=True, exist_ok=True)
@@ -110,6 +115,7 @@ class LocalStorage(StorageBackend):
         Raises:
             PermissionError: If write access denied
             OSError: If write operation fails
+
         """
         file_path = self.base_path / path
         file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -128,6 +134,7 @@ class LocalStorage(StorageBackend):
             FileNotFoundError: If file does not exist
             PermissionError: If read access denied
             OSError: If read operation fails
+
         """
         file_path = self.base_path / path
         return file_path.read_bytes()
@@ -140,6 +147,7 @@ class LocalStorage(StorageBackend):
 
         Returns:
             List of matching file paths relative to base_path
+
         """
         pattern = prefix if prefix else "**/*"
         matches = self.base_path.glob(pattern)
@@ -153,6 +161,7 @@ class LocalStorage(StorageBackend):
 
         Returns:
             True if file exists, False otherwise
+
         """
         file_path = self.base_path / path
         return file_path.exists()
@@ -162,7 +171,10 @@ class CloudStorage(StorageBackend):
     """Cloud object storage backend using fsspec for S3/GCS access."""
 
     def __init__(
-        self, filesystem_type: str, bucket: str, credentials: dict[str, Any] | None = None
+        self,
+        filesystem_type: str,
+        bucket: str,
+        credentials: dict[str, Any] | None = None,
     ) -> None:
         """Initialize cloud storage backend.
 
@@ -175,12 +187,13 @@ class CloudStorage(StorageBackend):
 
         Raises:
             ValueError: If filesystem_type is not supported
+
         """
-        if filesystem_type not in ("s3", "gcs"):
-            raise ValueError(
-                f"Unsupported filesystem type: {filesystem_type}. "
-                f"Expected 's3' or 'gcs'."
-            )
+        cloud_filesystem_types: Final[tuple[str, ...]] = ("s3", "gcs")
+
+        if filesystem_type not in cloud_filesystem_types:
+            msg = f"Unsupported filesystem type: {filesystem_type}. Expected 's3' or 'gcs'."
+            raise ValueError(msg)
 
         self.filesystem_type = filesystem_type
         self.bucket = bucket
@@ -197,6 +210,7 @@ class CloudStorage(StorageBackend):
 
         Returns:
             Full path: bucket/path
+
         """
         return f"{self.bucket}/{path}"
 
@@ -210,6 +224,7 @@ class CloudStorage(StorageBackend):
         Raises:
             PermissionError: If write access denied
             OSError: If write operation fails
+
         """
         full_path = self._get_full_path(path)
         with self.fs.open(full_path, "wb") as f:
@@ -228,6 +243,7 @@ class CloudStorage(StorageBackend):
             FileNotFoundError: If object does not exist
             PermissionError: If read access denied
             OSError: If read operation fails
+
         """
         full_path = self._get_full_path(path)
         with self.fs.open(full_path, "rb") as f:
@@ -241,13 +257,16 @@ class CloudStorage(StorageBackend):
 
         Returns:
             List of matching object keys relative to bucket
+
         """
         full_prefix = self._get_full_path(prefix)
         matches = self.fs.glob(f"{full_prefix}*")
         # Remove bucket prefix from results
         bucket_prefix = f"{self.bucket}/"
         return [
-            m.removeprefix(bucket_prefix) for m in matches if m.startswith(bucket_prefix)
+            m.removeprefix(bucket_prefix)
+            for m in matches
+            if m.startswith(bucket_prefix)
         ]
 
     def exists(self, path: str) -> bool:
@@ -258,6 +277,7 @@ class CloudStorage(StorageBackend):
 
         Returns:
             True if object exists, False otherwise
+
         """
         full_path = self._get_full_path(path)
         return self.fs.exists(full_path)
@@ -287,6 +307,7 @@ class ParquetWriter:
             partition_hour: Hour in timezone to split days (default 3 for 3:00 AM)
             compression: Parquet compression codec (default "snappy")
             timezone: Timezone for partition calculation (default "America/Chicago")
+
         """
         self.storage_backend = storage_backend
         self.partition_hour = partition_hour
@@ -301,6 +322,7 @@ class ParquetWriter:
 
         Returns:
             Partition date string in YYYY-MM-DD format
+
         """
         # Convert to timezone-aware UTC if naive
         if timestamp.tzinfo is None:
@@ -326,9 +348,11 @@ class ParquetWriter:
         Raises:
             ValueError: If data is empty
             OSError: If write operation fails
+
         """
         if not data:
-            raise ValueError("Cannot write empty data")
+            msg = "Cannot write empty data"
+            raise ValueError(msg)
 
         # Add request timestamp if not present
         current_timestamp = datetime.now(ZoneInfo("UTC"))
@@ -360,9 +384,7 @@ class ParquetWriter:
         self.storage_backend.put(partition_path, parquet_bytes)
 
 
-def create_storage_backend(
-    config: dict[str, dict[str, Any]]
-) -> StorageBackend:
+def create_storage_backend(config: dict[str, dict[str, Any]]) -> StorageBackend:
     """Create storage backend from configuration.
 
     Args:
@@ -373,36 +395,33 @@ def create_storage_backend(
 
     Raises:
         ValueError: If backend type is unknown or required config missing
+
     """
     storage_config = config.get("storage", {})
     backend_type = storage_config.get("backend", "local")
 
-    if backend_type == "local":
-        data_path = storage_config.get("data_path", "data")
-        return LocalStorage(base_path=data_path)
-
-    elif backend_type == "s3":
-        bucket = storage_config.get("s3_bucket")
-        if not bucket:
-            raise ValueError("s3_bucket must be specified in config for S3 backend")
-        return CloudStorage(filesystem_type="s3", bucket=bucket)
-
-    elif backend_type == "gcs":
-        bucket = storage_config.get("gcs_bucket")
-        if not bucket:
-            raise ValueError("gcs_bucket must be specified in config for GCS backend")
-        return CloudStorage(filesystem_type="gcs", bucket=bucket)
-
-    else:
-        raise ValueError(
-            f"Unknown storage backend: {backend_type}. "
-            f"Expected 'local', 's3', or 'gcs'."
-        )
+    match backend_type:
+        case "local":
+            data_path = storage_config.get("data_path", "data")
+            return LocalStorage(base_path=data_path)
+        case "s3":
+            bucket = storage_config.get("s3_bucket")
+            if not bucket:
+                msg = "s3_bucket must be specified in config for S3 backend"
+                raise ValueError(msg)
+            return CloudStorage(filesystem_type="s3", bucket=bucket)
+        case "gcs":
+            bucket = storage_config.get("gcs_bucket")
+            if not bucket:
+                msg = "gcs_bucket must be specified in config for GCS backend"
+                raise ValueError(msg)
+            return CloudStorage(filesystem_type="gcs", bucket=bucket)
+        case _:
+            msg = f"Unknown storage backend: {backend_type}. Expected 'local', 's3', or 'gcs'."
+            raise ValueError(msg)
 
 
-def create_parquet_writer(
-    config: dict[str, dict[str, Any]]
-) -> ParquetWriter:
+def create_parquet_writer(config: dict[str, dict[str, Any]]) -> ParquetWriter:
     """Create configured ParquetWriter from configuration.
 
     Args:
@@ -410,6 +429,7 @@ def create_parquet_writer(
 
     Returns:
         Configured ParquetWriter instance
+
     """
     storage_config = config.get("storage", {})
 
