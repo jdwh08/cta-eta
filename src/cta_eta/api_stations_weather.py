@@ -1,4 +1,4 @@
-### VERY ROUGH CODE TO GET CTA STATIONS AND THEIR WEATHER
+"""CTA Stations and Weather API Example Code."""
 
 # Get stations and their coordinates
 import csv

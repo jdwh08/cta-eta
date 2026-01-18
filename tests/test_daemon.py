@@ -8,6 +8,7 @@ import signal
 import threading
 import time
 from pathlib import Path
+from types import FrameType
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
@@ -17,6 +18,9 @@ from cta_eta.daemon import BaseDaemon
 
 if TYPE_CHECKING:
     from collections.abc import Generator
+
+# Number of signal handlers registered (SIGTERM and SIGINT)
+EXPECTED_SIGNAL_HANDLER_COUNT = 2
 
 
 class ConcreteDaemon(BaseDaemon):
@@ -101,12 +105,12 @@ class TestBaseDaemonInit:
         assert daemon.logger == mock_logger
         assert daemon.running is False
 
+    @pytest.mark.usefixtures("cleanup_state_files")
     def test_init_loads_state_when_exists(
         self,
         mock_logger: MagicMock,
         sample_config: dict[str, dict[str, str | int | float | bool]],
         daemon_state_dir: Path,
-        cleanup_state_files: None,
     ) -> None:
         """Test that initialization loads state from existing file."""
         # Arrange
@@ -128,11 +132,11 @@ class TestBaseDaemonInit:
             },
         )
 
+    @pytest.mark.usefixtures("cleanup_state_files")
     def test_init_handles_missing_state_file(
         self,
         mock_logger: MagicMock,
         sample_config: dict[str, dict[str, str | int | float | bool]],
-        cleanup_state_files: None,
     ) -> None:
         """Test that initialization handles missing state file gracefully."""
         # Arrange & Act
@@ -144,12 +148,12 @@ class TestBaseDaemonInit:
             extra={"extra_fields": {"state_file": ".daemon_state/ConcreteDaemon.json"}},
         )
 
+    @pytest.mark.usefixtures("cleanup_state_files")
     def test_init_handles_corrupt_state_file(
         self,
         mock_logger: MagicMock,
         sample_config: dict[str, dict[str, str | int | float | bool]],
         daemon_state_dir: Path,
-        cleanup_state_files: None,
     ) -> None:
         """Test that initialization handles corrupt state file gracefully."""
         # Arrange
@@ -167,11 +171,11 @@ class TestBaseDaemonInit:
 class TestBaseDaemonStart:
     """Test cases for BaseDaemon.start() method."""
 
+    @pytest.mark.usefixtures("cleanup_state_files")
     def test_start_registers_signal_handlers(
         self,
         mock_logger: MagicMock,
         sample_config: dict[str, dict[str, str | int | float | bool]],
-        cleanup_state_files: None,
     ) -> None:
         """Test that start() registers signal handlers."""
         # Arrange
@@ -192,22 +196,22 @@ class TestBaseDaemonStart:
             start_thread.join(timeout=1.0)
 
             # Assert
-            assert mock_signal.call_count == 2
+            assert mock_signal.call_count == EXPECTED_SIGNAL_HANDLER_COUNT
             calls = [call[0][0] for call in mock_signal.call_args_list]
             assert signal.SIGTERM in calls
             assert signal.SIGINT in calls
 
+    @pytest.mark.usefixtures("cleanup_state_files")
     def test_start_sets_running_flag(
         self,
         mock_logger: MagicMock,
         sample_config: dict[str, dict[str, str | int | float | bool]],
-        cleanup_state_files: None,
     ) -> None:
         """Test that start() sets running flag and calls run()."""
         # Arrange
         daemon = ConcreteDaemon(sample_config, mock_logger)
 
-        def stop_quickly():
+        def stop_quickly() -> None:
             time.sleep(0.01)
             daemon.stop()
 
@@ -221,23 +225,21 @@ class TestBaseDaemonStart:
             # Assert
             assert daemon.run_called is True
 
+    @pytest.mark.usefixtures("cleanup_state_files")
     def test_start_logs_startup(
         self,
         mock_logger: MagicMock,
         sample_config: dict[str, dict[str, str | int | float | bool]],
-        cleanup_state_files: None,
     ) -> None:
         """Test that start() logs startup event."""
         # Arrange
         daemon = ConcreteDaemon(sample_config, mock_logger)
 
-        def stop_quickly():
+        def stop_quickly() -> None:
             time.sleep(0.01)
             daemon.stop()
 
         with patch("signal.signal"):
-            import threading
-
             thread = threading.Thread(target=stop_quickly)
             thread.start()
             daemon.start()
@@ -249,11 +251,11 @@ class TestBaseDaemonStart:
                 extra={"extra_fields": {"daemon_class": "ConcreteDaemon"}},
             )
 
+    @pytest.mark.usefixtures("cleanup_state_files")
     def test_start_handles_exception_in_run(
         self,
         mock_logger: MagicMock,
         sample_config: dict[str, dict[str, str | int | float | bool]],
-        cleanup_state_files: None,
     ) -> None:
         """Test that start() handles exceptions in run() method."""
         # Arrange
@@ -270,17 +272,17 @@ class TestBaseDaemonStart:
             error_call = mock_logger.exception.call_args
             assert "Daemon error" in str(error_call)
 
+    @pytest.mark.usefixtures("cleanup_state_files")
     def test_start_logs_with_extra_fields(
         self,
         mock_logger: MagicMock,
         sample_config: dict,
-        cleanup_state_files: None,
     ) -> None:
         """Test that start() logs with proper extra_fields structure."""
         # Arrange
         daemon = ConcreteDaemon(sample_config, mock_logger)
 
-        def stop_quickly():
+        def stop_quickly() -> None:
             time.sleep(0.01)
             daemon.stop()
 
@@ -305,17 +307,17 @@ class TestBaseDaemonStart:
                 call_kwargs["extra"]["extra_fields"]["daemon_class"] == "ConcreteDaemon"
             )
 
+    @pytest.mark.usefixtures("cleanup_state_files")
     def test_start_signal_registration_called(
         self,
         mock_logger: MagicMock,
         sample_config: dict,
-        cleanup_state_files: None,
     ) -> None:
         """Test that signal.signal is called for both SIGTERM and SIGINT."""
         # Arrange
         daemon = ConcreteDaemon(sample_config, mock_logger)
 
-        def stop_quickly():
+        def stop_quickly() -> None:
             time.sleep(0.01)
             daemon.stop()
 
@@ -327,16 +329,16 @@ class TestBaseDaemonStart:
             thread.join()
 
             # Assert
-            assert mock_signal.call_count == 2
+            assert mock_signal.call_count == EXPECTED_SIGNAL_HANDLER_COUNT
             signal_numbers = [call[0][0] for call in mock_signal.call_args_list]
             assert signal.SIGTERM in signal_numbers
             assert signal.SIGINT in signal_numbers
 
+    @pytest.mark.usefixtures("cleanup_state_files")
     def test_start_exception_logging_structure(
         self,
         mock_logger: MagicMock,
         sample_config: dict,
-        cleanup_state_files: None,
     ) -> None:
         """Test that exceptions in run() are logged with proper structure."""
         # Arrange
@@ -363,11 +365,11 @@ class TestBaseDaemonStart:
 class TestBaseDaemonStop:
     """Test cases for BaseDaemon.stop() method."""
 
+    @pytest.mark.usefixtures("cleanup_state_files")
     def test_stop_sets_running_false(
         self,
         mock_logger: MagicMock,
         sample_config: dict[str, dict[str, str | int | float | bool]],
-        cleanup_state_files: None,
     ) -> None:
         """Test that stop() sets running flag to False."""
         # Arrange
@@ -380,11 +382,11 @@ class TestBaseDaemonStop:
         # Assert
         assert daemon.running is False
 
+    @pytest.mark.usefixtures("cleanup_state_files")
     def test_stop_is_idempotent(
         self,
         mock_logger: MagicMock,
         sample_config: dict[str, dict[str, str | int | float | bool]],
-        cleanup_state_files: None,
     ) -> None:
         """Test that stop() can be called multiple times safely.
 
@@ -416,12 +418,12 @@ class TestBaseDaemonStop:
             "stop() should log 'Stopping...' message only once"
         )
 
+    @pytest.mark.usefixtures("cleanup_state_files")
     def test_stop_saves_state(
         self,
         mock_logger: MagicMock,
         sample_config: dict[str, dict[str, str | int | float | bool]],
         daemon_state_dir: Path,
-        cleanup_state_files: None,
     ) -> None:
         """Test that stop() saves state to file."""
         # Arrange
@@ -439,11 +441,11 @@ class TestBaseDaemonStop:
         loaded_state = json.loads(state_file.read_text())
         assert loaded_state == {"test_key": "test_value", "count": 100}
 
+    @pytest.mark.usefixtures("cleanup_state_files")
     def test_stop_logs_shutdown(
         self,
         mock_logger: MagicMock,
         sample_config: dict[str, dict[str, str | int | float | bool]],
-        cleanup_state_files: None,
     ) -> None:
         """Test that stop() logs shutdown event."""
         # Arrange
@@ -463,11 +465,11 @@ class TestBaseDaemonStop:
 class TestBaseDaemonSignalHandler:
     """Test cases for signal handling."""
 
+    @pytest.mark.usefixtures("cleanup_state_files")
     def test_signal_handler_calls_stop(
         self,
         mock_logger: MagicMock,
         sample_config: dict[str, dict[str, str | int | float | bool]],
-        cleanup_state_files: None,
     ) -> None:
         """Test that signal handler calls stop()."""
         # Arrange
@@ -486,11 +488,11 @@ class TestBaseDaemonSignalHandler:
             },
         )
 
+    @pytest.mark.usefixtures("cleanup_state_files")
     def test_signal_handler_handles_sigint(
         self,
         mock_logger: MagicMock,
         sample_config: dict[str, dict[str, str | int | float | bool]],
-        cleanup_state_files: None,
     ) -> None:
         """Test that signal handler handles SIGINT."""
         # Arrange
@@ -513,7 +515,6 @@ class TestBaseDaemonSignalHandler:
         self,
         mock_logger: MagicMock,
         sample_config: dict,
-        cleanup_state_files: None,
     ) -> None:
         """Test signal handler works with a frame parameter."""
         # Arrange
@@ -528,11 +529,11 @@ class TestBaseDaemonSignalHandler:
         assert daemon.running is False
         mock_logger.info.assert_called()
 
+    @pytest.mark.usefixtures("cleanup_state_files")
     def test_signal_handler_logs_signal_number(
         self,
         mock_logger: MagicMock,
         sample_config: dict,
-        cleanup_state_files: None,
     ) -> None:
         """Test signal handler logs signal number in extra_fields."""
         # Arrange
@@ -557,12 +558,12 @@ class TestBaseDaemonSignalHandler:
 class TestBaseDaemonStatePersistence:
     """Test cases for state persistence."""
 
+    @pytest.mark.usefixtures("cleanup_state_files")
     def test_save_state_creates_directory(
         self,
         mock_logger: MagicMock,
         sample_config: dict,
         tmp_path: Path,
-        cleanup_state_files: None,
     ) -> None:
         """Test that save_state() creates state directory if it doesn't exist."""
         # Arrange
@@ -576,12 +577,12 @@ class TestBaseDaemonStatePersistence:
         assert state_dir.exists()
         assert state_dir.is_dir()
 
+    @pytest.mark.usefixtures("cleanup_state_files")
     def test_save_state_writes_json(
         self,
         mock_logger: MagicMock,
         sample_config: dict,
         daemon_state_dir: Path,
-        cleanup_state_files: None,
     ) -> None:
         """Test that save_state() writes valid JSON."""
         # Arrange
@@ -597,8 +598,9 @@ class TestBaseDaemonStatePersistence:
         loaded = json.loads(state_file.read_text())
         assert loaded == state_data
 
+    @pytest.mark.usefixtures("cleanup_state_files")
     def test_save_state_handles_io_error(
-        self, mock_logger: MagicMock, sample_config: dict, cleanup_state_files: None
+        self, mock_logger: MagicMock, sample_config: dict
     ) -> None:
         """Test that save_state() handles I/O errors gracefully."""
         # Arrange
@@ -615,8 +617,9 @@ class TestBaseDaemonStatePersistence:
             mock_logger.exception.assert_called()
             assert "Failed to save daemon state" in str(mock_logger.exception.call_args)
 
+    @pytest.mark.usefixtures("cleanup_state_files")
     def test_load_state_returns_none_when_missing(
-        self, mock_logger: MagicMock, sample_config: dict, cleanup_state_files: None
+        self, mock_logger: MagicMock, sample_config: dict
     ) -> None:
         """Test that load_state() returns None when file doesn't exist."""
         # Arrange
@@ -628,12 +631,12 @@ class TestBaseDaemonStatePersistence:
         # Assert
         assert result is None
 
+    @pytest.mark.usefixtures("cleanup_state_files")
     def test_load_state_returns_data_when_exists(
         self,
         mock_logger: MagicMock,
         sample_config: dict,
         daemon_state_dir: Path,
-        cleanup_state_files: None,
     ) -> None:
         """Test that load_state() returns data when file exists."""
         # Arrange
@@ -649,12 +652,12 @@ class TestBaseDaemonStatePersistence:
         # Assert
         assert result == state_data
 
+    @pytest.mark.usefixtures("cleanup_state_files")
     def test_load_state_handles_corrupt_file(
         self,
         mock_logger: MagicMock,
         sample_config: dict,
         daemon_state_dir: Path,
-        cleanup_state_files: None,
     ) -> None:
         """Test that load_state() handles corrupt JSON gracefully."""
         # Arrange
@@ -671,11 +674,11 @@ class TestBaseDaemonStatePersistence:
         mock_logger.exception.assert_called()
         assert "Failed to load daemon state" in str(mock_logger.exception.call_args)
 
+    @pytest.mark.usefixtures("cleanup_state_files")
     def test_save_state_creates_directory_structure(
         self,
         mock_logger: MagicMock,
         sample_config: dict,
-        cleanup_state_files: None,
     ) -> None:
         """Test _save_state creates .daemon_state directory."""
         # Arrange
@@ -689,11 +692,11 @@ class TestBaseDaemonStatePersistence:
         assert state_dir.exists()
         assert state_dir.is_dir()
 
+    @pytest.mark.usefixtures("cleanup_state_files")
     def test_save_state_writes_indented_json(
         self,
         mock_logger: MagicMock,
         sample_config: dict,
-        cleanup_state_files: None,
     ) -> None:
         """Test _save_state writes properly formatted JSON."""
         # Arrange
@@ -712,11 +715,11 @@ class TestBaseDaemonStatePersistence:
         loaded = json.loads(content)
         assert loaded == state_data
 
+    @pytest.mark.usefixtures("cleanup_state_files")
     def test_save_state_logs_file_path(
         self,
         mock_logger: MagicMock,
         sample_config: dict,
-        cleanup_state_files: None,
     ) -> None:
         """Test _save_state logs the state file path."""
         # Arrange
@@ -737,11 +740,11 @@ class TestBaseDaemonStatePersistence:
         assert "extra_fields" in call_kwargs["extra"]
         assert "state_file" in call_kwargs["extra"]["extra_fields"]
 
+    @pytest.mark.usefixtures("cleanup_state_files")
     def test_load_state_logs_state_keys(
         self,
         mock_logger: MagicMock,
         sample_config: dict,
-        cleanup_state_files: None,
     ) -> None:
         """Test _load_state logs the keys found in state."""
         # Arrange
@@ -773,11 +776,11 @@ class TestBaseDaemonStatePersistence:
             "key3",
         }
 
+    @pytest.mark.usefixtures("cleanup_state_files")
     def test_save_state_handles_get_state_exception(
         self,
         mock_logger: MagicMock,
         sample_config: dict,
-        cleanup_state_files: None,
     ) -> None:
         """Test _save_state handles exception in _get_state()."""
         # Arrange
@@ -797,11 +800,11 @@ class TestBaseDaemonStatePersistence:
         error_call = mock_logger.exception.call_args
         assert "Failed to save daemon state" in str(error_call)
 
+    @pytest.mark.usefixtures("cleanup_state_files")
     def test_load_state_handles_json_decode_error(
         self,
         mock_logger: MagicMock,
         sample_config: dict,
-        cleanup_state_files: None,
     ) -> None:
         """Test _load_state handles JSON decode errors gracefully."""
         # Arrange
@@ -820,11 +823,11 @@ class TestBaseDaemonStatePersistence:
         error_call = mock_logger.exception.call_args
         assert "Failed to load daemon state" in str(error_call)
 
+    @pytest.mark.usefixtures("cleanup_state_files")
     def test_load_state_handles_file_read_error(
         self,
         mock_logger: MagicMock,
         sample_config: dict,
-        cleanup_state_files: None,
     ) -> None:
         """Test _load_state handles file read errors."""
         # Arrange

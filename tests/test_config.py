@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import importlib
 import tomllib
-from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
 
 import cta_eta
 from cta_eta.config import _load_config_from_path, load_config
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 @pytest.fixture
@@ -37,9 +40,7 @@ partition_by = "daily"
 class TestLoadConfig:
     """Test cases for load_config function (public API)."""
 
-    def test_load_config_calls_internal_function(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_load_config_calls_internal_function(self) -> None:
         """Test that load_config() calls _load_config_from_path with correct path."""
         # Arrange
         with patch("cta_eta.config._load_config_from_path") as mock_load:
@@ -72,12 +73,12 @@ class TestLoadConfigFromPath:
 
         # Assert
         assert "collection" in config
-        assert config["collection"]["train_interval_seconds"] == 15
-        assert config["collection"]["weather_interval_minutes"] == 30
+        assert config["collection"]["train_interval_seconds"] == 15  # noqa: PLR2004
+        assert config["collection"]["weather_interval_minutes"] == 30  # noqa: PLR2004
         assert "secrets" in config
         assert config["secrets"]["cta_api_key"] == "test_api_key_123"
-        assert config["secrets"]["chidata_app_token"] == "test_token"
-        assert config["secrets"]["chidata_app_secret"] == "test_secret"
+        assert config["secrets"]["chidata_app_token"] == "test_token"  # noqa: S105
+        assert config["secrets"]["chidata_app_secret"] == "test_secret"  # noqa: S105
 
     def test_load_config_missing_env_vars(
         self, temp_config_file: Path, monkeypatch: pytest.MonkeyPatch
@@ -155,17 +156,15 @@ quoted = 'world'
         config = _load_config_from_path(complex_config)
 
         # Assert
-        assert config["numbers"]["integer"] == 42
-        assert config["numbers"]["float"] == 3.14
-        assert config["numbers"]["negative"] == -10
+        assert config["numbers"]["integer"] == 42  # noqa: PLR2004
+        assert config["numbers"]["float"] == 3.14  # noqa: PLR2004
+        assert config["numbers"]["negative"] == -10  # noqa: PLR2004
         assert config["booleans"]["true_val"] is True
         assert config["booleans"]["false_val"] is False
         assert config["strings"]["simple"] == "hello"
         assert config["strings"]["quoted"] == "world"
 
-    def test_load_config_dotenv_loading(
-        self, temp_config_file: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_load_config_dotenv_loading(self, temp_config_file: Path) -> None:
         """Test that load_dotenv is called to load .env file."""
         # Arrange
         with patch("cta_eta.config.load_dotenv") as mock_load_dotenv:
@@ -188,21 +187,21 @@ quoted = 'world'
         config_py = src_dir / "config.py"
         config_py.write_text("# Mock")
 
-        original_file = cta_eta.config.__file__
-        monkeypatch.setattr(cta_eta.config, "__file__", str(config_py))
+        original_file = cta_eta.config.__file__  # ty:ignore[possibly-missing-attribute]
+        monkeypatch.setattr(cta_eta.config, "__file__", str(config_py))  # ty:ignore[possibly-missing-attribute]
 
         try:
-            importlib.reload(cta_eta.config)
+            importlib.reload(cta_eta.config)  # type: ignore[reportUnknownVariableType]
 
             with patch("cta_eta.config.load_dotenv") as mock_dotenv:
                 # Act
-                cta_eta.config.load_config()
+                cta_eta.config.load_config()  # ty:ignore[possibly-missing-attribute]
 
                 # Assert - verify load_dotenv was called
                 mock_dotenv.assert_called_once()
         finally:
-            monkeypatch.setattr(cta_eta.config, "__file__", original_file)
-            importlib.reload(cta_eta.config)
+            monkeypatch.setattr(cta_eta.config, "__file__", original_file)  # ty:ignore[possibly-missing-attribute]
+            importlib.reload(cta_eta.config)  # ty:ignore[possibly-missing-attribute]
 
     def test_load_config_empty_toml(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
