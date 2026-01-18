@@ -5,11 +5,15 @@ import logging
 import time
 from collections.abc import Callable
 from contextvars import ContextVar, Token
+from datetime import UTC
 from functools import wraps
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 # Thread-safe context storage for request correlation
-_log_context: ContextVar[dict[str, Any]] = ContextVar("log_context", default={})
+_default_log_context: dict[str, Any] = {}
+_log_context: ContextVar[dict[str, Any]] = ContextVar(
+    "log_context", default=_default_log_context
+)
 
 # Type variable for generic function wrapping
 F = TypeVar("F", bound=Callable[..., Any])
@@ -26,11 +30,12 @@ class JSONFormatter(logging.Formatter):
 
         Returns:
             str: JSON string
+
         """
         # Format timestamp with milliseconds in ISO 8601 format
-        from datetime import datetime, timezone
+        from datetime import datetime
 
-        dt = datetime.fromtimestamp(record.created, tz=timezone.utc)
+        dt = datetime.fromtimestamp(record.created, tz=UTC)
         timestamp = dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
         log_data: dict[str, Any] = {
@@ -47,7 +52,12 @@ class JSONFormatter(logging.Formatter):
 
         # Add extra fields from the record
         if hasattr(record, "extra_fields"):
-            extra_fields: dict[str, Any] = getattr(record, "extra_fields")
+            extra_fields = record.extra_fields
+
+            if not isinstance(extra_fields, dict):
+                msg = f"extra_fields must be a dictionary, got {type(extra_fields)}"
+                raise ValueError(msg)
+            extra_fields = cast("dict[str, Any]", extra_fields)
             log_data.update(extra_fields)
 
         return json.dumps(log_data)
@@ -64,6 +74,7 @@ class HumanReadableFormatter(logging.Formatter):
 
         Returns:
             str: Human-readable string
+
         """
         timestamp = self.formatTime(record, "%Y-%m-%d %H:%M:%S")
         message = (
@@ -77,7 +88,14 @@ class HumanReadableFormatter(logging.Formatter):
 
         # Add extra fields from the record
         if hasattr(record, "extra_fields"):
-            extra_fields: dict[str, Any] = getattr(record, "extra_fields")
+            extra_fields = record.extra_fields
+
+            if not isinstance(extra_fields, dict):
+                msg = f"extra_fields must be a dictionary, got {type(extra_fields)}"
+                raise ValueError(msg)
+            extra_fields = cast(
+                "dict[str, Any]", extra_fields
+            )  # type checking happiness
             message += f" | extra={extra_fields}"
 
         return message
@@ -95,6 +113,7 @@ def setup_logger(
 
     Returns:
         Configured logger instance
+
     """
     logger = logging.getLogger(name)
     logger.setLevel(getattr(logging, log_level.upper()))
@@ -107,10 +126,7 @@ def setup_logger(
     handler.setLevel(getattr(logging, log_level.upper()))
 
     # Set formatter based on format preference
-    if json_format:
-        formatter = JSONFormatter()
-    else:
-        formatter = HumanReadableFormatter()
+    formatter = JSONFormatter() if json_format else HumanReadableFormatter()
 
     handler.setFormatter(formatter)
     logger.addHandler(handler)
@@ -129,11 +145,12 @@ def get_logger(name: str) -> logging.Logger:
 
     Returns:
         Logger instance
+
     """
     return logging.getLogger(name)
 
 
-class log_context:
+class log_context:  # noqa: N801
     """Context manager that adds extra fields to all logs within context.
 
     Usage:
@@ -144,7 +161,7 @@ class log_context:
     context: dict[str, Any]
     token: Token[dict[str, Any]] | None
 
-    def __init__(self, **kwargs: Any) -> None:
+    def __init__(self, **kwargs: object) -> None:
         """Initialize context manager with key-value pairs to add to logs."""
         self.context = kwargs
         self.token = None
@@ -166,7 +183,7 @@ class log_context:
 def log_api_call(
     logger: logging.Logger,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-    """Decorator that logs API call lifecycle with timing and metadata.
+    """Log API call lifecycle with timing and metadata as a decorator.
 
     Logs:
         - Before call: method, url, params (INFO level)
@@ -183,18 +200,18 @@ def log_api_call(
         @log_api_call(logger)
         def get_train_position(...):
             ...
+
     """
 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         @wraps(func)
-        def wrapper(*args: object, **kwargs: object) -> Any:
+        def wrapper(*args: object, **kwargs: object) -> object:
             # Extract URL if available (common in API functions)
 
             # Check that __name__ exists and is a string
             if not hasattr(func, "__name__"):
-                raise ValueError(
-                    f"func must have a __name__ attribute, got {type(func)}"
-                )
+                msg = f"func must have a __name__ attribute, got {type(func)}"
+                raise ValueError(msg)
             func_name = func.__name__
 
             # Log API call start
@@ -226,13 +243,11 @@ def log_api_call(
                         }
                     },
                 )
-                return result
-
             except Exception as e:
                 elapsed_ms = (time.perf_counter() - start_time) * 1000
 
                 # Log API call error
-                logger.error(
+                logger.exception(
                     f"API call failed: {func_name}",
                     extra={
                         "extra_fields": {
@@ -245,6 +260,8 @@ def log_api_call(
                     },
                 )
                 raise
+            else:
+                return result
 
         return wrapper
 

@@ -7,8 +7,15 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 
-def load_config() -> dict[str, dict[str, str | int | float | bool]]:
-    """Load configuration from config.toml and merge with .env secrets.
+def _load_config_from_path(
+    config_path: Path,
+) -> dict[str, dict[str, str | int | float | bool]]:
+    """Load configuration from a specific TOML file path and merge with .env secrets.
+
+    This is an internal function for testability. Use load_config() in production code.
+
+    Args:
+        config_path: Path to the config.toml file
 
     Returns:
         Nested dict with configuration sections:
@@ -22,13 +29,13 @@ def load_config() -> dict[str, dict[str, str | int | float | bool]]:
     Raises:
         FileNotFoundError: If config.toml not found
         tomllib.TOMLDecodeError: If config.toml has invalid syntax
+
     """
     # Load environment variables from .env file
     load_dotenv()
 
-    # Load TOML configuration from project root
-    config_path = Path(__file__).parent.parent.parent / "config.toml"
-    with open(config_path, "rb") as f:
+    # Load TOML configuration from specified path
+    with config_path.open("rb") as f:
         config = tomllib.load(f)
 
     # Add secrets section from environment variables
@@ -39,3 +46,28 @@ def load_config() -> dict[str, dict[str, str | int | float | bool]]:
     }
 
     return config
+
+
+def load_config() -> dict[str, dict[str, str | int | float | bool]]:
+    """Load configuration from config.toml and merge with .env secrets.
+
+    Loads configuration from the default location: project root / config.toml
+    (relative to this module's location).
+
+    Returns:
+        Nested dict with configuration sections:
+        - collection: polling intervals
+        - retry: retry attempts and backoff settings
+        - storage: data path, partitioning, compression
+        - logging: log level, format, paths
+        - cache: TTL settings for static data
+        - secrets: API keys from environment variables
+
+    Raises:
+        FileNotFoundError: If config.toml not found
+        tomllib.TOMLDecodeError: If config.toml has invalid syntax
+
+    """
+    # Load TOML configuration from project root
+    config_path = Path(__file__).parent.parent.parent / "config.toml"
+    return _load_config_from_path(config_path)

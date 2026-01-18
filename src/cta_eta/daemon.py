@@ -41,13 +41,18 @@ class BaseDaemon(ABC):
         config: Configuration dictionary from config.toml
         logger: Structured logger instance
         running: Boolean flag controlling main loop execution
+
     """
 
     config: dict[str, dict[str, str | int | float | bool]]
     logger: logging.Logger
     running: bool
 
-    def __init__(self, config: dict[str, dict[str, str | int | float | bool]], logger: logging.Logger) -> None:
+    def __init__(
+        self,
+        config: dict[str, dict[str, str | int | float | bool]],
+        logger: logging.Logger,
+    ) -> None:
         """Initialize daemon with configuration and logger.
 
         Loads persisted state from previous run if available.
@@ -55,6 +60,7 @@ class BaseDaemon(ABC):
         Args:
             config: Configuration dictionary with daemon settings
             logger: Logger instance for structured logging
+
         """
         self.config = config
         self.logger = logger
@@ -77,7 +83,7 @@ class BaseDaemon(ABC):
         """
         self.logger.info(
             f"Starting {self.__class__.__name__} daemon",
-            extra={"extra_fields": {"daemon_class": self.__class__.__name__}}
+            extra={"extra_fields": {"daemon_class": self.__class__.__name__}},
         )
 
         # Register signal handlers for graceful shutdown
@@ -89,21 +95,20 @@ class BaseDaemon(ABC):
         try:
             self.run()
         except Exception as e:
-            self.logger.error(
-                f"Daemon error: {e}",
+            self.logger.exception(
+                "Daemon error",
                 extra={
                     "extra_fields": {
                         "error_type": type(e).__name__,
-                        "error_message": str(e)
+                        "error_message": str(e),
                     }
                 },
-                exc_info=True
             )
             raise
 
     @abstractmethod
     def run(self) -> None:
-        """Main daemon logic - implement in subclass.
+        """Run the main daemon logic. Implement in subclass.
 
         This method should contain the main loop of the daemon.
         Typically: while self.running: <do work>
@@ -111,7 +116,6 @@ class BaseDaemon(ABC):
         The running flag will be set to False when stop() is called,
         allowing the loop to exit gracefully.
         """
-        pass
 
     def _signal_handler(self, signum: int, frame: FrameType | None) -> None:
         """Handle shutdown signals (SIGTERM, SIGINT).
@@ -119,11 +123,12 @@ class BaseDaemon(ABC):
         Args:
             signum: Signal number received
             frame: Current stack frame (unused)
+
         """
         signal_name = signal.Signals(signum).name
         self.logger.info(
             f"Received {signal_name}, initiating graceful shutdown",
-            extra={"extra_fields": {"signal": signal_name, "signal_number": signum}}
+            extra={"extra_fields": {"signal": signal_name, "signal_number": signum}},
         )
         self.stop()
 
@@ -139,7 +144,7 @@ class BaseDaemon(ABC):
 
         self.logger.info(
             f"Stopping {self.__class__.__name__} daemon",
-            extra={"extra_fields": {"daemon_class": self.__class__.__name__}}
+            extra={"extra_fields": {"daemon_class": self.__class__.__name__}},
         )
         self.running = False
         self._save_state()
@@ -162,17 +167,17 @@ class BaseDaemon(ABC):
 
             self.logger.info(
                 f"Saved daemon state to {state_file}",
-                extra={"extra_fields": {"state_file": str(state_file)}}
+                extra={"extra_fields": {"state_file": str(state_file)}},
             )
         except Exception as e:
-            self.logger.error(
-                f"Failed to save daemon state: {e}",
+            self.logger.exception(
+                "Failed to save daemon state",
                 extra={
                     "extra_fields": {
                         "error_type": type(e).__name__,
-                        "error_message": str(e)
+                        "error_message": str(e),
                     }
-                }
+                },
             )
 
     def _load_state(self) -> dict[str, str | int | float] | None:
@@ -183,13 +188,14 @@ class BaseDaemon(ABC):
 
         Returns:
             Dictionary with persisted state, or None if unavailable
+
         """
         try:
             state_file = Path(".daemon_state") / f"{self.__class__.__name__}.json"
             if not state_file.exists():
                 self.logger.info(
                     "No previous state found, starting fresh",
-                    extra={"extra_fields": {"state_file": str(state_file)}}
+                    extra={"extra_fields": {"state_file": str(state_file)}},
                 )
                 return None
 
@@ -198,20 +204,26 @@ class BaseDaemon(ABC):
 
             self.logger.info(
                 f"Loaded daemon state from {state_file}",
-                extra={"extra_fields": {"state_file": str(state_file), "state_keys": list(state.keys())}}
+                extra={
+                    "extra_fields": {
+                        "state_file": str(state_file),
+                        "state_keys": list(state.keys()),
+                    }
+                },
             )
-            return state
         except Exception as e:
-            self.logger.error(
-                f"Failed to load daemon state: {e}",
+            self.logger.exception(
+                "Failed to load daemon state",
                 extra={
                     "extra_fields": {
                         "error_type": type(e).__name__,
-                        "error_message": str(e)
+                        "error_message": str(e),
                     }
-                }
+                },
             )
             return None
+        else:
+            return state
 
     @abstractmethod
     def _get_state(self) -> dict[str, str | int | float]:
@@ -228,5 +240,5 @@ class BaseDaemon(ABC):
                 "next_weather_check": next_check_time,
                 "poll_count": 12345
             }
+
         """
-        pass

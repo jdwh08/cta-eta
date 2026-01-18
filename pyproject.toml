@@ -1,9 +1,55 @@
+# ---- Project Info and Dependencies ----
+
+[project.urls]
+Repository = "https://github.com/jdwh08/cta-eta"
+# Homepage = "https://..."
+# Documentation = "https://..."
+
 [project]
 name = "cta-eta"
-version = "0.1.0"
-description = "Add your description here"
+description = "Chicago Transit Authority Train Estimated Time of Arrival Analysis and Modelling"
+authors = [
+    { name="jdwh08", email="jdwh08s@gmail.com" },
+]
 readme = "README.md"
-requires-python = ">=3.13"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.13,<4.0"
+dynamic = ["version"]
+
+# https://pypi.org/classifiers/
+# Adjust as needed:
+classifiers = [
+    "Development Status :: 1 - Planning",
+    # "Development Status :: 2 - Pre-Alpha",
+    # "Development Status :: 3  - Alpha",
+    # "Development Status :: 4 - Beta",
+    # "Development Status :: 5 - Production/Stable",
+
+    "Intended Audience :: Developers",
+    "Intended Audience :: Education",
+    "Intended Audience :: Financial and Insurance Industry",
+    "Intended Audience :: Science/Research",
+
+    "License :: OSI Approved :: Apache Software License",
+    
+    "Natural Language :: English",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: GIS",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+
+    "Typing :: Typed",
+    "Private :: Do Not Upload",  # don't publish to PyPI!
+]
+
+
+# ---- Main dependencies ----
+
 dependencies = [
     "dotenv>=0.9.9",
     "httpx>=0.28.1",
@@ -11,11 +57,151 @@ dependencies = [
     "tenacity>=9.1.2",
 ]
 
-[project.optional-dependencies]
+
+# ---- Dev dependencies ----
+
+[dependency-groups]
 dev = [
-    "basedpyright>=1.37.1",
     "codespell>=2.4.1",
     "funlog>=0.2.1",
+    "mkdocs>=1.6.1",
+    "mkdocs-material>=9.7.1",
+    "pytest>=9.0.2",
+    "pytest-cov>=7.0.0",
+    "pytest-sugar>=1.1.1",
+    "pytest-mock>=3.15.1",
     "rich>=14.2.0",
     "ruff>=0.14.13",
+    "basedpyright>=1.37.1",
 ]
+
+# [project.scripts]
+# Script entry points:
+# cta-eta = "cta_eta:main"
+
+# ---- Build system ----
+
+# Dynamic versioning from:
+# https://github.com/ninoseki/uv-dynamic-versioning/
+
+[build-system]
+requires = ["hatchling", "uv-dynamic-versioning"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "uv-dynamic-versioning"
+# Note JSON schemas don't seem to be right for tool.hatch.version.source so
+# this may cause false warnings in IDEs.
+# https://github.com/ninoseki/uv-dynamic-versioning/issues/21
+
+[tool.uv-dynamic-versioning]
+vcs = "git"
+style = "pep440"
+bump = true
+
+[tool.hatch.build.targets.wheel]
+# The source location for the package.
+packages = ["src/cta_eta"]
+
+
+# ---- Settings ----
+
+### RUFF
+[tool.ruff]
+line-length = 88
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["ALL"]
+extend-select = ["B"]
+ignore = [
+    "E402",   # https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file/
+    "E731", # https://docs.astral.sh/ruff/rules/lambda-assignment/
+    "FBT",    # flake8-boolean-trap
+    "G004",   # Logging statement uses f-string
+    "RET504", # Unnecessary assignment before return (good for debugging)
+
+    # Using both ruff formatter and linter so disable these rules:
+    # See: https://docs.astral.sh/ruff/formatter/#conflicting-lint-rules
+    "COM812", # https://docs.astral.sh/ruff/rules/missing-trailing-comma/
+    "COM819", # https://docs.astral.sh/ruff/rules/prohibited-trailing-comma/
+    "D206", # https://docs.astral.sh/ruff/rules/docstring-tab-indentation/
+    "D300", # https://docs.astral.sh/ruff/rules/triple-single-quotes/
+    "E111", # https://docs.astral.sh/ruff/rules/indentation-with-invalid-multiple/
+    "E114", # https://docs.astral.sh/ruff/rules/indentation-with-invalid-multiple-comment/
+    "E117", # https://docs.astral.sh/ruff/rules/over-indented/
+    "ISC002", # https://docs.astral.sh/ruff/rules/multi-line-implicit-string-concatenation/
+    "Q000", # https://docs.astral.sh/ruff/rules/bad-quotes-inline-string/
+    "Q001", # https://docs.astral.sh/ruff/rules/bad-quotes-multiline-string/
+    "Q002", # https://docs.astral.sh/ruff/rules/bad-quotes-docstring/
+    "Q003", # https://docs.astral.sh/ruff/rules/avoidable-escaped-quote/
+    "W191", # https://docs.astral.sh/ruff/rules/tab-indentation/
+
+    # Additional Suggested Rules
+    # formatter will wrap code close to length, but might go over
+    "E501", # https://docs.astral.sh/ruff/rules/line-too-long/
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = [
+    "S101",  # Use of Assert Detected (This is fine for tests)
+    "SLF001",  # Private method access
+    "INP001",  # Implicit Namespace
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+### TY
+[tool.ty.environment]
+python-version = "3.13"
+
+### Pyright
+[tool.basedpyright]
+include = ["src"]
+exclude = [
+    "**/node_modules",
+    "**/__pycache__",
+    "src/experimental",
+]
+ignore = [""]
+defineConstant = { DEBUG = true }
+
+reportMissingImports = "error"
+reportMissingTypeStubs = false
+
+pythonVersion = "3.13"
+pythonPlatform = "Linux"
+
+executionEnvironments = [
+  { root = "tests/", reportPrivateUsage = false},
+  { root = "src" }
+]
+
+### CODESPELL
+[tool.codespell]
+# Add here as needed:
+# ignore-words-list = "foo,bar"
+# skip = "foo.py,bar.py"
+
+### PYTEST
+[tool.pytest]
+addopts = [
+    "--import-mode=importlib",
+    "--strict-markers",
+    "--strict-config",
+    "--cov=src",
+    "--cov-report=term-missing",
+]
+strict = true
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+testpaths = [
+    "tests",
+]
+norecursedirs = []
+filterwarnings = []
