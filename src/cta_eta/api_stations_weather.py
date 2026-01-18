@@ -65,8 +65,9 @@ Example output:
 weather_url = "https://api.open-meteo.com/v1/forecast"
 
 
-# TODO: It turns out you can do one API call where you have a big list of latitudes and longitudes (comma separated) and get the weather for all of them at once.
+# It turns out you can do one API call where you have a big list of latitudes and longitudes (comma separated) and get the weather for all of them at once.
 # It doesn't remove the API call limiit (since this gets treated as 159.2 API calls), but it would be a lot more efficient.
+# We should use this if possible.
 
 
 @stamina.retry(on=httpx.HTTPStatusError, attempts=10)
@@ -131,7 +132,7 @@ with Path("stations_weather.csv").open("w") as f:
         writer.writerow(station_weather.values())
 
 
-# TODO(jwang15): Every X time period (1 day or longer), after cache is expired, we need to run the full pull of stations and weather.
+# Every X time period (1 day or longer), after cache is expired, we need to run the full pull of stations and weather.
 # We then only pull the unique weather stations (~39) rather than all train stations (~146), bringing us under the RPD limit.
 
 ########################################################
