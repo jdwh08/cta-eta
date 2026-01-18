@@ -16,6 +16,9 @@ import httpx
 import stamina
 from dotenv import load_dotenv
 
+from cta_eta.config import load_config
+from cta_eta.weather_grid_cache import NWSGridCache, get_nws_grid_cache
+
 load_dotenv()
 
 # NWS API endpoints
@@ -24,6 +27,23 @@ USER_AGENT: Final[str] = f"({os.getenv('APP_NAME')}, {os.getenv('EMAIL_ADDRESS')
 
 # Module-level httpx.Client for connection pooling
 client = httpx.Client(headers={"User-Agent": USER_AGENT})
+
+# Module-level grid cache singleton
+_nws_grid_cache: NWSGridCache | None = None
+
+
+def _get_grid_cache() -> NWSGridCache:
+    """Get or create the NWS grid cache singleton.
+
+    Returns:
+        NWSGridCache instance for caching grid identifiers
+
+    """
+    global _nws_grid_cache
+    if _nws_grid_cache is None:
+        config = load_config()
+        _nws_grid_cache = get_nws_grid_cache(config)
+    return _nws_grid_cache
 
 
 @stamina.retry(on=httpx.HTTPStatusError, attempts=10)
@@ -49,14 +69,16 @@ def get_nws_forecast_url(latitude: float, longitude: float) -> str:
 
 @stamina.retry(on=httpx.HTTPStatusError, attempts=10)
 def get_nws_hourly_forecast(
-    latitude: float, longitude: float
+    station_id: str, latitude: float, longitude: float
 ) -> dict[str, str | float]:
     """Get current hourly weather forecast from NWS.
 
     Fetches the first hourly forecast period from NWS, which represents the
-    current/next hour's weather conditions.
+    current/next hour's weather conditions. Uses cached grid identifiers to
+    avoid redundant API calls for grid discovery.
 
     Args:
+        station_id: Unique station identifier for grid caching
         latitude: Latitude coordinate
         longitude: Longitude coordinate
 
@@ -76,8 +98,12 @@ def get_nws_hourly_forecast(
         httpx.HTTPStatusError: If API request fails after retries
 
     """
-    # Get the forecastHourly URL for this location
-    forecast_url = get_nws_forecast_url(latitude, longitude)
+    # Get cached grid identifier (lazy discovery on first access)
+    grid_cache = _get_grid_cache()
+    grid_id = grid_cache.get_grid_identifier(station_id, latitude, longitude)
+
+    # Construct forecast URL from cached grid identifier (e.g., "LOT/76,73")
+    forecast_url = f"https://api.weather.gov/gridpoints/{grid_id}/forecast/hourly"
 
     # Fetch hourly forecast data
     response = client.get(forecast_url)
