@@ -26,9 +26,25 @@ max_backoff_seconds = 60
 backoff_multiplier = 2
 
 [storage]
-# Local path for Parquet file storage
+# Storage backend selection
+# Options: "local" (filesystem), "s3" (AWS S3), "gcs" (Google Cloud Storage)
+backend = "local"
+
+# Local path for Parquet file storage (used when backend="local")
 # Can be absolute or relative to project root
 data_path = "data"
+
+# S3 bucket name (required when backend="s3")
+# Credentials from AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables
+s3_bucket = ""
+
+# GCS bucket name (required when backend="gcs")
+# Credentials from GOOGLE_APPLICATION_CREDENTIALS environment variable (path to JSON key)
+gcs_bucket = ""
+
+# Hour in America/Chicago timezone to split daily partitions (0-23)
+# Default 3 = 3:00 AM, minimizing splits of active train runs
+partition_hour = 3
 
 # Partitioning strategy for time-series data
 # Options: "daily", "hourly", "weekly"

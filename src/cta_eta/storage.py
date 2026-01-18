@@ -358,3 +358,70 @@ class ParquetWriter:
 
         # Write to storage backend
         self.storage_backend.put(partition_path, parquet_bytes)
+
+
+def create_storage_backend(
+    config: dict[str, dict[str, Any]]
+) -> StorageBackend:
+    """Create storage backend from configuration.
+
+    Args:
+        config: Configuration dict from load_config()
+
+    Returns:
+        Configured StorageBackend instance
+
+    Raises:
+        ValueError: If backend type is unknown or required config missing
+    """
+    storage_config = config.get("storage", {})
+    backend_type = storage_config.get("backend", "local")
+
+    if backend_type == "local":
+        data_path = storage_config.get("data_path", "data")
+        return LocalStorage(base_path=data_path)
+
+    elif backend_type == "s3":
+        bucket = storage_config.get("s3_bucket")
+        if not bucket:
+            raise ValueError("s3_bucket must be specified in config for S3 backend")
+        return CloudStorage(filesystem_type="s3", bucket=bucket)
+
+    elif backend_type == "gcs":
+        bucket = storage_config.get("gcs_bucket")
+        if not bucket:
+            raise ValueError("gcs_bucket must be specified in config for GCS backend")
+        return CloudStorage(filesystem_type="gcs", bucket=bucket)
+
+    else:
+        raise ValueError(
+            f"Unknown storage backend: {backend_type}. "
+            f"Expected 'local', 's3', or 'gcs'."
+        )
+
+
+def create_parquet_writer(
+    config: dict[str, dict[str, Any]]
+) -> ParquetWriter:
+    """Create configured ParquetWriter from configuration.
+
+    Args:
+        config: Configuration dict from load_config()
+
+    Returns:
+        Configured ParquetWriter instance
+    """
+    storage_config = config.get("storage", {})
+
+    # Create storage backend
+    backend = create_storage_backend(config)
+
+    # Create ParquetWriter with configured settings
+    partition_hour = storage_config.get("partition_hour", 3)
+    compression = storage_config.get("compression", "snappy")
+
+    return ParquetWriter(
+        storage_backend=backend,
+        partition_hour=partition_hour,
+        compression=compression,
+    )
