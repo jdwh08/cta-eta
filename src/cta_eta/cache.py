@@ -1,7 +1,7 @@
 """TTL-based cache infrastructure with file persistence for static data.
 
 This module provides a generic caching system with time-to-live (TTL) semantics
-and JSON file-based persistence, enabling daemon restarts without losing cached data.
+and JSON file-based persistence, enabling restarts without losing cached data.
 """
 
 import json
@@ -28,6 +28,7 @@ class CachedData[T]:
         _ttl: Time-to-live in seconds
         _fetch_fn: Function to fetch fresh data when cache expires
         _memory_cache: In-memory cache dict with data and metadata
+
     """
 
     def __init__(
@@ -42,6 +43,7 @@ class CachedData[T]:
             cache_file: Path to JSON cache file for persistence
             ttl: Time-to-live in seconds before refresh needed
             fetch_fn: Callable that fetches fresh data when cache expires
+
         """
         self._cache_file = cache_file
         self._ttl = ttl
@@ -56,6 +58,7 @@ class CachedData[T]:
 
         Raises:
             Any exception raised by fetch_fn during refresh
+
         """
         # Load from file if not in memory
         if self._memory_cache is None:
@@ -66,7 +69,9 @@ class CachedData[T]:
             self._refresh()
 
         # Return cached data (guaranteed to exist after refresh)
-        assert self._memory_cache is not None
+        if self._memory_cache is None:
+            msg = "Cache failed to load after refresh, should never happen"
+            raise ValueError(msg)
         return self._memory_cache["data"]
 
     def _is_expired(self) -> bool:
@@ -74,6 +79,7 @@ class CachedData[T]:
 
         Returns:
             True if cache is expired, False otherwise
+
         """
         if self._memory_cache is None:
             return True
@@ -93,13 +99,12 @@ class CachedData[T]:
             return
 
         try:
-            with open(self._cache_file, "r") as f:
+            with self._cache_file.open() as f:
                 self._memory_cache = json.load(f)
             logger.debug(f"Loaded cache from {self._cache_file}")
         except json.JSONDecodeError as e:
-            logger.warning(
-                f"Failed to decode cache file {self._cache_file}: {e} (will refresh)"
-            )
+            msg = f"Failed to decode cache file {self._cache_file}: {e} (will refresh)"
+            logger.warning(msg)
             self._memory_cache = None
 
     def _save_to_file(self) -> None:
@@ -110,11 +115,12 @@ class CachedData[T]:
         """
         try:
             self._cache_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(self._cache_file, "w") as f:
+            with self._cache_file.open("w") as f:
                 json.dump(self._memory_cache, f, indent=2)
             logger.debug(f"Saved cache to {self._cache_file}")
         except OSError as e:
-            logger.error(f"Failed to save cache to {self._cache_file}: {e}")
+            msg = f"Failed to save cache to {self._cache_file}: {e}"
+            logger.exception(msg)
 
     def _refresh(self) -> None:
         """Fetch fresh data, update cache, and save to file.
@@ -124,8 +130,9 @@ class CachedData[T]:
 
         Raises:
             Any exception raised by fetch_fn
+
         """
-        logger.info(f"Refreshing cache from fetch function")
+        logger.info("Refreshing cache from fetch function")
         data = self._fetch_fn()
 
         self._memory_cache = {
@@ -135,7 +142,7 @@ class CachedData[T]:
         }
 
         self._save_to_file()
-        logger.info(f"Cache refreshed successfully")
+        logger.info("Cache refreshed successfully")
 
 
 def create_cached_data[T](
@@ -146,7 +153,7 @@ def create_cached_data[T](
     """Create a CachedData instance from configuration.
 
     Factory function that constructs cache from config dict, following
-    established pattern from Phase 1/2 for config-driven instantiation.
+    the established pattern for config-driven instantiation.
 
     Args:
         cache_name: Name of cache (e.g., "stations", "track_geometry")
@@ -159,6 +166,7 @@ def create_cached_data[T](
     Raises:
         ValueError: If cache_name TTL not found in config
         OSError: If cache directory creation fails
+
     """
     cache_config = config["cache"]
 
@@ -169,10 +177,11 @@ def create_cached_data[T](
     # Look up TTL for this cache
     ttl_key = f"{cache_name}_ttl"
     if ttl_key not in cache_config:
-        raise ValueError(
+        msg = (
             f"No TTL configured for cache '{cache_name}' "
             f"(expected key '{ttl_key}' in [cache] section)"
         )
+        raise ValueError(msg)
 
     ttl = int(cache_config[ttl_key])
 
