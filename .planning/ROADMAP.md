@@ -19,7 +19,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 1: Foundation & Configuration** - Config system, structured logging, daemon framework
 - [x] **Phase 2: Storage Abstraction** - Cloud-agnostic Parquet storage with timezone-aware partitioning
 - [x] **Phase 3: Static Data Management** - Cache infrastructure and weather grid mapping
-- [ ] **Phase 4: Static File Caching** - TTL-based caching for CTA stations and track geometry
+- [x] **Phase 4: Static File Caching** - TTL-based caching for CTA stations and track geometry
 - [ ] **Phase 5: Weather Data Collection** - Multi-source weather integration with rate limit management
 - [ ] **Phase 6: Train Position Polling Daemon** - Continuous 15-second polling with retry logic
 - [ ] **Phase 7: Resilience & Recovery** - Intelligent retry, gap detection, graceful shutdown
@@ -66,8 +66,8 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 04-01: CTA stations list cache with TTL refresh
-- [ ] 04-02: Track geometry cache with spatial data handling
+- [x] 04-01: CTA stations list cache with TTL refresh
+- [x] 04-02: Track geometry cache with spatial data handling
 
 ### Phase 5: Weather Data Collection
 **Goal**: Multi-source weather data collection with NWS primary, Open-Meteo supplementary, OpenWeatherMap fallback
@@ -138,7 +138,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 | 1. Foundation & Configuration | 3/3 | Complete | 2026-01-17 |
 | 2. Storage Abstraction | 1/1 | Complete | 2026-01-17 |
 | 3. Static Data Management | 2/2 | Complete | 2026-01-18 |
-| 4. Static File Caching | 0/2 | Not started | - |
+| 4. Static File Caching | 2/2 | Complete | 2026-01-19 |
 | 5. Weather Data Collection | 0/3 | Not started | - |
 | 6. Train Position Polling Daemon | 0/3 | Not started | - |
 | 7. Resilience & Recovery | 0/3 | Not started | - |
