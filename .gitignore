@@ -1,6 +1,7 @@
 # Project Organization
 .planning/
 .daemon_state/
+archive/
 
 # Data
 data/
