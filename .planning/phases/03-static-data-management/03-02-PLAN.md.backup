@@ -1,0 +1,295 @@
+---
+phase: 03-static-data-management
+plan: 02
+type: execute
+depends_on: ["03-01"]
+files_modified: [src/cta_eta/weather_grid.py, src/cta_eta/static_data.py]
+---
+
+<objective>
+Create weather grid mapping system that reduces ~300 CTA stations to ~50 weather grid points, and integrate TTL caching with existing API modules for stations and track geometry.
+
+Purpose: Preserve Open-Meteo 10k/day rate limit by consolidating weather requests to grid points while maintaining spatial coverage across Chicago transit system.
+Output: Weather grid generator, cached API wrappers for stations/track geometry, and station→grid point mapping.
+</objective>
+
+<execution_context>
+~/.claude/get-shit-done/workflows/execute-plan.md
+./summary.md
+</execution_context>
+
+<context>
+@.planning/PROJECT.md
+@.planning/ROADMAP.md
+@.planning/STATE.md
+@.planning/phases/03-static-data-management/DISCOVERY.md
+@.planning/phases/03-static-data-management/03-01-SUMMARY.md
+@src/cta_eta/cache.py
+@src/cta_eta/api_stations_weather.py
+@src/cta_eta/api_track_shape.py
+@src/cta_eta/config.py
+
+**Tech stack available:** CachedData[T] generic class from Plan 1, existing API functions (get_stations, get_weather)
+
+**Established patterns:**
+- Factory functions for config-driven instantiation
+- Lazy TTL refresh pattern from CachedData
+- Type-safe code with modern Python 3.13+ syntax
+
+**From PROJECT.md:**
+- Station-to-weather mapping: ~300 stations → ~39-50 unique weather grid points
+- Weather calls: 24hr × 50 locations × 2 APIs = ~2,400 calls/day (under 10k limit)
+- Grid spacing: ~0.1° (~11km) for Chicago area coverage
+
+**From DISCOVERY.md:**
+- Weather grid: Derived from station coverage bounding box
+- Grid generation: Create regular grid, snap each station to nearest grid point
+- Cache all three data types: stations, track geometry, weather mapping
+</context>
+
+<tasks>
+
+<task type="auto">
+  <name>Task 1: Create weather grid generator with station→grid mapping</name>
+  <files>src/cta_eta/weather_grid.py</files>
+  <action>
+Create `src/cta_eta/weather_grid.py` with functions:
+
+1. `generate_grid_points(stations: list[dict[str, str | float]], grid_spacing: float = 0.1) -> list[tuple[float, float]]:`
+   - Extract min/max lat/lon from stations list to get bounding box
+   - Generate regular grid with `grid_spacing` degrees (~0.1° = ~11km)
+   - Return list of (lat, lon) tuples covering the bounding box
+   - Typical output: ~39-50 grid points for Chicago CTA area
+
+2. `map_stations_to_grid(stations: list[dict[str, str | float]], grid_points: list[tuple[float, float]]) -> dict[str, tuple[float, float]]:`
+   - For each station, find nearest grid point using Haversine distance formula
+   - Return dict mapping station_id to (grid_lat, grid_lon)
+   - Use simple Euclidean approximation for distance (fine at Chicago's latitude ~42°N):
+     - `distance = sqrt((lat1 - lat2)^2 + (lon1 - lon2)^2)`
+   - No need for full Haversine (overkill for finding nearest in small area)
+
+3. `create_weather_grid_mapping(stations: list[dict[str, str | float]]) -> dict[str, tuple[float, float]]:`
+   - Convenience function combining above two
+   - `grid = generate_grid_points(stations); return map_stations_to_grid(stations, grid)`
+
+Type hints for all functions, docstrings explaining purpose.
+No external dependencies (use stdlib math for sqrt).
+  </action>
+  <verify>
+```bash
+cd /home/jdwh08/projects/cta-eta
+uv run basedpyright src/cta_eta/weather_grid.py
+# Test with mock stations
+uv run python -c "
+from src.cta_eta.weather_grid import generate_grid_points, map_stations_to_grid
+stations = [
+    {'id': '1', 'latitude': 41.88, 'longitude': -87.63},
+    {'id': '2', 'latitude': 41.90, 'longitude': -87.65}
+]
+grid = generate_grid_points(stations, grid_spacing=0.1)
+print(f'Grid points: {len(grid)}')
+mapping = map_stations_to_grid(stations, grid)
+print(f'Mapping: {mapping}')
+"
+```
+  </verify>
+  <done>
+- weather_grid.py exists with three functions
+- Grid generation creates regular lat/lon grid over station bounding box
+- Station→grid mapping uses nearest neighbor distance
+- basedpyright reports 0 errors
+- Manual test confirms grid generation and mapping work
+  </done>
+</task>
+
+<task type="auto">
+  <name>Task 2: Create static_data module with cached API wrappers</name>
+  <files>src/cta_eta/static_data.py</files>
+  <action>
+Create `src/cta_eta/static_data.py` as the public interface for cached static data:
+
+1. Module-level cached data instances (lazy initialization):
+   ```python
+   _stations_cache: CachedData[list[dict[str, str | float]]] | None = None
+   _track_geometry_cache: CachedData[list[dict]] | None = None
+   _weather_mapping_cache: CachedData[dict[str, tuple[float, float]]] | None = None
+   ```
+
+2. Public functions:
+   - `def get_cached_stations(config: dict) -> list[dict[str, str | float]]:`
+     - Lazy init: If `_stations_cache is None`, create via `create_cached_data('stations', config, _fetch_stations)`
+     - Return: `_stations_cache.get()`
+
+   - `def get_cached_track_geometry(config: dict) -> list[dict]:`
+     - Lazy init: Create via `create_cached_data('track_geometry', config, _fetch_track_geometry)`
+     - Return: `_track_geometry_cache.get()`
+
+   - `def get_cached_weather_mapping(config: dict) -> dict[str, tuple[float, float]]:`
+     - Lazy init: Create via `create_cached_data('weather_mapping', config, _fetch_weather_mapping)`
+     - Return: `_weather_mapping_cache.get()`
+
+3. Private fetch functions:
+   - `def _fetch_stations() -> list[dict[str, str | float]]:`
+     - Import and call `get_stations()` from `api_stations_weather.py`
+
+   - `def _fetch_track_geometry() -> list[dict]:`
+     - Implement API call to `https://data.cityofchicago.org/api/v3/views/xbyr-jnvx/query.json`
+     - Use same pattern as `api_stations_weather.py`: httpx client, @stamina.retry decorator, X-App-Token headers
+     - Parse JSON response to extract track segments
+
+   - `def _fetch_weather_mapping() -> dict[str, tuple[float, float]]:`
+     - Call `_fetch_stations()` to get stations list
+     - Import `create_weather_grid_mapping` from `weather_grid.py`
+     - Return `create_weather_grid_mapping(stations)`
+
+This lazy singleton pattern avoids repeated cache initialization and provides clean API for daemons.
+  </action>
+  <verify>
+```bash
+cd /home/jdwh08/projects/cta-eta
+uv run basedpyright src/cta_eta/static_data.py
+# Test cached data retrieval
+uv run python -c "
+from src.cta_eta.static_data import get_cached_stations, get_cached_weather_mapping
+from src.cta_eta.config import load_config
+config = load_config()
+stations = get_cached_stations(config)
+print(f'Cached {len(stations)} stations')
+mapping = get_cached_weather_mapping(config)
+print(f'Weather mapping: {len(mapping)} stations → {len(set(mapping.values()))} grid points')
+"
+```
+  </verify>
+  <done>
+- static_data.py exists with public cached wrapper functions
+- Lazy singleton pattern for cache instances
+- Track geometry API implemented with retry resilience
+- Weather mapping computed on first access
+- basedpyright reports 0 errors
+- Manual test confirms cached data retrieval works
+- .cache/ directory contains stations.json, track_geometry.json, weather_mapping.json after first run
+  </done>
+</task>
+
+<task type="auto">
+  <name>Task 3: Verify cache TTL behavior and grid point reduction</name>
+  <files>None (verification only)</files>
+  <action>
+Run comprehensive verification tests:
+
+1. Cache expiry test:
+   - Load cached stations twice in quick succession
+   - Verify second call uses cached data (no API call, instant return)
+   - Manually modify cache file's `cached_at` to simulate expiry (set to `time.time() - 604801`)
+   - Call again and verify API refresh is triggered
+
+2. Grid reduction test:
+   - Get weather mapping from cache
+   - Count unique grid points: `len(set(mapping.values()))`
+   - Verify reduction: ~300 stations → ~39-50 grid points
+   - Print sample mappings to confirm correctness
+
+3. Integration test:
+   - Load all three cached data types (stations, track_geometry, weather_mapping)
+   - Verify .cache/ directory contains all three JSON files
+   - Check file structure matches expected format: `{"data": [...], "cached_at": float, "ttl": int}`
+
+Log results with structured logging (integrate with Phase 1's logging system).
+  </action>
+  <verify>
+```bash
+cd /home/jdwh08/projects/cta-eta
+# Run verification script
+uv run python -c "
+import time
+from src.cta_eta.static_data import get_cached_stations, get_cached_weather_mapping
+from src.cta_eta.config import load_config
+
+config = load_config()
+
+# Test 1: Cached access
+print('Test 1: Loading stations twice...')
+start = time.time()
+stations1 = get_cached_stations(config)
+elapsed1 = time.time() - start
+
+start = time.time()
+stations2 = get_cached_stations(config)
+elapsed2 = time.time() - start
+
+print(f'First load: {elapsed1:.2f}s, Second load: {elapsed2:.4f}s')
+assert elapsed2 < 0.1, 'Second load should be cached (< 100ms)'
+
+# Test 2: Grid reduction
+print('\nTest 2: Weather grid mapping...')
+mapping = get_cached_weather_mapping(config)
+unique_points = len(set(mapping.values()))
+print(f'Stations: {len(mapping)}, Grid points: {unique_points}')
+assert 35 <= unique_points <= 60, f'Grid points should be 35-60, got {unique_points}'
+
+print('\nAll tests passed!')
+"
+```
+  </verify>
+  <done>
+- Cache persistence works across repeated calls
+- Second access is fast (< 100ms, proves in-memory caching)
+- Grid reduction verified: ~300 stations → ~40-50 grid points
+- All cache files exist in .cache/ with correct JSON structure
+- Integration test passes
+  </done>
+</task>
+
+</tasks>
+
+<verification>
+Before declaring phase complete:
+- [ ] `uv run basedpyright src/cta_eta/weather_grid.py` passes with 0 errors
+- [ ] `uv run basedpyright src/cta_eta/static_data.py` passes with 0 errors
+- [ ] `.cache/` directory contains stations.json, track_geometry.json, weather_mapping.json
+- [ ] Weather mapping reduces ~300 stations to ~40-50 grid points
+- [ ] Cache TTL behavior verified (expired caches refresh, fresh caches use memory)
+- [ ] All three cached data types accessible via static_data module
+</verification>
+
+<success_criteria>
+
+- Weather grid generator creates regular grid over station bounding box
+- Station→grid mapping uses nearest neighbor algorithm
+- Static data module provides cached access to stations, track geometry, weather mapping
+- Track geometry API integrated with cache and retry resilience
+- Grid reduction verified: ~300 stations → ~40-50 grid points
+- Cache TTL behavior works (lazy refresh on expiry, in-memory on fresh access)
+- Type-safe with 0 basedpyright errors
+- Phase 3 complete - static data management ready for Phase 4 (train position polling)
+  </success_criteria>
+
+<output>
+After completion, create `.planning/phases/03-static-data-management/03-02-SUMMARY.md`:
+
+# Phase 3 Plan 2: Weather Grid Mapping and API Integration Summary
+
+**Station→grid mapping with cached API wrappers for static CTA data**
+
+## Accomplishments
+
+- [Key outcome 1]
+- [Key outcome 2]
+
+## Files Created/Modified
+
+- `src/cta_eta/weather_grid.py` - Grid generation and station→grid mapping functions
+- `src/cta_eta/static_data.py` - Cached API wrappers for stations, track geometry, weather mapping
+
+## Decisions Made
+
+[Key decisions and rationale, or "None"]
+
+## Issues Encountered
+
+[Problems and resolutions, or "None"]
+
+## Next Step
+
+Phase 3 complete! Ready for Phase 4 (Train Position Polling) - polling daemons can now access cached static data with minimal API calls.
+</output>
