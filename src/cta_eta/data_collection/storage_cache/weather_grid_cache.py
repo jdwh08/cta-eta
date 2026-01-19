@@ -10,6 +10,7 @@ actual API responses, rather than pre-computing grid points. This approach:
 Grid identifier formats:
 - NWS: "LOT/85,67" (office/grid_x,grid_y)
 - Open-Meteo: "41.88,-87.63" (rounded lat,lon coordinates)
+- OpenWeatherMap: "41.88,-87.63" (rounded lat,lon coordinates)
 """
 
 import json
@@ -20,8 +21,12 @@ from pathlib import Path
 import httpx
 import stamina
 
+### OWN MODULES
 from cta_eta.data_collection.apis.api_weather_nws import discover_nws_grid
 from cta_eta.data_collection.apis.api_weather_open_meteo import discover_open_meteo_grid
+from cta_eta.data_collection.apis.api_weather_openweathermap import (
+    discover_openweathermap_grid,
+)
 from cta_eta.data_collection.storage_cache.cache import CachedData
 
 logger = logging.getLogger(__name__)
@@ -159,6 +164,10 @@ class NWSGridCache(WeatherGridCache):
             }  # Will be overridden by actual config
         )
 
+    def __del__(self) -> None:
+        """Close the HTTP client."""
+        self._client.close()
+
     @stamina.retry(on=httpx.HTTPStatusError, attempts=10)
     def _discover_grid(self, latitude: float, longitude: float) -> str:
         """Discover NWS grid identifier from points API.
@@ -201,7 +210,10 @@ class OpenMeteoGridCache(WeatherGridCache):
         super().__init__(cache_file, ttl)
         self._client = httpx.Client()
 
-    @stamina.retry(on=httpx.HTTPStatusError, attempts=10)
+    def __del__(self) -> None:
+        """Close the HTTP client."""
+        self._client.close()
+
     def _discover_grid(self, latitude: float, longitude: float) -> str:
         """Discover Open-Meteo grid identifier from API response.
 
@@ -220,6 +232,51 @@ class OpenMeteoGridCache(WeatherGridCache):
 
         """
         grid_id = discover_open_meteo_grid(self._client, latitude, longitude)
+        return grid_id
+
+
+class OpenWeatherMapGridCache(WeatherGridCache):
+    """OpenWeatherMap-specific grid cache with lazy discovery from API responses.
+
+    Discovers OpenWeatherMap grid identifiers by making a minimal API request and
+    extracting the actual coordinates used by the API. OpenWeatherMap rounds/snaps
+    coordinates to their internal grid, so we cache these actual values.
+
+    """
+
+    def __init__(self, cache_file: Path, ttl: int) -> None:
+        """Initialize OpenWeatherMap grid cache.
+
+        Args:
+            cache_file: Path to JSON cache file (openweathermap_grid_mapping.json)
+            ttl: Time-to-live in seconds before refresh needed
+
+        """
+        super().__init__(cache_file, ttl)
+        self._client = httpx.Client()
+
+    def __del__(self) -> None:
+        """Close the HTTP client."""
+        self._client.close()
+
+    def _discover_grid(self, latitude: float, longitude: float) -> str:
+        """Discover OpenWeatherMap grid identifier from API response.
+
+        Makes minimal API request to OpenWeatherMap and extracts the actual
+        coordinates used by the API (they round/snap to their grid).
+
+        Args:
+            latitude: Coordinate latitude
+            longitude: Coordinate longitude
+
+        Returns:
+            OpenWeatherMap grid identifier (e.g., "41.88,-87.63")
+
+        Raises:
+            httpx.HTTPStatusError: If API request fails after retries
+
+        """
+        grid_id = discover_openweathermap_grid(self._client, latitude, longitude)
         return grid_id
 
 
@@ -253,3 +310,20 @@ def get_open_meteo_grid_cache(config: dict) -> OpenMeteoGridCache:
     )
     ttl = int(config["cache"]["weather_mapping_ttl"])
     return OpenMeteoGridCache(cache_file, ttl)
+
+
+def get_openweathermap_grid_cache(config: dict) -> OpenWeatherMapGridCache:
+    """Create an OpenWeatherMap grid cache configured from `config`.
+
+    Args:
+        config: Configuration dict with cache section
+
+    Returns:
+        Configured OpenWeatherMapGridCache instance
+
+    """
+    cache_file = (
+        Path(str(config["cache"]["directory"])) / "openweathermap_grid_mapping.json"
+    )
+    ttl = int(config["cache"]["weather_mapping_ttl"])
+    return OpenWeatherMapGridCache(cache_file, ttl)
