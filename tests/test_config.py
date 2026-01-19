@@ -9,8 +9,8 @@ from unittest.mock import patch
 
 import pytest
 
-import cta_eta
-from cta_eta.config import _load_config_from_path, load_config
+import cta_eta.data_collection.config as cta_config
+from cta_eta.data_collection.config import _load_config_from_path, load_config
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -43,7 +43,9 @@ class TestLoadConfig:
     def test_load_config_calls_internal_function(self) -> None:
         """Test that load_config() calls _load_config_from_path with correct path."""
         # Arrange
-        with patch("cta_eta.config._load_config_from_path") as mock_load:
+        with patch(
+            "cta_eta.data_collection.config._load_config_from_path"
+        ) as mock_load:
             mock_load.return_value = {"test": {"key": "value"}}
 
             # Act
@@ -88,7 +90,7 @@ class TestLoadConfigFromPath:
         monkeypatch.delenv("CTA_API_KEY", raising=False)
         monkeypatch.delenv("CHIDATA_APP_TOK", raising=False)
         monkeypatch.delenv("CHIDATA_APP_SECRET", raising=False)
-        with patch("cta_eta.config.load_dotenv"):
+        with patch("cta_eta.data_collection.config.load_dotenv"):
             # Act
             config = _load_config_from_path(temp_config_file)
 
@@ -105,7 +107,7 @@ class TestLoadConfigFromPath:
         monkeypatch.setenv("CTA_API_KEY", "present_key")
         monkeypatch.delenv("CHIDATA_APP_TOK", raising=False)
         monkeypatch.delenv("CHIDATA_APP_SECRET", raising=False)
-        with patch("cta_eta.config.load_dotenv"):
+        with patch("cta_eta.data_collection.config.load_dotenv"):
             # Act
             config = _load_config_from_path(temp_config_file)
 
@@ -167,7 +169,7 @@ quoted = 'world'
     def test_load_config_dotenv_loading(self, temp_config_file: Path) -> None:
         """Test that load_dotenv is called to load .env file."""
         # Arrange
-        with patch("cta_eta.config.load_dotenv") as mock_load_dotenv:
+        with patch("cta_eta.data_collection.config.load_dotenv") as mock_load_dotenv:
             # Act
             _load_config_from_path(temp_config_file)
 
@@ -182,26 +184,26 @@ quoted = 'world'
         config_toml = tmp_path / "config.toml"
         config_toml.write_text("[test]\nvalue = 1")
 
-        src_dir = tmp_path / "src" / "cta_eta"
+        src_dir = tmp_path / "src" / "cta_eta" / "data_collection"
         src_dir.mkdir(parents=True)
         config_py = src_dir / "config.py"
         config_py.write_text("# Mock")
 
-        original_file = cta_eta.config.__file__  # ty:ignore[possibly-missing-attribute]
-        monkeypatch.setattr(cta_eta.config, "__file__", str(config_py))  # ty:ignore[possibly-missing-attribute]
+        original_file = cta_config.__file__
+        monkeypatch.setattr(cta_config, "__file__", str(config_py))
 
         try:
-            importlib.reload(cta_eta.config)  # type: ignore[reportUnknownVariableType]
+            importlib.reload(cta_config)
 
-            with patch("cta_eta.config.load_dotenv") as mock_dotenv:
+            with patch("cta_eta.data_collection.config.load_dotenv") as mock_dotenv:
                 # Act
-                cta_eta.config.load_config()  # ty:ignore[possibly-missing-attribute]
+                cta_config.load_config()
 
                 # Assert - verify load_dotenv was called
                 mock_dotenv.assert_called_once()
         finally:
-            monkeypatch.setattr(cta_eta.config, "__file__", original_file)  # ty:ignore[possibly-missing-attribute]
-            importlib.reload(cta_eta.config)  # ty:ignore[possibly-missing-attribute]
+            monkeypatch.setattr(cta_config, "__file__", original_file)
+            importlib.reload(cta_config)
 
     def test_load_config_empty_toml(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -213,7 +215,7 @@ quoted = 'world'
         monkeypatch.delenv("CTA_API_KEY", raising=False)
         monkeypatch.delenv("CHIDATA_APP_TOK", raising=False)
         monkeypatch.delenv("CHIDATA_APP_SECRET", raising=False)
-        with patch("cta_eta.config.load_dotenv"):
+        with patch("cta_eta.data_collection.config.load_dotenv"):
             # Act
             config = _load_config_from_path(empty_config)
 
@@ -230,7 +232,7 @@ quoted = 'world'
         monkeypatch.delenv("CTA_API_KEY", raising=False)
         monkeypatch.delenv("CHIDATA_APP_TOK", raising=False)
         monkeypatch.delenv("CHIDATA_APP_SECRET", raising=False)
-        with patch("cta_eta.config.load_dotenv"):
+        with patch("cta_eta.data_collection.config.load_dotenv"):
             # Act
             config = _load_config_from_path(temp_config_file)
 

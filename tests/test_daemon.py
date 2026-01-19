@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from cta_eta.daemon import BaseDaemon
+from cta_eta.data_collection.orchestration.daemon import BaseDaemon
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -607,7 +607,7 @@ class TestBaseDaemonStatePersistence:
         daemon = ConcreteDaemon(sample_config, mock_logger, {"key": "value"})
 
         with patch(
-            "cta_eta.daemon.Path.mkdir",
+            "cta_eta.data_collection.orchestration.daemon.Path.mkdir",
             side_effect=PermissionError("Permission denied"),
         ):
             # Act

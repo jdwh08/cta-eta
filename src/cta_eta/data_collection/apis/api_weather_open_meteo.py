@@ -1,6 +1,6 @@
 """Open-Meteo API client for supplementary weather variables.
 
-This module provides functions to fetch supplementary weather variables from
+This module provides stateless functions to fetch supplementary weather variables from
 Open-Meteo that are not available in NWS hourly forecasts. These include:
 - Visibility
 - Snow depth
@@ -8,6 +8,9 @@ Open-Meteo that are not available in NWS hourly forecasts. These include:
 - Wind gusts
 - Apparent temperature
 - Rain, showers, snowfall
+
+All functions accept an httpx.Client parameter for dependency injection and proper
+connection pooling management by the caller.
 
 Rate limit calculation:
 - ~50 unique weather grid points (from station deduplication)
@@ -21,50 +24,70 @@ from typing import Final
 
 import httpx
 import stamina
-from dotenv import load_dotenv
 
-from cta_eta.config import load_config
-from cta_eta.weather_grid_cache import OpenMeteoGridCache, get_open_meteo_grid_cache
+### OWN MODULES
+from cta_eta.data_collection.logging import get_logger, log_api_call
 
-load_dotenv()
+logger = get_logger(__name__)
 
 # Open-Meteo API endpoint
 OPEN_METEO_URL: Final[str] = "https://api.open-meteo.com/v1/forecast"
 
-# Module-level httpx.Client for connection pooling
-client = httpx.Client()
 
-# Module-level grid cache singleton
-_open_meteo_grid_cache: OpenMeteoGridCache | None = None
+@stamina.retry(on=httpx.HTTPStatusError, attempts=1)
+@log_api_call(logger)
+def discover_open_meteo_grid(
+    client: httpx.Client, latitude: float, longitude: float
+) -> str:
+    """Discover Open-Meteo grid identifier from API response.
 
+    Makes minimal API request to Open-Meteo and extracts the actual
+    coordinates used by the API (they round/snap to their grid).
 
-def _get_grid_cache() -> OpenMeteoGridCache:
-    """Get or create the Open-Meteo grid cache singleton.
+    Args:
+        client: HTTP client for API requests
+        latitude: Coordinate latitude
+        longitude: Coordinate longitude
 
     Returns:
-        OpenMeteoGridCache instance for caching grid identifiers
+        Open-Meteo grid identifier (e.g., "41.88,-87.63")
+
+    Raises:
+        httpx.HTTPStatusError: If API request fails after retries
 
     """
-    global _open_meteo_grid_cache
-    if _open_meteo_grid_cache is None:
-        config = load_config()
-        _open_meteo_grid_cache = get_open_meteo_grid_cache(config)
-    return _open_meteo_grid_cache
+    # Make minimal request to Open-Meteo API
+    response = client.get(
+        OPEN_METEO_URL,
+        params={
+            "latitude": latitude,
+            "longitude": longitude,
+            "current": "temperature_2m",  # Minimal parameter
+            "timezone": "America/Chicago",
+        },
+    )
+    response.raise_for_status()
+    data = response.json()
+
+    # Extract actual coordinates used by API
+    actual_lat = data["latitude"]
+    actual_lon = data["longitude"]
+
+    return f"{actual_lat},{actual_lon}"
 
 
 @stamina.retry(on=httpx.HTTPStatusError, attempts=10)
+@log_api_call(logger)
 def get_open_meteo_current(
-    station_id: str, latitude: float, longitude: float
+    client: httpx.Client, grid_id: str
 ) -> dict[str, str | float]:
-    """Get current supplementary weather variables from Open-Meteo.
+    """Get current supplementary weather variables from Open-Meteo for a known grid.
 
     Fetches supplementary weather variables not provided by NWS hourly forecasts.
-    Uses cached grid identifiers to reduce API calls and stay under rate limits.
 
     Args:
-        station_id: Unique station identifier for grid caching
-        latitude: Latitude coordinate
-        longitude: Longitude coordinate
+        client: HTTP client for API requests
+        grid_id: Open-Meteo grid identifier (e.g., "41.88,-87.63")
 
     Returns:
         Dictionary with supplementary weather data:
@@ -84,18 +107,24 @@ def get_open_meteo_current(
         httpx.HTTPStatusError: If API request fails after retries
 
     """
-    # Get cached grid identifier (lazy discovery on first access)
-    grid_cache = _get_grid_cache()
-    grid_id = grid_cache.get_grid_identifier(station_id, latitude, longitude)
+    if grid_id.count(",") != 1:
+        msg = f"Invalid grid ID: {grid_id}"
+        raise ValueError(msg)
 
     # Parse grid identifier to get actual coordinates used by API
     grid_lat, grid_lon = grid_id.split(",")
+    try:
+        lat = float(grid_lat)
+        lon = float(grid_lon)
+    except ValueError as e:
+        msg = f"Invalid grid ID: {grid_id}"
+        raise ValueError(msg) from e
 
     response = client.get(
         OPEN_METEO_URL,
         params={
-            "latitude": float(grid_lat),
-            "longitude": float(grid_lon),
+            "latitude": lat,
+            "longitude": lon,
             "current": "visibility,snow_depth,surface_pressure,wind_gusts_10m,apparent_temperature,rain,showers,snowfall",
             "timezone": "America/Chicago",
             "forecast_days": 2,  # need to roll over to next day if current day is ending

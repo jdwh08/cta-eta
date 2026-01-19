@@ -12,14 +12,17 @@ Grid identifier formats:
 - Open-Meteo: "41.88,-87.63" (rounded lat,lon coordinates)
 """
 
+import json
 import logging
-import re
+import time
 from pathlib import Path
 
 import httpx
 import stamina
 
-from cta_eta.cache import CachedData
+from cta_eta.data_collection.apis.api_weather_nws import discover_nws_grid
+from cta_eta.data_collection.apis.api_weather_open_meteo import discover_open_meteo_grid
+from cta_eta.data_collection.storage_cache.cache import CachedData
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +54,7 @@ class WeatherGridCache:
         self._cache: CachedData[dict[str, str]] = CachedData(
             cache_file=cache_file,
             ttl=ttl,
-            fetch_fn=lambda: {},  # Empty dict for lazy population
+            fetch_fn=dict,  # Empty dict for lazy population
         )
 
     def get_grid_identifier(
@@ -81,9 +84,7 @@ class WeatherGridCache:
             return mapping[station_id]
 
         # Cache miss: discover from API
-        logger.info(
-            f"Cache miss for station {station_id}, discovering grid from API"
-        )
+        logger.info(f"Cache miss for station {station_id}, discovering grid from API")
         grid_id = self._discover_grid(latitude, longitude)
 
         # Update cache with new mapping
@@ -107,7 +108,8 @@ class WeatherGridCache:
             NotImplementedError: Must be implemented by subclass
 
         """
-        raise NotImplementedError("Subclass must implement _discover_grid")
+        msg = "Subclass must implement _discover_grid"
+        raise NotImplementedError(msg)
 
     def _save_mapping(self, mapping: dict[str, str]) -> None:
         """Save updated mapping to cache file.
@@ -117,9 +119,6 @@ class WeatherGridCache:
 
         """
         # Update cache's internal memory cache and persist to file
-        import json
-        import time
-
         cache_data = {
             "data": mapping,
             "cached_at": time.time(),
@@ -176,26 +175,10 @@ class NWSGridCache(WeatherGridCache):
 
         Raises:
             httpx.HTTPStatusError: If API request fails after retries
-            ValueError: If forecast URL format is unexpected
 
         """
-        # Import here to avoid circular dependency
-        from cta_eta.api_weather_nws import get_nws_forecast_url
-
-        # Get forecast URL from NWS points API
-        forecast_url = get_nws_forecast_url(latitude, longitude)
-
-        # Extract gridpoint from URL: /gridpoints/LOT/85,67/forecast/hourly
-        match = re.search(r"/gridpoints/([A-Z]+)/(\d+),(\d+)/", forecast_url)
-        if not match:
-            msg = f"Unexpected NWS forecast URL format: {forecast_url}"
-            raise ValueError(msg)
-
-        office = match.group(1)
-        grid_x = match.group(2)
-        grid_y = match.group(3)
-
-        return f"{office}/{grid_x},{grid_y}"
+        grid_id = discover_nws_grid(self._client, latitude, longitude)
+        return grid_id
 
 
 class OpenMeteoGridCache(WeatherGridCache):
@@ -236,28 +219,12 @@ class OpenMeteoGridCache(WeatherGridCache):
             httpx.HTTPStatusError: If API request fails after retries
 
         """
-        # Make minimal request to Open-Meteo API
-        response = self._client.get(
-            "https://api.open-meteo.com/v1/forecast",
-            params={
-                "latitude": latitude,
-                "longitude": longitude,
-                "current": "temperature_2m",  # Minimal parameter
-                "timezone": "America/Chicago",
-            },
-        )
-        response.raise_for_status()
-        data = response.json()
-
-        # Extract actual coordinates used by API
-        actual_lat = data["latitude"]
-        actual_lon = data["longitude"]
-
-        return f"{actual_lat},{actual_lon}"
+        grid_id = discover_open_meteo_grid(self._client, latitude, longitude)
+        return grid_id
 
 
 def get_nws_grid_cache(config: dict) -> NWSGridCache:
-    """Factory function for NWS grid cache with config-driven setup.
+    """Create an NWS grid cache configured from `config`.
 
     Args:
         config: Configuration dict with cache section
@@ -272,7 +239,7 @@ def get_nws_grid_cache(config: dict) -> NWSGridCache:
 
 
 def get_open_meteo_grid_cache(config: dict) -> OpenMeteoGridCache:
-    """Factory function for Open-Meteo grid cache with config-driven setup.
+    """Create an Open-Meteo grid cache configured from `config`.
 
     Args:
         config: Configuration dict with cache section

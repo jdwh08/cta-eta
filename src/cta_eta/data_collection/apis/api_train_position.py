@@ -10,12 +10,8 @@ from typing import Any, Final
 
 import httpx
 import stamina
-from dotenv import load_dotenv
 
-from cta_eta.config import load_config
-
-# Load environment variables for API key
-load_dotenv()
+from cta_eta.data_collection.config import load_config
 
 # CTA API endpoint and configuration
 TRAIN_POSITION_URL: Final[str] = (
@@ -45,14 +41,26 @@ def get_train_positions() -> dict[str, Any]:
                     "errNm": null,
                     "route": [  # Array of train lines
                         {
-                            "@name": "red",
+                            "@name": "p",
                             "train": [  # Array of trains on this line
                                 {
-                                    "rn": "519",  # Train run number
+                                    "rn": "519",
+                                    "destSt": "30176",
+                                    "destNm": "Howard",
+                                    "trDr": "5",
+                                    "nextStaId": "40400",
+                                    "nextStpId": "30079",
+                                    "nextStaNm": "Noyes",
+                                    "prdt": "2026-01-14T20:33:52",
+                                    "arrT": "2026-01-14T20:34:52",
+                                    "isApp": "1",
+                                    "isDly": "0",
+                                    "flags": null,
                                     "lat": "42.06106",
                                     "lon": "-87.68393",
-                                    ...
-                                }
+                                    "heading": "150"
+                                },
+                                ...
                             ]
                         }
                     ]
