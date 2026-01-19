@@ -14,7 +14,7 @@ Very important to read the CTA API documentation: <https://www.transitchicago.co
 #### Tracks
 We'll use the Chicago Open Data Portal to get track segment data. This is in the form of MultiLineString for each track segment between stations. We also want to save the track type, and parse the endpoints.
 
-See `api_track_shape.py` in src/cta_eta for more notes.
+See `api_cta_track_shape.py` in src/cta_eta for more notes.
 
 #### Stations
 We'll use the Chicago Open Data Portal to get station latitude / longitude. See `api_stations_weather.py` in src/cta_eta.

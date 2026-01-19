@@ -13,7 +13,7 @@
 
 ## Files Created/Modified
 
-- `src/cta_eta/data_collection/apis/api_track_shape.py` - Track geometry cache already implemented with:
+- `src/cta_eta/data_collection/apis/api_cta_track_shape.py` - Track geometry cache already implemented with:
   - `get_track_geometry_cache()` - Factory function returning CachedData instance
   - Uses `create_cached_data()` helper with "track_geometry" cache name
   - Reads TTL from config[cache][track_geometry_ttl] (30 days)

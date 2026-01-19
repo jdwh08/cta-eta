@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 class CachedData[T]:
-    """Generic TTL cache with lazy refresh and file persistence.
+    """TTL cache for JSON-like data with lazy refresh and file persistence.
 
     Provides in-memory caching with automatic refresh when TTL expires.
     Data is persisted to JSON file to survive daemon restarts.
@@ -151,9 +151,6 @@ def create_cached_data[T](
     fetch_fn: Callable[[], T],
 ) -> CachedData[T]:
     """Create a CachedData instance from configuration.
-
-    Factory function that constructs cache from config dict, following
-    the established pattern for config-driven instantiation.
 
     Args:
         cache_name: Name of cache (e.g., "stations", "track_geometry")

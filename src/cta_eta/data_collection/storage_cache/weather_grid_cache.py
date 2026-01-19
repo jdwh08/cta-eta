@@ -5,17 +5,15 @@ actual API responses, rather than pre-computing grid points. This approach:
 - Lets NWS and Open-Meteo APIs naturally determine their own grid systems
 - Caches API-specific grid identifiers for instant lookups during polling
 - Enables zero-waste weather polling by reducing ~300 stations to ~50 grid points
-- Persists mappings across daemon restarts using CachedData infrastructure
+- Persists mappings across daemon restarts using a persistent KV cache
 
 Grid identifier formats:
 - NWS: "LOT/85,67" (office/grid_x,grid_y)
-- Open-Meteo: "41.88,-87.63" (rounded lat,lon coordinates)
-- OpenWeatherMap: "41.88,-87.63" (rounded lat,lon coordinates)
+- Open-Meteo: "41.88,-87.63" (canonicalized lat,lon returned by API)
+- OpenWeatherMap: "41.88,-87.63" (rounded lat,lon returned by API)
 """
 
-import json
 import logging
-import time
 from pathlib import Path
 
 import httpx
@@ -23,26 +21,26 @@ import stamina
 
 ### OWN MODULES
 from cta_eta.data_collection.apis.api_weather_nws import discover_nws_grid
-from cta_eta.data_collection.apis.api_weather_open_meteo import discover_open_meteo_grid
-from cta_eta.data_collection.apis.api_weather_openweathermap import (
-    discover_openweathermap_grid,
-)
-from cta_eta.data_collection.storage_cache.cache import CachedData
+from cta_eta.data_collection.storage_cache.kv_cache import PersistentKVCache
 
 logger = logging.getLogger(__name__)
 
 
 class WeatherGridCache:
-    """Base class for API-specific weather grid caching with lazy discovery.
+    """Persistent station_id → grid_identifier mapping cache.
 
-    Provides generic interface for caching station_id → grid_identifier mappings.
-    Grid identifiers are discovered lazily from API responses as stations are
-    encountered during polling.
+    For rate-limited providers (Open-Meteo, OpenWeatherMap), this cache intentionally
+    does *not* perform discovery calls. The orchestrator is expected to:
+    - read the mapping (returns None on cache miss/expiry)
+    - perform the real weather API call using station coordinates
+    - update the mapping using `set_grid_identifier()` from the real response
+
+    NWS is the exception: forecasts require a gridpoint ID derived via the Points
+    endpoint, so `NWSGridCache` provides a `resolve_grid_identifier()` helper.
 
     Attributes:
-        _cache: CachedData instance managing dict[str, str] mapping
-        _cache_file: Path to JSON cache file
-        _ttl: Time-to-live in seconds before refresh needed
+        _cache: PersistentKVCache instance managing station_id → grid_identifier mapping
+        _ttl: Per-entry time-to-live in seconds (None means never expire)
 
     """
 
@@ -51,93 +49,36 @@ class WeatherGridCache:
 
         Args:
             cache_file: Path to JSON cache file for persistence
-            ttl: Time-to-live in seconds before refresh needed
+            ttl: Per-entry time-to-live in seconds before re-discovery
 
         """
-        self._cache_file = cache_file
         self._ttl = ttl
-        self._cache: CachedData[dict[str, str]] = CachedData(
-            cache_file=cache_file,
-            ttl=ttl,
-            fetch_fn=dict,  # Empty dict for lazy population
+        self._cache: PersistentKVCache[str] = PersistentKVCache(
+            cache_file=cache_file, ttl=ttl
         )
 
-    def get_grid_identifier(
-        self, station_id: str, latitude: float, longitude: float
-    ) -> str:
-        """Get cached grid identifier or discover from API if missing.
+    def get_grid_identifier(self, station_id: str) -> str | None:
+        """Get cached grid identifier if present and not expired.
 
         Args:
             station_id: Unique station identifier
-            latitude: Station latitude
-            longitude: Station longitude
 
         Returns:
-            API-specific grid identifier string
-
-        Raises:
-            httpx.HTTPStatusError: If API discovery fails after retries
-            NotImplementedError: If subclass doesn't implement _discover_grid
+            API-specific grid identifier string, or None on cache miss/expiry.
 
         """
-        # Get current cache mapping
-        mapping = self._cache.get()
-
-        # Return cached identifier if exists
-        if station_id in mapping:
-            logger.debug(f"Cache hit for station {station_id}: {mapping[station_id]}")
-            return mapping[station_id]
-
-        # Cache miss: discover from API
-        logger.info(f"Cache miss for station {station_id}, discovering grid from API")
-        grid_id = self._discover_grid(latitude, longitude)
-
-        # Update cache with new mapping
-        mapping[station_id] = grid_id
-        self._save_mapping(mapping)
-
-        logger.info(f"Discovered and cached grid {grid_id} for station {station_id}")
+        grid_id = self._cache.get(station_id)
+        if grid_id is not None:
+            logger.debug(f"Cache hit for station {station_id}: {grid_id}")
         return grid_id
 
-    def _discover_grid(self, latitude: float, longitude: float) -> str:
-        """Discover grid identifier from API for given coordinates.
+    def set_grid_identifier(self, station_id: str, grid_id: str) -> None:
+        """Manually set/update a station → grid mapping."""
+        self._cache.set(station_id, grid_id)
 
-        Args:
-            latitude: Coordinate latitude
-            longitude: Coordinate longitude
-
-        Returns:
-            API-specific grid identifier
-
-        Raises:
-            NotImplementedError: Must be implemented by subclass
-
-        """
-        msg = "Subclass must implement _discover_grid"
-        raise NotImplementedError(msg)
-
-    def _save_mapping(self, mapping: dict[str, str]) -> None:
-        """Save updated mapping to cache file.
-
-        Args:
-            mapping: Updated station_id → grid_identifier mapping
-
-        """
-        # Update cache's internal memory cache and persist to file
-        cache_data = {
-            "data": mapping,
-            "cached_at": time.time(),
-            "ttl": self._ttl,
-        }
-
-        try:
-            self._cache_file.parent.mkdir(parents=True, exist_ok=True)
-            with self._cache_file.open("w") as f:
-                json.dump(cache_data, f, indent=2)
-            logger.debug(f"Saved updated mapping to {self._cache_file}")
-        except OSError as e:
-            msg = f"Failed to save mapping to {self._cache_file}: {e}"
-            logger.exception(msg)
+    def delete_station(self, station_id: str) -> None:
+        """Remove a station from the mapping cache."""
+        self._cache.delete(station_id)
 
 
 class NWSGridCache(WeatherGridCache):
@@ -168,116 +109,62 @@ class NWSGridCache(WeatherGridCache):
         """Close the HTTP client."""
         self._client.close()
 
-    @stamina.retry(on=httpx.HTTPStatusError, attempts=10)
-    def _discover_grid(self, latitude: float, longitude: float) -> str:
-        """Discover NWS grid identifier from points API.
-
-        Calls NWS points API to get forecast URL, then extracts gridpoint
-        information in format "OFFICE/GRID_X,GRID_Y".
+    def resolve_grid_identifier(
+        self, station_id: str, latitude: float, longitude: float
+    ) -> str:
+        """Resolve NWS grid identifier for a station, discovering on miss/expiry.
 
         Args:
-            latitude: Coordinate latitude
-            longitude: Coordinate longitude
+            station_id: Unique station identifier
+            latitude: Station latitude
+            longitude: Station longitude
 
         Returns:
             NWS grid identifier (e.g., "LOT/85,67")
 
         Raises:
-            httpx.HTTPStatusError: If API request fails after retries
+            httpx.HTTPStatusError: If API request fails after retries.
 
         """
-        grid_id = discover_nws_grid(self._client, latitude, longitude)
+        cached = self.get_grid_identifier(station_id)
+        if cached is not None:
+            return cached
+
+        logger.info(
+            f"Cache miss for station {station_id}, discovering NWS grid from Points API"
+        )
+        grid_id = self._discover_grid(latitude, longitude)
+        self.set_grid_identifier(station_id, grid_id)
         return grid_id
+
+    @stamina.retry(on=httpx.HTTPStatusError, attempts=10)
+    def _discover_grid(self, latitude: float, longitude: float) -> str:
+        """Discover NWS grid identifier from Points API for given coordinates."""
+        return discover_nws_grid(self._client, latitude, longitude)
 
 
 class OpenMeteoGridCache(WeatherGridCache):
-    """Open-Meteo-specific grid cache with lazy discovery from API responses.
+    """Open-Meteo station → grid mapping cache.
 
-    Discovers Open-Meteo grid identifiers by making a minimal API request and
-    extracting the actual coordinates used by the API. Open-Meteo rounds/snaps
-    coordinates to their internal grid, so we cache these actual values.
+    Open-Meteo returns less precise latitude longitude coordinates than input.
+    They also will snap to their nearest weather station.
+
+    The orchestrator is responsible for calling Open-Meteo and persisting the
+    canonicalized coordinates into this cache via `set_grid_identifier()`.
 
     """
-
-    def __init__(self, cache_file: Path, ttl: int) -> None:
-        """Initialize Open-Meteo grid cache.
-
-        Args:
-            cache_file: Path to JSON cache file (open_meteo_grid_mapping.json)
-            ttl: Time-to-live in seconds before refresh needed
-
-        """
-        super().__init__(cache_file, ttl)
-        self._client = httpx.Client()
-
-    def __del__(self) -> None:
-        """Close the HTTP client."""
-        self._client.close()
-
-    def _discover_grid(self, latitude: float, longitude: float) -> str:
-        """Discover Open-Meteo grid identifier from API response.
-
-        Makes minimal API request to Open-Meteo and extracts the actual
-        coordinates used by the API (they round/snap to their grid).
-
-        Args:
-            latitude: Coordinate latitude
-            longitude: Coordinate longitude
-
-        Returns:
-            Open-Meteo grid identifier (e.g., "41.88,-87.63")
-
-        Raises:
-            httpx.HTTPStatusError: If API request fails after retries
-
-        """
-        grid_id = discover_open_meteo_grid(self._client, latitude, longitude)
-        return grid_id
 
 
 class OpenWeatherMapGridCache(WeatherGridCache):
-    """OpenWeatherMap-specific grid cache with lazy discovery from API responses.
+    """OpenWeatherMap station → grid mapping cache.
 
-    Discovers OpenWeatherMap grid identifiers by making a minimal API request and
-    extracting the actual coordinates used by the API. OpenWeatherMap rounds/snaps
-    coordinates to their internal grid, so we cache these actual values.
+    OpenWeatherMap returns less precise latitude longitude coordinates than input.
+    However, I do not observe snapping to the nearest weather station.
+
+    The orchestrator is responsible for calling OpenWeatherMap and persisting the
+    canonicalized coordinates into this cache via `set_grid_identifier()`.
 
     """
-
-    def __init__(self, cache_file: Path, ttl: int) -> None:
-        """Initialize OpenWeatherMap grid cache.
-
-        Args:
-            cache_file: Path to JSON cache file (openweathermap_grid_mapping.json)
-            ttl: Time-to-live in seconds before refresh needed
-
-        """
-        super().__init__(cache_file, ttl)
-        self._client = httpx.Client()
-
-    def __del__(self) -> None:
-        """Close the HTTP client."""
-        self._client.close()
-
-    def _discover_grid(self, latitude: float, longitude: float) -> str:
-        """Discover OpenWeatherMap grid identifier from API response.
-
-        Makes minimal API request to OpenWeatherMap and extracts the actual
-        coordinates used by the API (they round/snap to their grid).
-
-        Args:
-            latitude: Coordinate latitude
-            longitude: Coordinate longitude
-
-        Returns:
-            OpenWeatherMap grid identifier (e.g., "41.88,-87.63")
-
-        Raises:
-            httpx.HTTPStatusError: If API request fails after retries
-
-        """
-        grid_id = discover_openweathermap_grid(self._client, latitude, longitude)
-        return grid_id
 
 
 def get_nws_grid_cache(config: dict) -> NWSGridCache:

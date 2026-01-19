@@ -28,7 +28,7 @@
 
 ## Issues Encountered
 
-None - implementation followed established patterns from api_track_shape.py successfully
+None - implementation followed established patterns from api_cta_track_shape.py successfully
 
 ## Next Step
 

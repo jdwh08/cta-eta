@@ -294,7 +294,7 @@ def test_daemon_lifecycle(configured_daemon: ConcreteDaemon) -> None:
 
 **Missing Tests:**
 - `api_train_position.py` - No tests for train API client
-- `api_track_shape.py` - No tests for track shape fetching
+- `api_cta_track_shape.py` - No tests for track shape fetching
 - `api_weather_openweathermap.py` - No tests for OpenWeatherMap client
 - `weather_grid_cache.py` - No tests for grid cache classes
 

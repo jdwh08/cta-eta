@@ -1,9 +1,10 @@
 # Project Organization
 .daemon_state/
 archive/
+# .planning/
 
 # Data
-# data/
+data/
 
 # Additions to standard GitHub .gitignore:
 *.bak

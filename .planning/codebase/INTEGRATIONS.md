@@ -50,7 +50,7 @@
 - Purpose: CTA track segment geometry (MultiLineString), station locations
 - Base URL: `https://data.cityofchicago.org/resource`
 - Dataset: CTA Track Segments (`xbyr-jnvx`)
-- File: `src/cta_eta/data_collection/apis/api_track_shape.py`
+- File: `src/cta_eta/data_collection/apis/api_cta_track_shape.py`
 - SDK/Client: httpx with extended timeout (60s read)
 - Auth: App Token & Secret (`CHIDATA_APP_TOK`, `CHIDATA_APP_SECRET` from environment)
 - Caching: 30-day TTL for track geometry (stable reference data)

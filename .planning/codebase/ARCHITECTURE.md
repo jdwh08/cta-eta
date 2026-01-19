@@ -18,7 +18,7 @@
 **API Client Layer:**
 - Purpose: Fetch raw data from external APIs, normalize responses
 - Location: `src/cta_eta/data_collection/apis/`
-- Contains: `api_train_position.py`, `api_weather_nws.py`, `api_weather_open_meteo.py`, `api_weather_openweathermap.py`, `api_track_shape.py`
+- Contains: `api_train_position.py`, `api_weather_nws.py`, `api_weather_open_meteo.py`, `api_weather_openweathermap.py`, `api_cta_track_shape.py`
 - Pattern: Pure functions with `@stamina.retry` decorator
 - Depends on: httpx.Client (dependency injection), config, logging
 - Used by: Caching layer, orchestration layer (future daemon pollers)

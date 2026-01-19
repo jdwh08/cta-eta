@@ -183,7 +183,7 @@ class CachedData:
 ## Next Steps for Planning
 
 1. Create `CachedData` class in `src/cta_eta/cache.py`
-2. Integrate with existing API functions (`api_stations_weather.py`, `api_track_shape.py`)
+2. Integrate with existing API functions (`api_stations_weather.py`, `api_cta_track_shape.py`)
 3. Create weather grid generation function (derive ~50 grid points from station coverage)
 4. Add cache configuration to `config.toml` (cache directory, TTL values)
 5. Update daemon framework to initialize caches on startup

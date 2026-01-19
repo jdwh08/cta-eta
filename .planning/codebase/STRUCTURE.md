@@ -19,7 +19,7 @@ cta-eta/
 │       │   ├── api_weather_nws.py           # National Weather Service API
 │       │   ├── api_weather_open_meteo.py    # Open-Meteo weather API
 │       │   ├── api_weather_openweathermap.py # OpenWeatherMap fallback
-│       │   └── api_track_shape.py           # Chicago Open Data track geometry
+│       │   └── api_cta_track_shape.py           # Chicago Open Data track geometry
 │       │
 │       ├── storage_cache/                   # Storage & caching infrastructure
 │       │   ├── __init__.py
@@ -103,7 +103,7 @@ cta-eta/
 **src/cta_eta/data_collection/apis/**
 - Purpose: API clients for external data sources
 - Contains: Stateless fetch + normalization functions
-- Key files: `api_train_position.py` (CTA), `api_weather_nws.py` (NWS), `api_weather_open_meteo.py`, `api_weather_openweathermap.py`, `api_track_shape.py` (Chicago Data)
+- Key files: `api_train_position.py` (CTA), `api_weather_nws.py` (NWS), `api_weather_open_meteo.py`, `api_weather_openweathermap.py`, `api_cta_track_shape.py` (Chicago Data)
 - Subdirectories: `archive/` (old code)
 
 **src/cta_eta/data_collection/storage_cache/**

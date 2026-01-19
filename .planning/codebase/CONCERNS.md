@@ -56,7 +56,7 @@
 - Files:
   - `src/cta_eta/data_collection/apis/api_weather_nws.py:154-163` - Dewpoint access without validation
   - `src/cta_eta/data_collection/apis/api_weather_openweathermap.py:155-157` - Weather array access
-  - `src/cta_eta/data_collection/apis/api_track_shape.py:183-186` - Geometry access
+  - `src/cta_eta/data_collection/apis/api_cta_track_shape.py:183-186` - Geometry access
 - Common failures: KeyError on malformed API responses
 - Safe modification: Add `.get()` with defaults or validate key existence first
 - Test coverage: API client tests exist for happy path, but edge cases not fully covered
@@ -129,7 +129,7 @@
 **Missing API Client Tests:**
 - What's not tested:
   - `src/cta_eta/data_collection/apis/api_train_position.py` - No tests for train position fetching
-  - `src/cta_eta/data_collection/apis/api_track_shape.py` - No tests for track shape fetching
+  - `src/cta_eta/data_collection/apis/api_cta_track_shape.py` - No tests for track shape fetching
   - `src/cta_eta/data_collection/apis/api_weather_openweathermap.py` - No tests for OpenWeatherMap client
 - Risk: Refactoring may break untested code silently
 - Priority: High (API clients are critical path)
@@ -153,7 +153,7 @@
 **Complex Logic Needs Comments:**
 - Files:
   - `src/cta_eta/data_collection/storage_cache/storage.py:317-341` - Timezone-aware date calculation (complex, needs more explanation)
-  - `src/cta_eta/data_collection/apis/api_track_shape.py:220-234` - Segment ID fingerprinting (clever but underdocumented)
+  - `src/cta_eta/data_collection/apis/api_cta_track_shape.py:220-234` - Segment ID fingerprinting (clever but underdocumented)
   - `src/cta_eta/data_collection/logging.py:125-182` - Decorator with performance timing (needs examples)
 - Impact: Future maintainers may not understand logic
 - Fix approach: Add inline comments explaining why logic exists and how it works

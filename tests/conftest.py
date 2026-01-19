@@ -8,14 +8,15 @@ import httpx
 import pytest
 
 if TYPE_CHECKING:
+    from typing import Any
     from collections.abc import Callable
 
 
 @pytest.fixture
-def httpx_json_response() -> Callable[[dict, int, str], httpx.Response]:
+def httpx_json_response() -> Callable[[Any, int, str], httpx.Response]:
     """Build an httpx.Response with realistic raise_for_status/json behavior."""
 
-    def _build(payload: dict, status_code: int, url: str) -> httpx.Response:
+    def _build(payload: Any, status_code: int, url: str) -> httpx.Response:
         request = httpx.Request("GET", url)
         return httpx.Response(status_code=status_code, json=payload, request=request)
 

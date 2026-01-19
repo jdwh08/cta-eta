@@ -34,22 +34,18 @@ def _load_config_from_path(
         config = tomllib.load(f)
 
     # Add secrets section from environment variables.
-    cta_api_key = os.getenv("CTA_API_KEY")
-    chidata_app_token = os.getenv("CHIDATA_APP_TOK")
-    chidata_app_secret = os.getenv("CHIDATA_APP_SECRET")
-
-    openweathermap_api_key = os.getenv("OPENWEATHERMAP_API_KEY")
+    # These default to empty strings so the codebase can run partial pipelines
+    # (e.g., weather-only) without requiring unrelated credentials.
+    cta_api_key = (os.getenv("CTA_API_KEY") or "").strip()
+    chidata_app_token = (os.getenv("CHIDATA_APP_TOK") or "").strip()
+    chidata_app_secret = (os.getenv("CHIDATA_APP_SECRET") or "").strip()
+    openweathermap_api_key = (os.getenv("OPENWEATHERMAP_API_KEY") or "").strip()
     config["secrets"] = {
         "cta_api_key": cta_api_key,
         "chidata_app_token": chidata_app_token,
         "chidata_app_secret": chidata_app_secret,
         "openweathermap_api_key": openweathermap_api_key,
     }
-
-    missing_vars = [k for k, v in config["secrets"].items() if v is None]
-    if missing_vars:
-        msg = "API environment variables not set: " + ", ".join(missing_vars)
-        raise ValueError(msg)
 
     return config
 

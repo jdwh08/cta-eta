@@ -26,7 +26,7 @@ Output: Weather grid generator, cached API wrappers for stations/track geometry,
 @.planning/phases/03-static-data-management/03-01-SUMMARY.md
 @src/cta_eta/cache.py
 @src/cta_eta/api_stations_weather.py
-@src/cta_eta/api_track_shape.py
+@src/cta_eta/api_cta_track_shape.py
 @src/cta_eta/config.py
 
 **Tech stack available:** CachedData[T] generic class from Plan 1, existing API functions (get_stations, get_weather)
