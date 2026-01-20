@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -15,7 +15,6 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Generator
     from typing import Any
 
-    import httpx
     from pytest_mock import MockerFixture
 
 
@@ -96,7 +95,9 @@ class TestWeatherDaemonInit:
     @pytest.mark.usefixtures("cleanup_state_files")
     def test_init_loads_dependencies_and_sets_interval(
         self,
-        weather_daemon: tuple[WeatherDaemon, MagicMock, MagicMock, MagicMock, MagicMock],
+        weather_daemon: tuple[
+            WeatherDaemon, MagicMock, MagicMock, MagicMock, MagicMock
+        ],
     ) -> None:
         """__init__ loads caches/storage and converts minutes to seconds."""
         # Arrange & Act
@@ -109,19 +110,20 @@ class TestWeatherDaemonInit:
         assert daemon.storage is storage
         assert daemon.weather_interval == 15 * 60
         assert daemon.last_collection_time == 0.0
-        assert daemon.unique_grid_points_count == 0
         assert daemon.records_stored_last_cycle == 0
 
 
 class TestWeatherDaemonGetUniqueGridPoints:
-    """Tests for WeatherDaemon._get_unique_grid_points()."""
+    """Tests for WeatherDaemon._get_station_grid_mappings()."""
 
     @pytest.mark.usefixtures("cleanup_state_files")
-    def test_get_unique_grid_points_deduplicates_cache_hits(
+    def test_get_station_grid_mappings_returns_station_scoped_mappings_on_cache_hits(
         self,
-        weather_daemon: tuple[WeatherDaemon, MagicMock, MagicMock, MagicMock, MagicMock],
+        weather_daemon: tuple[
+            WeatherDaemon, MagicMock, MagicMock, MagicMock, MagicMock
+        ],
     ) -> None:
-        """Deduplicates stations when both grid caches hit."""
+        """Returns one mapping per station even when grids are shared."""
         # Arrange
         daemon, stations_cache, nws_cache, om_cache, _ = weather_daemon
         stations_cache.get.return_value = [
@@ -131,20 +133,26 @@ class TestWeatherDaemonGetUniqueGridPoints:
         nws_cache.get_grid_identifier.side_effect = ["LOT/1,2", "LOT/1,2"]
         om_cache.get_grid_identifier.side_effect = ["41.0,-87.0", "41.0,-87.0"]
 
-        client = MagicMock()
-
         # Act
-        unique = asyncio.run(daemon._get_unique_grid_points(client))
+        mappings = asyncio.run(daemon._get_station_grid_mappings())
 
         # Assert
-        assert unique == [("LOT/1,2", "41.0,-87.0", 41.0, -87.0)]
-        nws_cache.resolve_grid_identifier.assert_not_called()
+        assert len(mappings) == 2
+        assert {m.station_id for m in mappings} == {"s1", "s2"}
+        assert {m.nws_grid_id for m in mappings} == {"LOT/1,2"}
+        assert {m.open_meteo_grid_id for m in mappings} == {"41.0,-87.0"}
+        assert mappings[0].station_latitude == 41.0
+        assert mappings[0].station_longitude == -87.0
+        assert mappings[1].station_latitude == 41.0
+        assert mappings[1].station_longitude == -87.0
         om_cache.set_grid_identifier.assert_not_called()
 
     @pytest.mark.usefixtures("cleanup_state_files")
-    def test_get_unique_grid_points_discovers_and_caches_misses(
+    def test_get_station_grid_mappings_discovers_and_caches_misses(
         self,
-        weather_daemon: tuple[WeatherDaemon, MagicMock, MagicMock, MagicMock, MagicMock],
+        weather_daemon: tuple[
+            WeatherDaemon, MagicMock, MagicMock, MagicMock, MagicMock
+        ],
         mocker: MockerFixture,
     ) -> None:
         """On cache miss, discovers grids and updates caches."""
@@ -154,29 +162,57 @@ class TestWeatherDaemonGetUniqueGridPoints:
             {"id": "s1", "latitude": "41.1", "longitude": "-87.1"}
         ]
         nws_cache.get_grid_identifier.return_value = None
-        nws_cache.resolve_grid_identifier.return_value = "LOT/9,9"
         om_cache.get_grid_identifier.return_value = None
 
-        discover = mocker.patch(
-            "cta_eta.data_collection.orchestration.weather_daemon.discover_open_meteo_grid",
+        mocker.patch.object(
+            daemon,
+            "_discover_nws_grid",
+            return_value="LOT/9,9",
+            autospec=True,
+        )
+        mocker.patch.object(
+            daemon,
+            "_discover_open_meteo_grid",
             return_value="41.10,-87.10",
             autospec=True,
         )
-        client = MagicMock()
+
+        async def run_sequentially(
+            func: Callable[[Any], Awaitable[Any]],
+            items: list[Any],
+            *,
+            max_per_second: float,
+            max_at_once: int,
+        ) -> list[Any]:
+            _ = (max_per_second, max_at_once)
+            return [await func(item) for item in items]
+
+        mocker.patch(
+            "cta_eta.data_collection.orchestration.weather_daemon.aiometer.run_on_each",
+            side_effect=run_sequentially,
+            autospec=True,
+        )
 
         # Act
-        unique = asyncio.run(daemon._get_unique_grid_points(client))
+        mappings = asyncio.run(daemon._get_station_grid_mappings())
 
         # Assert
-        assert unique == [("LOT/9,9", "41.10,-87.10", 41.1, -87.1)]
-        nws_cache.resolve_grid_identifier.assert_called_once_with("s1", 41.1, -87.1)
-        discover.assert_called_once_with(client, 41.1, -87.1)
+        assert len(mappings) == 1
+        assert mappings[0].station_id == "s1"
+        assert mappings[0].station_latitude == 41.1
+        assert mappings[0].station_longitude == -87.1
+        assert mappings[0].nws_grid_id == "LOT/9,9"
+        assert mappings[0].open_meteo_grid_id == "41.10,-87.10"
+        nws_cache.set_grid_identifier.assert_called_once_with("s1", "LOT/9,9")
         om_cache.set_grid_identifier.assert_called_once_with("s1", "41.10,-87.10")
 
     @pytest.mark.usefixtures("cleanup_state_files")
-    def test_get_unique_grid_points_skips_station_on_nws_discovery_failure(
+    def test_get_station_grid_mappings_skips_station_on_nws_discovery_failure(
         self,
-        weather_daemon: tuple[WeatherDaemon, MagicMock, MagicMock, MagicMock, MagicMock],
+        weather_daemon: tuple[
+            WeatherDaemon, MagicMock, MagicMock, MagicMock, MagicMock
+        ],
+        mocker: MockerFixture,
     ) -> None:
         """If NWS discovery fails for a station, that station is skipped."""
         # Arrange
@@ -185,22 +221,27 @@ class TestWeatherDaemonGetUniqueGridPoints:
             {"id": "s1", "latitude": "41.0", "longitude": "-87.0"}
         ]
         nws_cache.get_grid_identifier.return_value = None
-        nws_cache.resolve_grid_identifier.side_effect = RuntimeError("boom")
         om_cache.get_grid_identifier.return_value = "41.0,-87.0"
-
-        client = MagicMock()
+        mocker.patch.object(
+            daemon,
+            "_discover_nws_grid",
+            side_effect=RuntimeError("boom"),
+            autospec=True,
+        )
 
         # Act
-        unique = asyncio.run(daemon._get_unique_grid_points(client))
+        mappings = asyncio.run(daemon._get_station_grid_mappings())
 
         # Assert
-        assert unique == []
+        assert mappings == []
         daemon.logger.exception.assert_called()
 
     @pytest.mark.usefixtures("cleanup_state_files")
-    def test_get_unique_grid_points_skips_station_on_open_meteo_discovery_failure(
+    def test_get_station_grid_mappings_skips_station_on_open_meteo_discovery_failure(
         self,
-        weather_daemon: tuple[WeatherDaemon, MagicMock, MagicMock, MagicMock, MagicMock],
+        weather_daemon: tuple[
+            WeatherDaemon, MagicMock, MagicMock, MagicMock, MagicMock
+        ],
         mocker: MockerFixture,
     ) -> None:
         """If Open-Meteo discovery fails for a station, that station is skipped."""
@@ -211,130 +252,35 @@ class TestWeatherDaemonGetUniqueGridPoints:
         ]
         nws_cache.get_grid_identifier.return_value = "LOT/1,2"
         om_cache.get_grid_identifier.return_value = None
-        mocker.patch(
-            "cta_eta.data_collection.orchestration.weather_daemon.discover_open_meteo_grid",
+        mocker.patch.object(
+            daemon,
+            "_discover_open_meteo_grid",
             side_effect=RuntimeError("nope"),
             autospec=True,
         )
-        client = MagicMock()
+
+        async def run_sequentially(
+            func: Callable[[Any], Awaitable[Any]],
+            items: list[Any],
+            *,
+            max_per_second: float,
+            max_at_once: int,
+        ) -> list[Any]:
+            _ = (max_per_second, max_at_once)
+            return [await func(item) for item in items]
+
+        mocker.patch(
+            "cta_eta.data_collection.orchestration.weather_daemon.aiometer.run_on_each",
+            side_effect=run_sequentially,
+            autospec=True,
+        )
 
         # Act
-        unique = asyncio.run(daemon._get_unique_grid_points(client))
+        mappings = asyncio.run(daemon._get_station_grid_mappings())
 
         # Assert
-        assert unique == []
+        assert mappings == []
         daemon.logger.exception.assert_called()
-
-
-class TestWeatherDaemonFetchWeatherForGridPoint:
-    """Tests for WeatherDaemon._fetch_weather_for_grid_point()."""
-
-    @pytest.mark.usefixtures("cleanup_state_files")
-    def test_fetch_weather_for_grid_point_returns_both_sources(
-        self,
-        weather_daemon: tuple[WeatherDaemon, MagicMock, MagicMock, MagicMock, MagicMock],
-        mocker: MockerFixture,
-    ) -> None:
-        """Returns dicts for both providers when both succeed."""
-        # Arrange
-        daemon, *_ = weather_daemon
-        mocker.patch(
-            "cta_eta.data_collection.orchestration.weather_daemon.time.time",
-            return_value=123.0,
-            autospec=True,
-        )
-
-        async def immediate_to_thread(
-            func: Callable[..., Any], /, *args: Any, **kwargs: Any
-        ) -> Any:
-            _ = kwargs
-            return func(*args)
-
-        mocker.patch(
-            "cta_eta.data_collection.orchestration.weather_daemon.asyncio.to_thread",
-            side_effect=immediate_to_thread,
-            autospec=True,
-        )
-
-        mocker.patch(
-            "cta_eta.data_collection.orchestration.weather_daemon.get_nws_hourly_forecast",
-            return_value={"nws": True},
-            autospec=True,
-        )
-        mocker.patch(
-            "cta_eta.data_collection.orchestration.weather_daemon.get_open_meteo_current",
-            return_value={"om": True},
-            autospec=True,
-        )
-        client = MagicMock()
-
-        # Act
-        nws, om, lat, lon, ts = asyncio.run(
-            daemon._fetch_weather_for_grid_point(client, "LOT/1,2", "41,-87", 41.0, -87.0)
-        )
-
-        # Assert
-        assert nws == {"nws": True}
-        assert om == {"om": True}
-        assert lat == 41.0
-        assert lon == -87.0
-        assert ts == 123.0
-
-    @pytest.mark.usefixtures("cleanup_state_files")
-    def test_fetch_weather_for_grid_point_logs_partial_failures(
-        self,
-        weather_daemon: tuple[WeatherDaemon, MagicMock, MagicMock, MagicMock, MagicMock],
-        mocker: MockerFixture,
-    ) -> None:
-        """Logs warnings and returns None for providers that raise."""
-        # Arrange
-        daemon, *_ = weather_daemon
-        mocker.patch(
-            "cta_eta.data_collection.orchestration.weather_daemon.time.time",
-            return_value=999.0,
-            autospec=True,
-        )
-
-        def nws_fail(_: httpx.AsyncClient, __: str) -> dict[str, Any]:  # noqa: ARG001
-            raise httpx.HTTPError("nws down")
-
-        def om_ok(_: httpx.AsyncClient, __: str) -> dict[str, Any]:  # noqa: ARG001
-            return {"om": "ok"}
-
-        mocker.patch(
-            "cta_eta.data_collection.orchestration.weather_daemon.get_nws_hourly_forecast",
-            side_effect=nws_fail,
-            autospec=True,
-        )
-        mocker.patch(
-            "cta_eta.data_collection.orchestration.weather_daemon.get_open_meteo_current",
-            side_effect=om_ok,
-            autospec=True,
-        )
-
-        async def immediate_to_thread(
-            func: Callable[..., Any], /, *args: Any, **kwargs: Any
-        ) -> Any:
-            _ = kwargs
-            return func(*args)
-
-        mocker.patch(
-            "cta_eta.data_collection.orchestration.weather_daemon.asyncio.to_thread",
-            side_effect=immediate_to_thread,
-            autospec=True,
-        )
-        client = MagicMock()
-
-        # Act
-        nws, om, _, _, ts = asyncio.run(
-            daemon._fetch_weather_for_grid_point(client, "LOT/1,2", "41,-87", 1.0, 2.0)
-        )
-
-        # Assert
-        assert nws is None
-        assert om == {"om": "ok"}
-        assert ts == 999.0
-        daemon.logger.warning.assert_called()
 
 
 class TestWeatherDaemonCollectWeatherCycle:
@@ -343,41 +289,46 @@ class TestWeatherDaemonCollectWeatherCycle:
     @pytest.mark.usefixtures("cleanup_state_files")
     def test_collect_weather_cycle_runs_fallback_and_stores_records(
         self,
-        weather_daemon: tuple[WeatherDaemon, MagicMock, MagicMock, MagicMock, MagicMock],
+        weather_daemon: tuple[
+            WeatherDaemon, MagicMock, MagicMock, MagicMock, MagicMock
+        ],
         mocker: MockerFixture,
     ) -> None:
         """When a source fails, uses OpenWeatherMap fallback and stores merged output."""
         # Arrange
         daemon, *_caches, storage = weather_daemon
-        client = MagicMock()
 
         mocker.patch.object(
             daemon,
-            "_get_unique_grid_points",
-            return_value=[("LOT/1,2", "41.0,-87.0", 41.0, -87.0)],
+            "_get_station_grid_mappings",
+            return_value=[
+                mocker.Mock(
+                    station_id="s1",
+                    station_latitude=41.0,
+                    station_longitude=-87.0,
+                    nws_grid_id="LOT/1,2",
+                    open_meteo_grid_id="41.0,-87.0",
+                )
+            ],
             autospec=True,
         )
 
+        # Simulate NWS failure -> triggers OpenWeatherMap fallback
         mocker.patch.object(
             daemon,
-            "_fetch_weather_for_grid_point",
-            return_value=(None, {"om": True}, 41.0, -87.0, 111.0),
+            "_get_nws_hourly_forecast",
+            side_effect=RuntimeError("nws down"),
             autospec=True,
         )
-
-        async def immediate_to_thread(
-            func: Callable[..., Any], /, *args: Any, **kwargs: Any
-        ) -> Any:
-            _ = kwargs
-            return func(*args)
-
-        mocker.patch(
-            "cta_eta.data_collection.orchestration.weather_daemon.asyncio.to_thread",
-            side_effect=immediate_to_thread,
+        mocker.patch.object(
+            daemon,
+            "_get_open_meteo_current",
+            return_value={"om": True},
             autospec=True,
         )
-        mocker.patch(
-            "cta_eta.data_collection.orchestration.weather_daemon.get_openweathermap_current",
+        mocker.patch.object(
+            daemon,
+            "_get_openweathermap_current",
             return_value={"owm": True},
             autospec=True,
         )
@@ -406,12 +357,12 @@ class TestWeatherDaemonCollectWeatherCycle:
 
         mocker.patch(
             "cta_eta.data_collection.orchestration.weather_daemon.time.time",
-            side_effect=[1000.0, 1001.0, 1002.0],
+            side_effect=[1000.0, 1000.5, 1002.0, 1003.0],
             autospec=True,
         )
 
         # Act
-        asyncio.run(daemon._collect_weather_cycle(client))
+        asyncio.run(daemon._collect_weather_cycle())
 
         # Assert
         storage.append_batch.assert_called_once()
@@ -421,27 +372,38 @@ class TestWeatherDaemonCollectWeatherCycle:
         stored_records = storage.append_batch.call_args[0][0]
         assert len(stored_records) == 1
         assert stored_records[0]["temp_f"] == 10.0
+        assert stored_records[0]["station_id"] == "s1"
+        assert stored_records[0]["nws_grid_id"] == "LOT/1,2"
+        assert stored_records[0]["open_meteo_grid_id"] == "41.0,-87.0"
         assert stored_records[0]["latitude"] == 41.0
         assert stored_records[0]["longitude"] == -87.0
-        assert stored_records[0]["collection_timestamp"] == 111.0
+        assert stored_records[0]["collection_timestamp"] == 1000.5
         assert daemon.records_stored_last_cycle == 1
-        assert daemon.unique_grid_points_count == 1
 
     @pytest.mark.usefixtures("cleanup_state_files")
     def test_collect_weather_cycle_returns_early_when_aiometer_returns_none(
         self,
-        weather_daemon: tuple[WeatherDaemon, MagicMock, MagicMock, MagicMock, MagicMock],
+        weather_daemon: tuple[
+            WeatherDaemon, MagicMock, MagicMock, MagicMock, MagicMock
+        ],
         mocker: MockerFixture,
     ) -> None:
         """If aiometer returns None, logs an error and does not write."""
         # Arrange
         daemon, *_caches, storage = weather_daemon
-        client = MagicMock()
 
         mocker.patch.object(
             daemon,
-            "_get_unique_grid_points",
-            return_value=[("LOT/1,2", "41.0,-87.0", 41.0, -87.0)],
+            "_get_station_grid_mappings",
+            return_value=[
+                mocker.Mock(
+                    station_id="s1",
+                    station_latitude=41.0,
+                    station_longitude=-87.0,
+                    nws_grid_id="LOT/1,2",
+                    open_meteo_grid_id="41.0,-87.0",
+                )
+            ],
             autospec=True,
         )
         mocker.patch(
@@ -451,33 +413,38 @@ class TestWeatherDaemonCollectWeatherCycle:
         )
 
         # Act
-        asyncio.run(daemon._collect_weather_cycle(client))
+        asyncio.run(daemon._collect_weather_cycle())
 
         # Assert
-        daemon.logger.error.assert_called_once_with("No results from weather collection cycle")
+        daemon.logger.error.assert_called_once_with(
+            "No results from weather collection cycle"
+        )
         storage.append_batch.assert_not_called()
 
     @pytest.mark.usefixtures("cleanup_state_files")
     def test_collect_weather_cycle_warns_when_no_merged_records(
         self,
-        weather_daemon: tuple[WeatherDaemon, MagicMock, MagicMock, MagicMock, MagicMock],
+        weather_daemon: tuple[
+            WeatherDaemon, MagicMock, MagicMock, MagicMock, MagicMock
+        ],
         mocker: MockerFixture,
     ) -> None:
         """If merging produces no records, it warns and does not write."""
         # Arrange
         daemon, *_caches, storage = weather_daemon
-        client = MagicMock()
 
         mocker.patch.object(
             daemon,
-            "_get_unique_grid_points",
-            return_value=[("LOT/1,2", "41.0,-87.0", 41.0, -87.0)],
-            autospec=True,
-        )
-        mocker.patch.object(
-            daemon,
-            "_fetch_weather_for_grid_point",
-            return_value=({"nws": True}, {"om": True}, 41.0, -87.0, 111.0),
+            "_get_station_grid_mappings",
+            return_value=[
+                mocker.Mock(
+                    station_id="s1",
+                    station_latitude=41.0,
+                    station_longitude=-87.0,
+                    nws_grid_id="LOT/1,2",
+                    open_meteo_grid_id="41.0,-87.0",
+                )
+            ],
             autospec=True,
         )
 
@@ -501,9 +468,21 @@ class TestWeatherDaemonCollectWeatherCycle:
             return_value=None,
             autospec=True,
         )
+        mocker.patch.object(
+            daemon,
+            "_get_nws_hourly_forecast",
+            return_value={"nws": True},
+            autospec=True,
+        )
+        mocker.patch.object(
+            daemon,
+            "_get_open_meteo_current",
+            return_value={"om": True},
+            autospec=True,
+        )
 
         # Act
-        asyncio.run(daemon._collect_weather_cycle(client))
+        asyncio.run(daemon._collect_weather_cycle())
 
         # Assert
         daemon.logger.warning.assert_any_call("No weather records to store this cycle")
@@ -513,24 +492,27 @@ class TestWeatherDaemonCollectWeatherCycle:
     @pytest.mark.usefixtures("cleanup_state_files")
     def test_collect_weather_cycle_logs_and_recovers_from_storage_failure(
         self,
-        weather_daemon: tuple[WeatherDaemon, MagicMock, MagicMock, MagicMock, MagicMock],
+        weather_daemon: tuple[
+            WeatherDaemon, MagicMock, MagicMock, MagicMock, MagicMock
+        ],
         mocker: MockerFixture,
     ) -> None:
         """Storage failures are logged and do not raise."""
         # Arrange
         daemon, *_caches, storage = weather_daemon
-        client = MagicMock()
 
         mocker.patch.object(
             daemon,
-            "_get_unique_grid_points",
-            return_value=[("LOT/1,2", "41.0,-87.0", 41.0, -87.0)],
-            autospec=True,
-        )
-        mocker.patch.object(
-            daemon,
-            "_fetch_weather_for_grid_point",
-            return_value=({"nws": True}, {"om": True}, 41.0, -87.0, 111.0),
+            "_get_station_grid_mappings",
+            return_value=[
+                mocker.Mock(
+                    station_id="s1",
+                    station_latitude=41.0,
+                    station_longitude=-87.0,
+                    nws_grid_id="LOT/1,2",
+                    open_meteo_grid_id="41.0,-87.0",
+                )
+            ],
             autospec=True,
         )
 
@@ -554,10 +536,22 @@ class TestWeatherDaemonCollectWeatherCycle:
             return_value={"temp_f": 10.0},
             autospec=True,
         )
+        mocker.patch.object(
+            daemon,
+            "_get_nws_hourly_forecast",
+            return_value={"nws": True},
+            autospec=True,
+        )
+        mocker.patch.object(
+            daemon,
+            "_get_open_meteo_current",
+            return_value={"om": True},
+            autospec=True,
+        )
         storage.append_batch.side_effect = RuntimeError("disk full")
 
         # Act
-        asyncio.run(daemon._collect_weather_cycle(client))
+        asyncio.run(daemon._collect_weather_cycle())
 
         # Assert
         daemon.logger.exception.assert_called()
@@ -570,7 +564,9 @@ class TestWeatherDaemonRunLoop:
     @pytest.mark.usefixtures("cleanup_state_files")
     def test_run_logs_and_continues_on_cycle_exception(
         self,
-        weather_daemon: tuple[WeatherDaemon, MagicMock, MagicMock, MagicMock, MagicMock],
+        weather_daemon: tuple[
+            WeatherDaemon, MagicMock, MagicMock, MagicMock, MagicMock
+        ],
         mocker: MockerFixture,
     ) -> None:
         """run() catches cycle exceptions, logs, and still sleeps once."""
@@ -588,16 +584,8 @@ class TestWeatherDaemonRunLoop:
         async def stop_after_sleep(_: float) -> None:
             daemon.running = False
 
-        sleep = mocker.patch.object(daemon, "sleep", side_effect=stop_after_sleep, autospec=True)
-
-        client = MagicMock()
-        async_cm = MagicMock()
-        async_cm.__aenter__ = AsyncMock(return_value=client)
-        async_cm.__aexit__ = AsyncMock(return_value=None)
-        mocker.patch(
-            "cta_eta.data_collection.orchestration.weather_daemon.httpx.AsyncClient",
-            return_value=async_cm,
-            autospec=True,
+        sleep = mocker.patch.object(
+            daemon, "sleep", side_effect=stop_after_sleep, autospec=True
         )
 
         # Act
@@ -607,4 +595,3 @@ class TestWeatherDaemonRunLoop:
         assert collect.call_count == 1
         assert sleep.call_count == 1
         daemon.logger.exception.assert_any_call("Weather collection cycle failed")
-
