@@ -4,23 +4,19 @@ This module provides an abstract base class for building long-running polling
 daemons with lifecycle management, signal handling, and state persistence.
 
 Usage example:
-    class TrainPoller(BaseDaemon):
-        def run(self) -> None:
+    class TrainPoller(AsyncBaseDaemon):
+        async def run(self) -> None:
             while self.running:
                 # Poll train API
-                time.sleep(15)
+                await self.sleep(15)
 
-        def _get_state(self) -> dict[str, str | int | float]:
+        async def _get_state(self) -> dict[str, str | int | float]:
             return {"last_poll_timestamp": time.time()}
-
-    config = load_config()
-    logger = get_logger("train_poller")
-    daemon = TrainPoller(config, logger)
-    daemon.start()  # Runs until SIGTERM/SIGINT received
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import signal
 from abc import ABC, abstractmethod
@@ -32,26 +28,30 @@ if TYPE_CHECKING:
     from types import FrameType
 
 
-class BaseDaemon(ABC):
-    """Abstract base class for long-running daemon processes.
+class DaemonNotStartedError(RuntimeError):
+    """Raised when an async daemon API is used before `start()`."""
 
-    Provides lifecycle management (start/run/stop), signal handling for
-    graceful shutdown, and state persistence across restarts.
 
-    Subclasses must implement:
-        - run(): Main daemon logic executed in start()
-        - _get_state(): Return current daemon state for persistence
+class AsyncBaseDaemon(ABC):
+    """Abstract base class for long-running async daemons.
 
-    Attributes:
-        config: Configuration dictionary from config.toml
-        logger: Structured logger instance
-        running: Boolean flag controlling main loop execution
+    This mirrors `BaseDaemon`'s lifecycle pattern (start/run/stop, signal handling,
+    and state persistence) but is designed for asyncio-native implementations.
 
+    Key behaviors:
+    - `start()` is synchronous and blocks the calling thread until shutdown.
+    - `run()` is async and should cooperatively exit when `self.running` becomes False.
+    - `sleep()` is interruptible: it wakes early on shutdown, enabling fast SIGTERM.
+    - Signal handlers are registered on the running event loop when possible.
     """
 
     config: dict[str, dict[str, str | int | float | bool]]
     logger: logging.Logger
     running: bool
+
+    _loop: asyncio.AbstractEventLoop | None
+    _shutdown: asyncio.Event | None
+    _shutdown_requested: bool
 
     def __init__(
         self,
@@ -61,44 +61,32 @@ class BaseDaemon(ABC):
         """Initialize daemon with configuration and logger.
 
         Loads persisted state from previous run if available.
-
-        Args:
-            config: Configuration dictionary with daemon settings
-            logger: Logger instance for structured logging
-
         """
         self.config = config
         self.logger = logger
         self.running = False
 
-        # Load persisted state from previous run
+        self._loop = None
+        self._shutdown = None
+        self._shutdown_requested = False
+
         self._load_state()
 
     def start(self) -> None:
-        """Start the daemon and run main loop.
+        """Start the daemon and run the async main loop.
 
-        This is the main entry point for the daemon. It:
-        1. Logs startup event
-        2. Registers signal handlers for graceful shutdown
-        3. Sets running flag to True
-        4. Calls run() method (implemented by subclass)
-        5. Catches and logs exceptions
-
-        The daemon runs until stop() is called (typically via signal handler).
+        This is the synchronous entry point. It:
+        - Logs startup
+        - Runs an asyncio event loop until shutdown
+        - Logs unexpected exceptions and re-raises
         """
         self.logger.info(
             f"Starting {self.__class__.__name__} daemon",
             extra={"extra_fields": {"daemon_class": self.__class__.__name__}},
         )
 
-        # Register signal handlers for graceful shutdown
-        signal.signal(signal.SIGTERM, self._signal_handler)
-        signal.signal(signal.SIGINT, self._signal_handler)
-
-        self.running = True
-
         try:
-            self.run()
+            asyncio.run(self._run_main())
         except Exception as e:
             self.logger.exception(
                 "Daemon error",
@@ -111,25 +99,67 @@ class BaseDaemon(ABC):
             )
             raise
 
-    @abstractmethod
-    def run(self) -> None:
-        """Run the main daemon logic. Implement in subclass.
+    async def _run_main(self) -> None:
+        self._loop = asyncio.get_running_loop()
+        self._shutdown = asyncio.Event()
 
-        This method should contain the main loop of the daemon.
-        Typically: while self.running: <do work>
+        if self._shutdown_requested:
+            self._shutdown.set()
 
-        The running flag will be set to False when stop() is called,
-        allowing the loop to exit gracefully.
+        self._register_signal_handlers()
+        self.running = True
+
+        try:
+            await self.run()
+        finally:
+            # Ensure `running` is consistent even if `run()` exits unexpectedly.
+            self.running = False
+
+    def _register_signal_handlers(self) -> None:
+        """Register SIGTERM/SIGINT handlers to stop gracefully.
+
+        On Unix event loops, `loop.add_signal_handler` provides reliable delivery into
+        the event loop. If unsupported, we fall back to `signal.signal`.
         """
+        loop = self._loop
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            if loop is None:
+                pass
+            try:
+                loop.add_signal_handler(signum, self._signal_handler, signum, None)
+                continue
+            except NotImplementedError:
+                pass
+            signal.signal(signum, self._signal_handler)  # type: ignore[arg-type]
+
+    @abstractmethod
+    async def run(self) -> None:
+        """Run the main async daemon logic.
+
+        Implementations should typically loop while `self.running` and periodically
+        `await self.sleep(...)` instead of `asyncio.sleep(...)` so the daemon responds
+        promptly to shutdown signals.
+        """
+
+    async def sleep(self, seconds: float) -> None:
+        """Sleep for up to `seconds`, waking early if shutdown is requested.
+
+        This is the preferred sleep primitive for daemon loops because it makes
+        shutdown fast even for long polling intervals.
+        """
+        if seconds <= 0:
+            return
+
+        shutdown = self._shutdown
+        if shutdown is None:
+            raise DaemonNotStartedError
+
+        try:
+            await asyncio.wait_for(shutdown.wait(), timeout=seconds)
+        except TimeoutError:
+            return
 
     def _signal_handler(self, signum: int, frame: FrameType | None) -> None:  # noqa: ARG002
-        """Handle shutdown signals (SIGTERM, SIGINT).
-
-        Args:
-            signum: Signal number received
-            frame: Current stack frame (unused)
-
-        """
         signal_name = signal.Signals(signum).name
         self.logger.info(
             f"Received {signal_name}, initiating graceful shutdown",
@@ -140,27 +170,32 @@ class BaseDaemon(ABC):
     def stop(self) -> None:
         """Stop the daemon gracefully.
 
-        This method is called during shutdown (typically by signal handler).
-        It sets the running flag to False, calls _save_state() hook, and
-        logs the shutdown event. Safe to call multiple times (idempotent).
+        This is safe to call multiple times. It:
+        - Logs shutdown once
+        - Marks the daemon as not running
+        - Triggers an interruptible shutdown event (if started)
+        - Persists state
         """
         if not self.running:
-            return  # Already stopped
+            self._shutdown_requested = True
+            return
 
         self.logger.info(
             f"Stopping {self.__class__.__name__} daemon",
             extra={"extra_fields": {"daemon_class": self.__class__.__name__}},
         )
+
         self.running = False
+        self._shutdown_requested = True
+
+        shutdown = self._shutdown
+        loop = self._loop
+        if shutdown is not None and loop is not None and loop.is_running():
+            loop.call_soon_threadsafe(shutdown.set)
+
         self._save_state()
 
     def _save_state(self) -> None:
-        """Save current daemon state to JSON file.
-
-        Calls _get_state() to retrieve state from subclass, then writes
-        to .daemon_state/{ClassName}.json. Creates directory if needed.
-        Logs errors but doesn't crash on I/O failures.
-        """
         try:
             state = self._get_state()
             state_dir = Path(".daemon_state")
@@ -186,15 +221,6 @@ class BaseDaemon(ABC):
             )
 
     def _load_state(self) -> dict[str, str | int | float] | None:
-        """Load persisted daemon state from JSON file.
-
-        Reads state from .daemon_state/{ClassName}.json if it exists.
-        Returns None if file doesn't exist or is corrupt.
-
-        Returns:
-            Dictionary with persisted state, or None if unavailable
-
-        """
         try:
             state_file = Path(".daemon_state") / f"{self.__class__.__name__}.json"
             if not state_file.exists():
@@ -232,18 +258,4 @@ class BaseDaemon(ABC):
 
     @abstractmethod
     def _get_state(self) -> dict[str, str | int | float]:
-        """Get current daemon state for persistence - implement in subclass.
-
-        Returns:
-            Dictionary with daemon state to persist across restarts.
-            Keys should be strings, values should be JSON-serializable
-            primitives (str, int, float).
-
-        Example:
-            return {
-                "last_poll_timestamp": time.time(),
-                "next_weather_check": next_check_time,
-                "poll_count": 12345
-            }
-
-        """
+        """Return current daemon state for persistence."""

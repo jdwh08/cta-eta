@@ -8,8 +8,8 @@ import httpx
 import pytest
 
 if TYPE_CHECKING:
-    from typing import Any
     from collections.abc import Callable
+    from typing import Any
 
 
 @pytest.fixture

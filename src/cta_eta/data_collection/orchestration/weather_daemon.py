@@ -15,7 +15,7 @@ The daemon:
 import asyncio
 import logging
 import time
-from typing import Any
+from typing import Any, override
 
 import aiometer
 import httpx
@@ -31,7 +31,7 @@ from cta_eta.data_collection.apis.api_weather_openweathermap import (
     get_openweathermap_current,
 )
 from cta_eta.data_collection.merging.weather_merger import merge_weather_sources
-from cta_eta.data_collection.orchestration.daemon import BaseDaemon
+from cta_eta.data_collection.orchestration.daemon_async import AsyncBaseDaemon
 from cta_eta.data_collection.storage_cache.cache import CachedData
 from cta_eta.data_collection.storage_cache.storage import (
     ParquetWriter,
@@ -45,10 +45,10 @@ from cta_eta.data_collection.storage_cache.weather_grid_cache import (
 )
 
 
-class WeatherDaemon(BaseDaemon):
+class WeatherDaemon(AsyncBaseDaemon):
     """Continuous weather collection daemon with parallel multi-source polling.
 
-    Inherits lifecycle management from BaseDaemon and implements weather-specific
+    Inherits lifecycle management from AsyncBaseDaemon and implements weather-specific
     collection logic. The daemon:
     1. Loads station and grid caches during initialization
     2. Runs async polling loop collecting weather every 15 minutes
@@ -116,12 +116,13 @@ class WeatherDaemon(BaseDaemon):
         self.unique_grid_points_count = 0
         self.records_stored_last_cycle = 0
 
+    @override
     async def run(self) -> None:
         """Run the main weather collection loop.
 
         Creates httpx.AsyncClient for connection pooling and runs continuous
-        collection cycles until stopped. Uses asyncio.sleep() to avoid blocking
-        the event loop.
+        collection cycles until stopped. Uses interruptible daemon sleep so SIGTERM
+        wakes the loop promptly, even for long polling intervals.
 
         The daemon:
         1. Creates async HTTP client with proper timeouts
@@ -141,9 +142,7 @@ class WeatherDaemon(BaseDaemon):
                 except Exception:
                     self.logger.exception("Weather collection cycle failed")
 
-                # CRITICAL: Use await asyncio.sleep() NOT time.sleep()
-                # time.sleep() blocks entire event loop, daemon becomes unresponsive
-                await asyncio.sleep(self.weather_interval)
+                await self.sleep(self.weather_interval)
 
     async def _collect_weather_cycle(self, client: httpx.AsyncClient) -> None:
         """Execute one weather collection cycle for all unique grid points.
@@ -161,7 +160,7 @@ class WeatherDaemon(BaseDaemon):
 
         # Step 2: Define fetch function with fallback logic
         async def _fetch_with_fallback(
-            grid_point: tuple[str, str, float, float]
+            grid_point: tuple[str, str, float, float],
         ) -> tuple[
             dict[str, Any] | None,
             dict[str, Any] | None,
@@ -172,10 +171,14 @@ class WeatherDaemon(BaseDaemon):
         ]:
             """Fetch weather with OpenWeatherMap fallback on source failures."""
             nws_grid, om_grid, lat, lon = grid_point
-            nws_data, om_data, lat, lon, timestamp = (
-                await self._fetch_weather_for_grid_point(
-                    client, nws_grid, om_grid, lat, lon
-                )
+            (
+                nws_data,
+                om_data,
+                lat,
+                lon,
+                timestamp,
+            ) = await self._fetch_weather_for_grid_point(
+                client, nws_grid, om_grid, lat, lon
             )
 
             # Fallback to OpenWeatherMap if either source failed
@@ -209,6 +212,9 @@ class WeatherDaemon(BaseDaemon):
             max_per_second=0.1,  # 6 per minute for Open-Meteo 10k/day limit
             max_at_once=3,  # Max 3 concurrent requests
         )
+        if results is None:
+            self.logger.error("No results from weather collection cycle")
+            return
 
         # Step 4: Merge results from all sources
         merged_records = []
@@ -228,7 +234,9 @@ class WeatherDaemon(BaseDaemon):
         # Step 5: Store merged records to Parquet
         if merged_records:
             try:
-                self.storage.append_batch(merged_records, dataset_name="weather_unified")
+                self.storage.append_batch(
+                    merged_records, dataset_name="weather_unified"
+                )
                 self.records_stored_last_cycle = len(merged_records)
                 self.logger.info(
                     f"Stored {len(merged_records)} weather records to Parquet"
@@ -404,6 +412,7 @@ class WeatherDaemon(BaseDaemon):
 
         return (nws_data, om_data, lat, lon, timestamp)
 
+    @override
     def _get_state(self) -> dict[str, str | int | float]:
         """Get current daemon state for persistence.
 

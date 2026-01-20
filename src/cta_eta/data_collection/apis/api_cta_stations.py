@@ -147,7 +147,10 @@ def normalize_cta_stations(raw_data: list[dict[str, Any]]) -> list[dict[str, Any
 
         # Extract GeoJSON Point coordinates [longitude, latitude]
         coordinates = geom.get("coordinates")
-        if not isinstance(coordinates, list) or len(coordinates) < MIN_COORDINATE_DIMENSIONS:
+        if (
+            not isinstance(coordinates, list)
+            or len(coordinates) < MIN_COORDINATE_DIMENSIONS
+        ):
             continue
 
         longitude = float(coordinates[0])

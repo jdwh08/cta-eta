@@ -339,9 +339,7 @@ class ParquetWriter:
 
         return partition_date.isoformat()
 
-    def write(
-        self, data: list[dict[str, Any]], dataset_name: str = "default"
-    ) -> None:
+    def write(self, data: list[dict[str, Any]], dataset_name: str = "default") -> None:
         """Write records to Parquet with timezone-aware partitioning.
 
         Args:
@@ -371,11 +369,14 @@ class ParquetWriter:
 
         partition_date = self._calculate_partition_date(first_timestamp)
 
-        # Generate partition path with dataset name and timestamp suffix
+        # Generate partition path and timestamp suffix
         timestamp_suffix = current_timestamp.strftime("%Y%m%d_%H%M%S_%f")[:-3]
-        partition_path = (
-            f"{dataset_name}/date={partition_date}/data_{timestamp_suffix}.parquet"
-        )
+        if dataset_name == "default":
+            partition_path = f"date={partition_date}/data_{timestamp_suffix}.parquet"
+        else:
+            partition_path = (
+                f"{dataset_name}/date={partition_date}/data_{timestamp_suffix}.parquet"
+            )
 
         # Convert data to PyArrow Table
         table = pa.Table.from_pylist(data)

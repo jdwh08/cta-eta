@@ -63,7 +63,9 @@ def test_discover_openweathermap_grid_returns_actual_coordinates(
     # Assert
     assert grid_id == "41.715942,-87.63699"
     client.get.assert_called_once()
-    assert client.get.call_args.args[0] == api_weather_openweathermap.CURRENT_WEATHER_URL
+    assert (
+        client.get.call_args.args[0] == api_weather_openweathermap.CURRENT_WEATHER_URL
+    )
     assert client.get.call_args.kwargs["params"] == {
         "lat": latitude,
         "lon": longitude,
@@ -122,7 +124,9 @@ def test_get_openweathermap_current_defaults_missing_fields_and_converts_visibil
     assert current["weather_desc"] == "overcast clouds"
 
     client.get.assert_called_once()
-    assert client.get.call_args.args[0] == api_weather_openweathermap.CURRENT_WEATHER_URL
+    assert (
+        client.get.call_args.args[0] == api_weather_openweathermap.CURRENT_WEATHER_URL
+    )
     assert client.get.call_args.kwargs["params"]["units"] == "imperial"
     assert client.get.call_args.kwargs["params"]["appid"] == "test-key"
 
@@ -197,7 +201,7 @@ def test_get_openweathermap_forecast_hourly_converts_pop_and_visibility_and_defa
 
     client.get.assert_called_once()
     assert client.get.call_args.args[0] == api_weather_openweathermap.FORECAST_URL
-    assert client.get.call_args.kwargs["params"]["cnt"] == 1  # noqa: PLR2004
+    assert client.get.call_args.kwargs["params"]["cnt"] == 1
     assert client.get.call_args.kwargs["params"]["units"] == "imperial"
     assert client.get.call_args.kwargs["params"]["appid"] == "test-key"
 
@@ -224,4 +228,3 @@ def test_openweathermap_propagates_http_errors_without_retry_delay(
     # Act / Assert
     with pytest.raises(httpx.HTTPStatusError):
         fn_no_retry(client, 41.88, -87.63)
-

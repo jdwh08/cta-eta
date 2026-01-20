@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from cta_eta.data_collection.merging.weather_merger import merge_weather_sources
 
 

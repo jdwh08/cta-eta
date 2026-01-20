@@ -8,16 +8,11 @@ Precedence for overlapping fields: NWS > Open-Meteo > OpenWeatherMap
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 import numpy as np
 import pandas as pd
 
-if TYPE_CHECKING:
-    from typing import Any
 
-
-def _convert_to_python_type(value: Any) -> Any:
+def _convert_to_python_type(value: object) -> object:
     """Convert numpy/pandas types to Python native types.
 
     Args:
@@ -41,10 +36,10 @@ def _convert_to_python_type(value: Any) -> Any:
 
 
 def merge_weather_sources(
-    nws_data: dict[str, Any] | None,
-    om_data: dict[str, Any] | None,
-    owm_data: dict[str, Any] | None = None,
-) -> dict[str, Any] | None:
+    nws_data: dict[str, object] | None,
+    om_data: dict[str, object] | None,
+    owm_data: dict[str, object] | None = None,
+) -> dict[str, object] | None:
     """Merge weather data from multiple sources into a unified record.
 
     Combines data from NWS, Open-Meteo, and OpenWeatherMap sources, using
@@ -105,8 +100,7 @@ def merge_weather_sources(
 
     # Flatten MultiIndex columns
     merged.columns = [
-        f"{col}_{source}" if source else col
-        for source, col in merged.columns
+        f"{col}_{source}" if source else col for source, col in merged.columns
     ]
 
     # Extract unique base column names (without source suffixes)
@@ -119,7 +113,7 @@ def merge_weather_sources(
     }
 
     # Coalesce columns with precedence: NWS > Open-Meteo > OpenWeatherMap
-    result_dict: dict[str, Any] = {}
+    result_dict: dict[str, object] = {}
 
     for base_col in all_columns:
         # Try each source in order of precedence
