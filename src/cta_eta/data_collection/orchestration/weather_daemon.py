@@ -30,8 +30,13 @@ from cta_eta.data_collection.apis.api_weather_open_meteo import (
 from cta_eta.data_collection.apis.api_weather_openweathermap import (
     get_openweathermap_current,
 )
+from cta_eta.data_collection.merging.weather_merger import merge_weather_sources
 from cta_eta.data_collection.orchestration.daemon import BaseDaemon
 from cta_eta.data_collection.storage_cache.cache import CachedData
+from cta_eta.data_collection.storage_cache.storage import (
+    ParquetWriter,
+    create_parquet_writer,
+)
 from cta_eta.data_collection.storage_cache.weather_grid_cache import (
     NWSGridCache,
     OpenMeteoGridCache,
@@ -58,18 +63,22 @@ class WeatherDaemon(BaseDaemon):
         stations_cache: CachedData instance for CTA stations
         nws_grid_cache: NWSGridCache for station → NWS grid mappings
         om_grid_cache: OpenMeteoGridCache for station → Open-Meteo grid mappings
+        storage: ParquetWriter for storing unified weather records
         weather_interval: Collection interval in seconds (default: 900 = 15 minutes)
         last_collection_time: Timestamp of last successful collection cycle
         unique_grid_points_count: Number of unique grid points in last cycle
+        records_stored_last_cycle: Number of records stored in last cycle
 
     """
 
     stations_cache: CachedData[list[dict[str, Any]]]
     nws_grid_cache: NWSGridCache
     om_grid_cache: OpenMeteoGridCache
+    storage: ParquetWriter
     weather_interval: int
     last_collection_time: float
     unique_grid_points_count: int
+    records_stored_last_cycle: int
 
     def __init__(
         self,
@@ -92,6 +101,9 @@ class WeatherDaemon(BaseDaemon):
         self.nws_grid_cache = get_nws_grid_cache(config)
         self.om_grid_cache = get_open_meteo_grid_cache(config)
 
+        # Initialize storage backend for Parquet writes
+        self.storage = create_parquet_writer(config)
+
         # Extract weather collection interval from config (convert minutes to seconds)
         collection_config = config.get("collection", {})
         weather_interval_minutes = int(
@@ -102,6 +114,7 @@ class WeatherDaemon(BaseDaemon):
         # Initialize state tracking
         self.last_collection_time = 0.0
         self.unique_grid_points_count = 0
+        self.records_stored_last_cycle = 0
 
     async def run(self) -> None:
         """Run the main weather collection loop.
@@ -197,7 +210,37 @@ class WeatherDaemon(BaseDaemon):
             max_at_once=3,  # Max 3 concurrent requests
         )
 
-        # Step 4: Log summary statistics
+        # Step 4: Merge results from all sources
+        merged_records = []
+        for nws_data, om_data, owm_data, lat, lon, timestamp in results:
+            merged = merge_weather_sources(nws_data, om_data, owm_data)
+            if merged is not None:
+                # Add metadata fields
+                merged["latitude"] = lat
+                merged["longitude"] = lon
+                merged["collection_timestamp"] = timestamp
+                merged_records.append(merged)
+
+        self.logger.info(
+            f"Merged {len(merged_records)} weather records from {len(results)} grid points"
+        )
+
+        # Step 5: Store merged records to Parquet
+        if merged_records:
+            try:
+                self.storage.append_batch(merged_records, dataset_name="weather_unified")
+                self.records_stored_last_cycle = len(merged_records)
+                self.logger.info(
+                    f"Stored {len(merged_records)} weather records to Parquet"
+                )
+            except Exception:
+                self.logger.exception("Failed to store weather records to Parquet")
+                self.records_stored_last_cycle = 0
+        else:
+            self.logger.warning("No weather records to store this cycle")
+            self.records_stored_last_cycle = 0
+
+        # Step 6: Log summary statistics
         success_count = sum(
             1
             for nws_data, om_data, owm_data, _, _, _ in results
@@ -211,6 +254,7 @@ class WeatherDaemon(BaseDaemon):
                 "extra_fields": {
                     "unique_grid_points": len(unique_grid_points),
                     "successful_collections": success_count,
+                    "records_stored": self.records_stored_last_cycle,
                     "cycle_duration_ms": round(cycle_duration_ms, 2),
                 }
             },
@@ -370,5 +414,6 @@ class WeatherDaemon(BaseDaemon):
         return {
             "last_collection_timestamp": self.last_collection_time,
             "unique_grid_points_count": self.unique_grid_points_count,
+            "records_stored_last_cycle": self.records_stored_last_cycle,
             "weather_interval_seconds": self.weather_interval,
         }
