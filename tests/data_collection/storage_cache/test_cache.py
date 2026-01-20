@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from cta_eta.cache import CachedData, create_cached_data
+from cta_eta.data_collection.storage_cache.cache import CachedData, create_cached_data
 
 
 class TestCachedData:
@@ -91,7 +91,10 @@ class TestCachedData:
         assert saved_data["ttl"] == 3600  # noqa: PLR2004
 
     def test_get_with_valid_file_loads_from_file(
-        self, cached_data: CachedData[dict[str, str]], cache_file: Path
+        self,
+        cached_data: CachedData[dict[str, str]],
+        cache_file: Path,
+        mock_fetch_fn: Mock,
     ) -> None:
         """Test that get() loads from file when valid cache exists."""
         # Arrange
@@ -108,10 +111,13 @@ class TestCachedData:
 
         # Assert
         assert result == {"cached": "value"}
-        cached_data._fetch_fn.assert_not_called()
+        mock_fetch_fn.assert_not_called()
 
     def test_get_with_expired_cache_refreshes(
-        self, cached_data: CachedData[dict[str, str]], cache_file: Path
+        self,
+        cached_data: CachedData[dict[str, str]],
+        cache_file: Path,
+        mock_fetch_fn: Mock,
     ) -> None:
         """Test that get() refreshes cache when TTL has expired."""
         # Arrange
@@ -129,12 +135,15 @@ class TestCachedData:
 
         # Assert
         assert result == {"test": "data"}
-        cached_data._fetch_fn.assert_called_once()
+        mock_fetch_fn.assert_called_once()
         assert cached_data._memory_cache is not None
         assert cached_data._memory_cache["data"] == {"test": "data"}
 
     def test_get_with_invalid_json_refreshes(
-        self, cached_data: CachedData[dict[str, str]], cache_file: Path
+        self,
+        cached_data: CachedData[dict[str, str]],
+        cache_file: Path,
+        mock_fetch_fn: Mock,
     ) -> None:
         """Test that get() refreshes cache when JSON file is invalid."""
         # Arrange
@@ -145,10 +154,13 @@ class TestCachedData:
 
         # Assert
         assert result == {"test": "data"}
-        cached_data._fetch_fn.assert_called_once()
+        mock_fetch_fn.assert_called_once()
 
     def test_get_with_missing_cached_at_refreshes(
-        self, cached_data: CachedData[dict[str, str]], cache_file: Path
+        self,
+        cached_data: CachedData[dict[str, str]],
+        cache_file: Path,
+        mock_fetch_fn: Mock,
     ) -> None:
         """Test that get() refreshes cache when cached_at is missing."""
         # Arrange
@@ -161,7 +173,7 @@ class TestCachedData:
 
         # Assert
         assert result == {"test": "data"}
-        cached_data._fetch_fn.assert_called_once()
+        mock_fetch_fn.assert_called_once()
 
     def test_get_when_fetch_fn_raises_exception_propagates(
         self, cache_file: Path
@@ -253,7 +265,10 @@ class TestCachedData:
         # Mock time.time() for deterministic behavior
         current_time = 1000000.0
         cached_at = current_time - 3600  # Exactly TTL seconds ago
-        with patch("cta_eta.cache.time.time", return_value=current_time):
+        with patch(
+            "cta_eta.data_collection.storage_cache.cache.time.time",
+            return_value=current_time,
+        ):
             cached_data._memory_cache = {
                 "data": {"test": "data"},
                 "cached_at": cached_at,
@@ -477,7 +492,7 @@ class TestCachedData:
         assert saved_data["data"] == complex_data
 
     def test_get_uses_memory_cache_on_second_call(
-        self, cached_data: CachedData[dict[str, str]]
+        self, cached_data: CachedData[dict[str, str]], mock_fetch_fn: Mock
     ) -> None:
         """Test that get() uses memory cache on subsequent calls without file I/O."""
         # Arrange
@@ -494,7 +509,7 @@ class TestCachedData:
         # Assert
         assert result1 == {"memory": "cached"}
         assert result2 == {"memory": "cached"}
-        cached_data._fetch_fn.assert_not_called()
+        mock_fetch_fn.assert_not_called()
 
     def test_get_with_zero_ttl_always_refreshes(
         self, cache_file: Path, mock_fetch_fn: Mock

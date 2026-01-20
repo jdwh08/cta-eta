@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from cta_eta.logging import (
+from cta_eta.data_collection.logging import (
     HumanReadableFormatter,
     JSONFormatter,
     get_logger,

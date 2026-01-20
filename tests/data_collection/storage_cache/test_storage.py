@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 import pyarrow.parquet as pq
 import pytest
 
-from cta_eta.storage import (
+from cta_eta.data_collection.storage_cache.storage import (
     CloudStorage,
     LocalStorage,
     ParquetWriter,
@@ -354,19 +354,28 @@ class TestCloudStorage:
     @pytest.fixture
     def cloud_storage_s3(self, mock_filesystem: MagicMock) -> CloudStorage:
         """Create CloudStorage instance for S3."""
-        with patch("cta_eta.storage.fsspec.filesystem", return_value=mock_filesystem):
+        with patch(
+            "cta_eta.data_collection.storage_cache.storage.fsspec.filesystem",
+            return_value=mock_filesystem,
+        ):
             return CloudStorage(filesystem_type="s3", bucket="test-bucket")
 
     @pytest.fixture
     def cloud_storage_gcs(self, mock_filesystem: MagicMock) -> CloudStorage:
         """Create CloudStorage instance for GCS."""
-        with patch("cta_eta.storage.fsspec.filesystem", return_value=mock_filesystem):
+        with patch(
+            "cta_eta.data_collection.storage_cache.storage.fsspec.filesystem",
+            return_value=mock_filesystem,
+        ):
             return CloudStorage(filesystem_type="gcs", bucket="test-bucket")
 
     def test_cloud_storage_init_s3(self, mock_filesystem: MagicMock) -> None:
         """Test CloudStorage initialization for S3."""
         # Arrange
-        with patch("cta_eta.storage.fsspec.filesystem", return_value=mock_filesystem):
+        with patch(
+            "cta_eta.data_collection.storage_cache.storage.fsspec.filesystem",
+            return_value=mock_filesystem,
+        ):
             # Act
             storage = CloudStorage(filesystem_type="s3", bucket="my-bucket")
 
@@ -378,7 +387,10 @@ class TestCloudStorage:
     def test_cloud_storage_init_gcs(self, mock_filesystem: MagicMock) -> None:
         """Test CloudStorage initialization for GCS."""
         # Arrange
-        with patch("cta_eta.storage.fsspec.filesystem", return_value=mock_filesystem):
+        with patch(
+            "cta_eta.data_collection.storage_cache.storage.fsspec.filesystem",
+            return_value=mock_filesystem,
+        ):
             # Act
             storage = CloudStorage(filesystem_type="gcs", bucket="my-bucket")
 
@@ -393,7 +405,8 @@ class TestCloudStorage:
         # Arrange
         credentials = {"key": "value"}
         with patch(
-            "cta_eta.storage.fsspec.filesystem", return_value=mock_filesystem
+            "cta_eta.data_collection.storage_cache.storage.fsspec.filesystem",
+            return_value=mock_filesystem,
         ) as mock_fs:
             # Act
             CloudStorage(filesystem_type="s3", bucket="bucket", credentials=credentials)
@@ -646,7 +659,9 @@ class TestParquetWriter:
         """Test write() with single record."""
         # Arrange
         test_data = [{"train_id": "123", "lat": 41.8781, "lon": -87.6298}]
-        with patch("cta_eta.storage.datetime") as mock_datetime:
+        with patch(
+            "cta_eta.data_collection.storage_cache.storage.datetime"
+        ) as mock_datetime:
             mock_now = datetime(2026, 1, 15, 10, 30, 0, tzinfo=ZoneInfo("UTC"))
             mock_datetime.now.return_value = mock_now
             mock_datetime.side_effect = lambda *args, **kw: datetime(*args, **kw)  # noqa: DTZ001
@@ -672,7 +687,9 @@ class TestParquetWriter:
             {"train_id": "123", "lat": 41.8781, "lon": -87.6298},
             {"train_id": "456", "lat": 41.8819, "lon": -87.6278},
         ]
-        with patch("cta_eta.storage.datetime") as mock_datetime:
+        with patch(
+            "cta_eta.data_collection.storage_cache.storage.datetime"
+        ) as mock_datetime:
             mock_now = datetime(2026, 1, 15, 10, 30, 0, tzinfo=ZoneInfo("UTC"))
             mock_datetime.now.return_value = mock_now
             mock_datetime.side_effect = lambda *args, **kw: datetime(*args, **kw)  # noqa: DTZ001
@@ -705,7 +722,9 @@ class TestParquetWriter:
         # Arrange
         test_data = [{"train_id": "123", "lat": 41.8781}]
         mock_timestamp = datetime(2026, 1, 15, 10, 30, 0, tzinfo=ZoneInfo("UTC"))
-        with patch("cta_eta.storage.datetime") as mock_datetime:
+        with patch(
+            "cta_eta.data_collection.storage_cache.storage.datetime"
+        ) as mock_datetime:
             mock_datetime.now.return_value = mock_timestamp
             mock_datetime.side_effect = lambda *args, **kw: datetime(*args, **kw)  # noqa: DTZ001
 
@@ -734,7 +753,9 @@ class TestParquetWriter:
             }
         ]
         mock_now = datetime(2026, 1, 15, 10, 30, 0, tzinfo=ZoneInfo("UTC"))
-        with patch("cta_eta.storage.datetime") as mock_datetime:
+        with patch(
+            "cta_eta.data_collection.storage_cache.storage.datetime"
+        ) as mock_datetime:
             mock_datetime.now.return_value = mock_now
             mock_datetime.side_effect = lambda *args, **kw: datetime(*args, **kw)  # noqa: DTZ001
 
@@ -869,7 +890,9 @@ class TestParquetWriter:
             }
         ]
         mock_now = datetime(2026, 1, 15, 10, 30, 0, tzinfo=ZoneInfo("UTC"))
-        with patch("cta_eta.storage.datetime") as mock_datetime:
+        with patch(
+            "cta_eta.data_collection.storage_cache.storage.datetime"
+        ) as mock_datetime:
             mock_datetime.now.return_value = mock_now
             mock_datetime.side_effect = lambda *args, **kw: datetime(*args, **kw)  # noqa: DTZ001
             mock_datetime.fromisoformat = datetime.fromisoformat
@@ -890,7 +913,9 @@ class TestParquetWriter:
         writer = ParquetWriter(storage_backend=mock_storage_backend, compression="gzip")
         test_data = [{"train_id": "123", "lat": 41.8781}]
         mock_now = datetime(2026, 1, 15, 10, 30, 0, tzinfo=ZoneInfo("UTC"))
-        with patch("cta_eta.storage.datetime") as mock_datetime:
+        with patch(
+            "cta_eta.data_collection.storage_cache.storage.datetime"
+        ) as mock_datetime:
             mock_datetime.now.return_value = mock_now
             mock_datetime.side_effect = lambda *args, **kw: datetime(*args, **kw)  # noqa: DTZ001
 
@@ -936,7 +961,10 @@ class TestCreateStorageBackend:
         # Arrange
         config = {"storage": {"backend": "s3", "s3_bucket": "my-bucket"}}
         mock_filesystem = MagicMock()
-        with patch("cta_eta.storage.fsspec.filesystem", return_value=mock_filesystem):
+        with patch(
+            "cta_eta.data_collection.storage_cache.storage.fsspec.filesystem",
+            return_value=mock_filesystem,
+        ):
             # Act
             backend = create_storage_backend(config)
 
@@ -959,7 +987,10 @@ class TestCreateStorageBackend:
         # Arrange
         config = {"storage": {"backend": "gcs", "gcs_bucket": "my-bucket"}}
         mock_filesystem = MagicMock()
-        with patch("cta_eta.storage.fsspec.filesystem", return_value=mock_filesystem):
+        with patch(
+            "cta_eta.data_collection.storage_cache.storage.fsspec.filesystem",
+            return_value=mock_filesystem,
+        ):
             # Act
             backend = create_storage_backend(config)
 
@@ -1043,7 +1074,10 @@ class TestCreateParquetWriter:
         # Arrange
         config = {"storage": {"backend": "s3", "s3_bucket": "my-bucket"}}
         mock_filesystem = MagicMock()
-        with patch("cta_eta.storage.fsspec.filesystem", return_value=mock_filesystem):
+        with patch(
+            "cta_eta.data_collection.storage_cache.storage.fsspec.filesystem",
+            return_value=mock_filesystem,
+        ):
             # Act
             writer = create_parquet_writer(config)
 
