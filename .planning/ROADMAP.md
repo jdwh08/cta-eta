@@ -20,7 +20,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 2: Storage Abstraction** - Cloud-agnostic Parquet storage with timezone-aware partitioning
 - [x] **Phase 3: Static Data Management** - Cache infrastructure and weather grid mapping
 - [x] **Phase 4: Static File Caching** - TTL-based caching for CTA stations and track geometry
-- [ ] **Phase 5: Weather Data Collection** - Multi-source weather integration with rate limit management
+- [x] **Phase 5: Weather Data Collection** - Multi-source weather integration with rate limit management (Completed 2026-01-19)
 - [ ] **Phase 6: Train Position Polling Daemon** - Continuous 15-second polling with retry logic
 - [ ] **Phase 7: Resilience & Recovery** - Intelligent retry, gap detection, graceful shutdown
 - [ ] **Phase 8: Monitoring & Metrics** - Metrics collection, dashboard, performance tracking
