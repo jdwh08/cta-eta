@@ -17,6 +17,7 @@ import logging
 import time
 from typing import Any
 
+import aiometer
 import httpx
 
 ### OWN MODULES
@@ -25,6 +26,9 @@ from cta_eta.data_collection.apis.api_weather_nws import get_nws_hourly_forecast
 from cta_eta.data_collection.apis.api_weather_open_meteo import (
     discover_open_meteo_grid,
     get_open_meteo_current,
+)
+from cta_eta.data_collection.apis.api_weather_openweathermap import (
+    get_openweathermap_current,
 )
 from cta_eta.data_collection.orchestration.daemon import BaseDaemon
 from cta_eta.data_collection.storage_cache.cache import CachedData
@@ -142,17 +146,62 @@ class WeatherDaemon(BaseDaemon):
         unique_grid_points = await self._get_unique_grid_points(client)
         self.unique_grid_points_count = len(unique_grid_points)
 
-        # Step 2: Collect weather for each unique grid point
-        results: list[tuple[Any, Any, float, float, float]] = []
-        for nws_grid, om_grid, lat, lon in unique_grid_points:
-            result = await self._fetch_weather_for_grid_point(
-                client, nws_grid, om_grid, lat, lon
+        # Step 2: Define fetch function with fallback logic
+        async def _fetch_with_fallback(
+            grid_point: tuple[str, str, float, float]
+        ) -> tuple[
+            dict[str, Any] | None,
+            dict[str, Any] | None,
+            dict[str, Any] | None,
+            float,
+            float,
+            float,
+        ]:
+            """Fetch weather with OpenWeatherMap fallback on source failures."""
+            nws_grid, om_grid, lat, lon = grid_point
+            nws_data, om_data, lat, lon, timestamp = (
+                await self._fetch_weather_for_grid_point(
+                    client, nws_grid, om_grid, lat, lon
+                )
             )
-            results.append(result)
 
-        # Step 3: Log summary statistics
+            # Fallback to OpenWeatherMap if either source failed
+            owm_data = None
+            if nws_data is None or om_data is None:
+                failed_sources = []
+                if nws_data is None:
+                    failed_sources.append("NWS")
+                if om_data is None:
+                    failed_sources.append("Open-Meteo")
+
+                try:
+                    owm_data = await asyncio.to_thread(
+                        get_openweathermap_current, client, f"{lat},{lon}"
+                    )
+                    self.logger.info(
+                        f"Falling back to OpenWeatherMap for grid point {lat},{lon} due to {', '.join(failed_sources)} failure"
+                    )
+                except Exception:
+                    self.logger.exception(
+                        f"OpenWeatherMap fallback failed for grid point {lat},{lon}",
+                        extra={"extra_fields": {"latitude": lat, "longitude": lon}},
+                    )
+
+            return (nws_data, om_data, owm_data, lat, lon, timestamp)
+
+        # Step 3: Collect weather with rate limiting (6 calls/minute = 0.1/second)
+        results = await aiometer.run_on_each(
+            _fetch_with_fallback,
+            unique_grid_points,
+            max_per_second=0.1,  # 6 per minute for Open-Meteo 10k/day limit
+            max_at_once=3,  # Max 3 concurrent requests
+        )
+
+        # Step 4: Log summary statistics
         success_count = sum(
-            1 for nws_data, om_data, _, _, _ in results if nws_data or om_data
+            1
+            for nws_data, om_data, owm_data, _, _, _ in results
+            if nws_data or om_data or owm_data
         )
         cycle_duration_ms = (time.time() - cycle_start_time) * 1000
 

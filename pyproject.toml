@@ -51,6 +51,7 @@ classifiers = [
 # ---- Main dependencies ----
 
 dependencies = [
+    "aiometer>=1.0.0",
     "dotenv>=0.9.9",
     "fsspec>=2026.1.0",
     "gcsfs>=2026.1.0",
