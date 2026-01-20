@@ -290,7 +290,7 @@ class ParquetWriter:
     - Daily partitions split at partition_hour (default 3:00 AM) in America/Chicago timezone
     - Times before partition_hour assigned to previous calendar day
     - Times at or after partition_hour assigned to current calendar day
-    - Hive-style path format: date=YYYY-MM-DD/data_{timestamp}.parquet
+    - Hive-style path format: dataset_name/date=YYYY-MM-DD/data_{timestamp}.parquet
     """
 
     def __init__(
@@ -339,11 +339,14 @@ class ParquetWriter:
 
         return partition_date.isoformat()
 
-    def write(self, data: list[dict[str, Any]]) -> None:
-        """Write train position records to Parquet with timezone-aware partitioning.
+    def write(
+        self, data: list[dict[str, Any]], dataset_name: str = "default"
+    ) -> None:
+        """Write records to Parquet with timezone-aware partitioning.
 
         Args:
-            data: List of train position records as dictionaries
+            data: List of records as dictionaries
+            dataset_name: Name of dataset for organizing files (default "default")
 
         Raises:
             ValueError: If data is empty
@@ -368,9 +371,11 @@ class ParquetWriter:
 
         partition_date = self._calculate_partition_date(first_timestamp)
 
-        # Generate partition path with timestamp suffix
+        # Generate partition path with dataset name and timestamp suffix
         timestamp_suffix = current_timestamp.strftime("%Y%m%d_%H%M%S_%f")[:-3]
-        partition_path = f"date={partition_date}/data_{timestamp_suffix}.parquet"
+        partition_path = (
+            f"{dataset_name}/date={partition_date}/data_{timestamp_suffix}.parquet"
+        )
 
         # Convert data to PyArrow Table
         table = pa.Table.from_pylist(data)
@@ -382,6 +387,24 @@ class ParquetWriter:
 
         # Write to storage backend
         self.storage_backend.put(partition_path, parquet_bytes)
+
+    def append_batch(
+        self, records: list[dict[str, Any]], dataset_name: str = "default"
+    ) -> None:
+        """Append a batch of records to Parquet storage.
+
+        Convenience method that wraps write() with a clearer name for batch appending.
+
+        Args:
+            records: List of records as dictionaries
+            dataset_name: Name of dataset for organizing files (default "default")
+
+        Raises:
+            ValueError: If records is empty
+            OSError: If write operation fails
+
+        """
+        self.write(records, dataset_name=dataset_name)
 
 
 def create_storage_backend(config: dict[str, dict[str, Any]]) -> StorageBackend:
