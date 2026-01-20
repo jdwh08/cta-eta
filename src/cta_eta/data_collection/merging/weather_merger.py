@@ -73,41 +73,32 @@ def merge_weather_sources(
         10.0
 
     """
-    # Treat empty dicts as None
-    if nws_data is not None and not nws_data:
-        nws_data = None
-    if om_data is not None and not om_data:
-        om_data = None
-    if owm_data is not None and not owm_data:
-        owm_data = None
+    # Normalize empty dicts to None for consistent handling
+    sources_data = {
+        "nws": nws_data if nws_data else None,
+        "om": om_data if om_data else None,
+        "owm": owm_data if owm_data else None,
+    }
 
-    # Return None if all sources are missing
-    if nws_data is None and om_data is None and owm_data is None:
+    # Filter to only non-None sources
+    available_sources = {k: v for k, v in sources_data.items() if v is not None}
+
+    # Return None if no sources available
+    if not available_sources:
         return None
 
-    # If only one source present, return it directly
-    if nws_data is not None and om_data is None and owm_data is None:
-        return nws_data
-    if nws_data is None and om_data is not None and owm_data is None:
-        return om_data
-    if nws_data is None and om_data is None and owm_data is not None:
-        return owm_data
+    # If only one source, return it directly (no merge needed)
+    if len(available_sources) == 1:
+        return next(iter(available_sources.values()))
 
     # Multiple sources present - merge with pandas
     sources = []
     source_names = []
 
-    if nws_data is not None:
-        sources.append(pd.DataFrame([nws_data]))
-        source_names.append("nws")
-
-    if om_data is not None:
-        sources.append(pd.DataFrame([om_data]))
-        source_names.append("om")
-
-    if owm_data is not None:
-        sources.append(pd.DataFrame([owm_data]))
-        source_names.append("owm")
+    for source_name in ["nws", "om", "owm"]:  # Maintain precedence order
+        if source_name in available_sources:
+            sources.append(pd.DataFrame([available_sources[source_name]]))
+            source_names.append(source_name)
 
     # Concatenate all sources with suffixes to track origin
     merged = pd.concat(sources, axis=1, keys=source_names)
@@ -118,16 +109,14 @@ def merge_weather_sources(
         for source, col in merged.columns
     ]
 
-    # Find all unique column names (without suffixes)
-    all_columns = set()
-    for col in merged.columns:
-        # Remove _nws, _om, _owm suffix if present
-        base_col = col
-        for suffix in ["_nws", "_om", "_owm"]:
-            if col.endswith(suffix):
-                base_col = col[: -len(suffix)]
-                break
-        all_columns.add(base_col)
+    # Extract unique base column names (without source suffixes)
+    suffixes = ("_nws", "_om", "_owm")
+    all_columns = {
+        col.removesuffix(suffix)
+        for col in merged.columns
+        for suffix in suffixes
+        if col.endswith(suffix)
+    }
 
     # Coalesce columns with precedence: NWS > Open-Meteo > OpenWeatherMap
     result_dict: dict[str, Any] = {}
