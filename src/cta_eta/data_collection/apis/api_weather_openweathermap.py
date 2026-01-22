@@ -16,6 +16,8 @@ Rate limits to be considered:
 - One Call 3.0: 1k/day limit
 """
 
+from __future__ import annotations
+
 import os
 from typing import Final
 
@@ -96,6 +98,27 @@ def discover_openweathermap_grid(
     return f"{actual_lat},{actual_lon}"
 
 
+@stamina.retry(on=httpx.HTTPStatusError, attempts=1)
+@log_api_call(logger)
+async def discover_openweathermap_grid_async(
+    client: httpx.AsyncClient, latitude: float, longitude: float
+) -> str:
+    """Async version of `discover_openweathermap_grid`."""
+    api_key = _get_api_key()
+    response = await client.get(
+        CURRENT_WEATHER_URL,
+        params={
+            "lat": latitude,
+            "lon": longitude,
+            "appid": api_key,
+            "units": "imperial",
+        },
+    )
+    response.raise_for_status()
+    data = response.json()
+    return f"{data['coord']['lat']},{data['coord']['lon']}"
+
+
 @stamina.retry(on=httpx.HTTPStatusError, attempts=3)
 @log_api_call(logger)
 def get_openweathermap_current(
@@ -137,13 +160,22 @@ def get_openweathermap_current(
     api_key = _get_api_key()
 
     # Parse grid identifier to get coordinates
+    if grid_id.count(",") != 1:
+        msg = f"Invalid grid ID: {grid_id}"
+        raise ValueError(msg)
     grid_lat, grid_lon = grid_id.split(",")
+    try:
+        lat = float(grid_lat)
+        lon = float(grid_lon)
+    except ValueError as e:
+        msg = f"Invalid grid ID: {grid_id}"
+        raise ValueError(msg) from e
 
     response = client.get(
         CURRENT_WEATHER_URL,
         params={
-            "lat": float(grid_lat),
-            "lon": float(grid_lon),
+            "lat": lat,
+            "lon": lon,
             "appid": api_key,
             "units": "imperial",  # Fahrenheit, mph
         },
@@ -160,6 +192,62 @@ def get_openweathermap_current(
     # Actually, with units=imperial, wind speed is already in mph
     # But visibility is in meters regardless of units parameter
     visibility_mi = data.get("visibility", 0) / 1609.34  # meters to miles
+
+    return {
+        "latitude": data["coord"]["lat"],
+        "longitude": data["coord"]["lon"],
+        "timestamp": data["dt"],
+        "temperature_f": main["temp"],
+        "feels_like_f": main["feels_like"],
+        "temp_min_f": main["temp_min"],
+        "temp_max_f": main["temp_max"],
+        "pressure_hpa": main["pressure"],
+        "humidity_pct": main["humidity"],
+        "visibility_mi": visibility_mi,
+        "wind_speed_mph": wind["speed"],
+        "wind_direction_deg": wind.get("deg", 0),
+        "wind_gust_mph": wind.get("gust", 0.0),
+        "cloud_cover_pct": data.get("clouds", {}).get("all", 0),
+        "weather_main": weather["main"],
+        "weather_desc": weather["description"],
+    }
+
+
+@stamina.retry(on=httpx.HTTPStatusError, attempts=3)
+@log_api_call(logger)
+async def get_openweathermap_current_async(
+    client: httpx.AsyncClient, grid_id: str
+) -> dict[str, str | float]:
+    """Async version of `get_openweathermap_current`."""
+    api_key = _get_api_key()
+
+    if grid_id.count(",") != 1:
+        msg = f"Invalid grid ID: {grid_id}"
+        raise ValueError(msg)
+    grid_lat, grid_lon = grid_id.split(",")
+    try:
+        lat = float(grid_lat)
+        lon = float(grid_lon)
+    except ValueError as e:
+        msg = f"Invalid grid ID: {grid_id}"
+        raise ValueError(msg) from e
+
+    response = await client.get(
+        CURRENT_WEATHER_URL,
+        params={
+            "lat": lat,
+            "lon": lon,
+            "appid": api_key,
+            "units": "imperial",
+        },
+    )
+    response.raise_for_status()
+    data = response.json()
+
+    main = data["main"]
+    wind = data["wind"]
+    weather = data["weather"][0]
+    visibility_mi = data.get("visibility", 0) / 1609.34
 
     return {
         "latitude": data["coord"]["lat"],
@@ -225,13 +313,22 @@ def get_openweathermap_forecast_hourly(
     api_key = _get_api_key()
 
     # Parse grid identifier to get coordinates
+    if grid_id.count(",") != 1:
+        msg = f"Invalid grid ID: {grid_id}"
+        raise ValueError(msg)
     grid_lat, grid_lon = grid_id.split(",")
+    try:
+        lat = float(grid_lat)
+        lon = float(grid_lon)
+    except ValueError as e:
+        msg = f"Invalid grid ID: {grid_id}"
+        raise ValueError(msg) from e
 
     response = client.get(
         FORECAST_URL,
         params={
-            "lat": float(grid_lat),
-            "lon": float(grid_lon),
+            "lat": lat,
+            "lon": lon,
             "appid": api_key,
             "units": "imperial",  # Fahrenheit, mph
             "cnt": 1,  # Only get first forecast period to minimize data transfer
@@ -269,6 +366,66 @@ def get_openweathermap_forecast_hourly(
         "wind_gust_mph": wind.get("gust", 0.0),
         "cloud_cover_pct": forecast.get("clouds", {}).get("all", 0),
         "prob_precip_pct": forecast.get("pop", 0.0) * 100,  # Convert 0-1 to 0-100
+        "weather_main": weather["main"],
+        "weather_desc": weather["description"],
+    }
+
+
+@stamina.retry(on=httpx.HTTPStatusError, attempts=3)
+@log_api_call(logger)
+async def get_openweathermap_forecast_hourly_async(
+    client: httpx.AsyncClient, grid_id: str
+) -> dict[str, str | float]:
+    """Async version of `get_openweathermap_forecast_hourly`."""
+    api_key = _get_api_key()
+    if grid_id.count(",") != 1:
+        msg = f"Invalid grid ID: {grid_id}"
+        raise ValueError(msg)
+    grid_lat, grid_lon = grid_id.split(",")
+    try:
+        lat = float(grid_lat)
+        lon = float(grid_lon)
+    except ValueError as e:
+        msg = f"Invalid grid ID: {grid_id}"
+        raise ValueError(msg) from e
+
+    response = await client.get(
+        FORECAST_URL,
+        params={
+            "lat": lat,
+            "lon": lon,
+            "appid": api_key,
+            "units": "imperial",
+            "cnt": 1,
+        },
+    )
+    response.raise_for_status()
+    data = response.json()
+
+    forecast = data["list"][0]
+    main = forecast["main"]
+    wind = forecast["wind"]
+    weather = forecast["weather"][0]
+    visibility_mi = forecast.get("visibility", 0) / 1609.34
+    city = data["city"]
+
+    return {
+        "latitude": city["coord"]["lat"],
+        "longitude": city["coord"]["lon"],
+        "timestamp": forecast["dt"],
+        "dt_txt": forecast["dt_txt"],
+        "temperature_f": main["temp"],
+        "feels_like_f": main["feels_like"],
+        "temp_min_f": main["temp_min"],
+        "temp_max_f": main["temp_max"],
+        "pressure_hpa": main["pressure"],
+        "humidity_pct": main["humidity"],
+        "visibility_mi": visibility_mi,
+        "wind_speed_mph": wind["speed"],
+        "wind_direction_deg": wind.get("deg", 0),
+        "wind_gust_mph": wind.get("gust", 0.0),
+        "cloud_cover_pct": forecast.get("clouds", {}).get("all", 0),
+        "prob_precip_pct": forecast.get("pop", 0.0) * 100,
         "weather_main": weather["main"],
         "weather_desc": weather["description"],
     }

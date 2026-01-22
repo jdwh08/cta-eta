@@ -20,8 +20,14 @@ import asyncio
 import json
 import signal
 from abc import ABC, abstractmethod
+from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from cta_eta.data_collection.orchestration.diagnostics import (
+    DaemonDiagnostics,
+    DaemonDiagnosticsConfig,
+)
 
 if TYPE_CHECKING:
     import logging
@@ -52,6 +58,8 @@ class AsyncBaseDaemon(ABC):
     _loop: asyncio.AbstractEventLoop | None
     _shutdown: asyncio.Event | None
     _shutdown_requested: bool
+    _diagnostics_task: asyncio.Task[None] | None
+    _diagnostics_interval_s: float
 
     def __init__(
         self,
@@ -69,6 +77,24 @@ class AsyncBaseDaemon(ABC):
         self._loop = None
         self._shutdown = None
         self._shutdown_requested = False
+        self._diagnostics_task = None
+        self._diagnostics_interval_s = 0.0
+
+        raw_diag = config.get("diagnostics")
+        diag_cfg = (
+            DaemonDiagnosticsConfig.from_config(
+                raw_diag if isinstance(raw_diag, dict) else None,
+                daemon_name=self.__class__.__name__,
+            )
+            if raw_diag is not None
+            else DaemonDiagnosticsConfig()
+        )
+        self._diagnostics_interval_s = diag_cfg.summary_interval_seconds
+        self.diagnostics = DaemonDiagnostics(
+            logger=logger,
+            daemon_name=self.__class__.__name__,
+            config=diag_cfg,
+        )
 
         self._load_state()
 
@@ -109,9 +135,44 @@ class AsyncBaseDaemon(ABC):
         self._register_signal_handlers()
         self.running = True
 
+        if self.diagnostics.enabled:
+            self._diagnostics_task = asyncio.create_task(
+                self._run_diagnostics_loop(),
+                name=f"{self.__class__.__name__}.diagnostics",
+            )
+
+        run_task = asyncio.create_task(
+            self.run(), name=f"{self.__class__.__name__}.run"
+        )
+        shutdown_task = asyncio.create_task(
+            self._shutdown.wait(),
+            name=f"{self.__class__.__name__}.shutdown_wait",
+        )
+
         try:
-            await self.run()
+            done, pending = await asyncio.wait(
+                {run_task, shutdown_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            # If shutdown was requested, cancel the main run task so we don't hang on
+            # long waits (HTTP, throttlers, etc). Cooperative `self.running` checks
+            # alone are not sufficient for fast shutdown.
+            if shutdown_task in done and not run_task.done():
+                run_task.cancel()
+
+            with suppress(asyncio.CancelledError):
+                await run_task
         finally:
+            for task in pending:
+                task.cancel()
+
+            diagnostics_task = self._diagnostics_task
+            if diagnostics_task is not None:
+                diagnostics_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await diagnostics_task
+
             # Ensure `running` is consistent even if `run()` exits unexpectedly.
             self.running = False
 
@@ -124,13 +185,14 @@ class AsyncBaseDaemon(ABC):
         loop = self._loop
         for signum in (signal.SIGTERM, signal.SIGINT):
             if loop is None:
-                pass
+                signal.signal(signum, self._signal_handler)
+                continue
             try:
                 loop.add_signal_handler(signum, self._signal_handler, signum, None)
                 continue
             except NotImplementedError:
                 pass
-            signal.signal(signum, self._signal_handler)  # type: ignore[arg-type]
+            signal.signal(signum, self._signal_handler)
 
     @abstractmethod
     async def run(self) -> None:
@@ -193,6 +255,11 @@ class AsyncBaseDaemon(ABC):
         if shutdown is not None and loop is not None and loop.is_running():
             loop.call_soon_threadsafe(shutdown.set)
 
+        # Best-effort final diagnostics summary + snapshot on clean shutdown.
+        if self.diagnostics.enabled:
+            self.diagnostics.maybe_log_summary(force=True)
+            self._save_diagnostics_snapshot()
+
         self._save_state()
 
     def _save_state(self) -> None:
@@ -212,6 +279,29 @@ class AsyncBaseDaemon(ABC):
         except Exception as e:
             self.logger.exception(
                 "Failed to save daemon state",
+                extra={
+                    "extra_fields": {
+                        "error_type": type(e).__name__,
+                        "error_message": str(e),
+                    }
+                },
+            )
+
+    def _save_diagnostics_snapshot(self) -> None:
+        """Persist a diagnostics snapshot (best-effort, never raises)."""
+        try:
+            state_dir = Path(".daemon_state")
+            state_dir.mkdir(exist_ok=True)
+            snapshot_file = state_dir / f"{self.__class__.__name__}.diagnostics.json"
+            with snapshot_file.open("w", encoding="utf-8") as f:
+                json.dump(self.diagnostics.snapshot(), f, indent=2)
+            self.logger.info(
+                f"Saved diagnostics snapshot to {snapshot_file}",
+                extra={"extra_fields": {"snapshot_file": str(snapshot_file)}},
+            )
+        except Exception as e:
+            self.logger.exception(
+                "Failed to save diagnostics snapshot",
                 extra={
                     "extra_fields": {
                         "error_type": type(e).__name__,
@@ -259,3 +349,19 @@ class AsyncBaseDaemon(ABC):
     @abstractmethod
     def _get_state(self) -> dict[str, str | int | float]:
         """Return current daemon state for persistence."""
+
+    async def _run_diagnostics_loop(self) -> None:
+        """Periodically log diagnostics summaries while running.
+
+        This loop is intentionally simple and best-effort. It should never block the
+        daemon shutdown path; it is cancelled during `_run_main` teardown.
+        """
+        shutdown = self._shutdown
+        if shutdown is None:
+            return
+
+        while self.running:
+            interval = max(1.0, float(self._diagnostics_interval_s))
+            with suppress(TimeoutError):
+                await asyncio.wait_for(shutdown.wait(), timeout=interval)
+            self.diagnostics.maybe_log_summary()

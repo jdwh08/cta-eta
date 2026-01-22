@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import time
@@ -10,6 +11,8 @@ from contextvars import ContextVar, Token
 from datetime import UTC, datetime
 from functools import wraps
 from typing import Any, Self, TypeVar, cast
+
+import httpx
 
 # Thread-safe context storage for request correlation
 _default_log_context: dict[str, Any] = {}
@@ -122,59 +125,154 @@ class log_context:  # noqa: N801
             _log_context.reset(self.token)
 
 
+def _httpx_extra_fields(exc: BaseException) -> dict[str, object]:
+    """Best-effort extraction of request/response context from httpx errors."""
+    req = getattr(exc, "request", None)
+    method = getattr(req, "method", None)
+    url_obj = getattr(req, "url", None)
+    url = str(url_obj) if url_obj is not None else None
+
+    fields: dict[str, object] = {}
+    if method:
+        fields["http_method"] = method
+    if url:
+        fields["http_url"] = url
+
+    if isinstance(exc, httpx.HTTPStatusError):
+        resp = getattr(exc, "response", None)
+        status = getattr(resp, "status_code", None)
+        if status is not None:
+            fields["http_status"] = status
+
+    return fields
+
+
+def _log_api_start(
+    logger: logging.Logger,
+    *,
+    func_name: str,
+    args: tuple[object, ...],
+    kwargs: dict[str, object],
+) -> None:
+    logger.info(
+        f"API call started: {func_name}",
+        extra={
+            "extra_fields": {
+                "function": func_name,
+                "args": str(args) if args else None,
+                "kwargs": str(kwargs) if kwargs else None,
+            }
+        },
+    )
+
+
+def _log_api_success(
+    logger: logging.Logger, *, func_name: str, elapsed_ms: float
+) -> None:
+    logger.info(
+        f"API call completed: {func_name}",
+        extra={
+            "extra_fields": {
+                "function": func_name,
+                "response_time_ms": round(elapsed_ms, 2),
+            }
+        },
+    )
+
+
+def _log_api_error(
+    logger: logging.Logger,
+    *,
+    func_name: str,
+    elapsed_ms: float,
+    exc: BaseException,
+) -> None:
+    error_message = str(exc)
+    error_repr = repr(exc)
+    display_message = error_message if error_message else error_repr
+
+    logger.error(
+        f"API call failed: {func_name}: {display_message}",
+        exc_info=(type(exc), exc, exc.__traceback__),
+        extra={
+            "extra_fields": {
+                "function": func_name,
+                "error_type": type(exc).__name__,
+                "error_message": error_message,
+                "error_repr": error_repr,
+                "response_time_ms": round(elapsed_ms, 2),
+                **_httpx_extra_fields(exc),
+            }
+        },
+    )
+
+
 def log_api_call(
     logger: logging.Logger,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Log API call lifecycle with timing and metadata as a decorator."""
 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
+        if inspect.iscoroutinefunction(func):
+
+            @wraps(func)
+            async def async_wrapper(*args: object, **kwargs: object) -> object:
+                func_name_obj = getattr(func, "__name__", None)
+                if not isinstance(func_name_obj, str):
+                    msg = f"func must have a __name__ attribute, got {type(func)}"
+                    raise TypeError(msg)
+                func_name = func_name_obj
+
+                start_time = time.perf_counter()
+                _log_api_start(
+                    logger,
+                    func_name=func_name,
+                    args=args,
+                    kwargs=cast("dict[str, object]", dict(kwargs)),
+                )
+
+                try:
+                    result = await func(*args, **kwargs)
+                except Exception as e:
+                    elapsed_ms = (time.perf_counter() - start_time) * 1000
+                    _log_api_error(
+                        logger, func_name=func_name, elapsed_ms=elapsed_ms, exc=e
+                    )
+                    raise
+
+                elapsed_ms = (time.perf_counter() - start_time) * 1000
+                _log_api_success(logger, func_name=func_name, elapsed_ms=elapsed_ms)
+                return result
+
+            return async_wrapper
+
         @wraps(func)
         def wrapper(*args: object, **kwargs: object) -> object:
-            if not hasattr(func, "__name__"):
+            func_name_obj = getattr(func, "__name__", None)
+            if not isinstance(func_name_obj, str):
                 msg = f"func must have a __name__ attribute, got {type(func)}"
-                raise ValueError(msg)
-            func_name = func.__name__
+                raise TypeError(msg)
+            func_name = func_name_obj
 
             start_time = time.perf_counter()
-            logger.info(
-                f"API call started: {func_name}",
-                extra={
-                    "extra_fields": {
-                        "function": func_name,
-                        "args": str(args) if args else None,
-                        "kwargs": str(kwargs) if kwargs else None,
-                    }
-                },
+            _log_api_start(
+                logger,
+                func_name=func_name,
+                args=args,
+                kwargs=cast("dict[str, object]", dict(kwargs)),
             )
 
             try:
                 result = func(*args, **kwargs)
             except Exception as e:
                 elapsed_ms = (time.perf_counter() - start_time) * 1000
-                logger.error(  # noqa: G201
-                    f"API call failed: {func_name}: {e}",
-                    exc_info=True,
-                    extra={
-                        "extra_fields": {
-                            "function": func_name,
-                            "error_type": type(e).__name__,
-                            "error_message": str(e),
-                            "response_time_ms": round(elapsed_ms, 2),
-                        }
-                    },
+                _log_api_error(
+                    logger, func_name=func_name, elapsed_ms=elapsed_ms, exc=e
                 )
                 raise
 
             elapsed_ms = (time.perf_counter() - start_time) * 1000
-            logger.info(
-                f"API call completed: {func_name}",
-                extra={
-                    "extra_fields": {
-                        "function": func_name,
-                        "response_time_ms": round(elapsed_ms, 2),
-                    }
-                },
-            )
+            _log_api_success(logger, func_name=func_name, elapsed_ms=elapsed_ms)
             return result
 
         return wrapper

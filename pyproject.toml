@@ -2,6 +2,11 @@
 
 [project.urls]
 Repository = "https://github.com/jdwh08/cta-eta"
+
+[project.optional-dependencies]
+eda = [
+    "marimo>=0.19.4",
+]
 # Homepage = "https://..."
 # Documentation = "https://..."
 

@@ -85,3 +85,20 @@ track_geometry_ttl = 2592000
 # TTL for station-to-weather grid mapping in seconds (7 days)
 # Maps ~300 CTA stations to ~50 weather grid points
 weather_mapping_ttl = 604800
+
+[diagnostics]
+# Off by default. When enabled, daemons emit structured span timing + error telemetry,
+# periodically log a compact summary, and (optionally) write JSONL events for offline analysis.
+enabled = true
+
+# How often to log a "diagnostics summary" line (seconds).
+summary_interval_seconds = 30
+
+# Bounded in-memory ring buffer of recent diagnostic events.
+max_recent_events = 250
+
+# Optional JSONL sink for events; if empty, events are not written to disk.
+# If set and enabled, the file is rotated by size.
+# event_log_path = ".daemon_state/WeatherDaemon.events.jsonl"
+# event_log_max_bytes = 5242880
+# event_log_backups = 3
