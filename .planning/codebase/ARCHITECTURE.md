@@ -1,176 +1,214 @@
 # Architecture
 
-**Analysis Date:** 2026-01-19
+**Analysis Date:** 2026-01-22
 
 ## Pattern Overview
 
-**Overall:** Layered Data Collection Pipeline - Modular system for continuous 24/7 API polling with cloud-native storage
+**Overall:** Data Pipeline with Async Event-Driven Daemon Architecture
 
 **Key Characteristics:**
-- Stateless API clients with dependency injection
-- Lazy grid discovery with TTL-based caching
+- Production-grade data collection system for continuous 24/7 operation
+- Async polling daemons for long-running collection processes
+- Multi-source data integration with fallback mechanisms (NWS → Open-Meteo → OpenWeatherMap)
+- Distributed caching to minimize API calls (~145 stations → ~50 grid points)
 - Cloud-agnostic storage abstraction (local/S3/GCS)
-- Daemon lifecycle management with graceful shutdown
-- Structured observability through JSON logging
 
 ## Layers
 
+**Daemon Framework Layer:**
+- Purpose: Lifecycle management for long-running processes
+- Contains: Abstract base classes with signal handling, state persistence, cooperative shutdown
+- Files:
+  - `src/cta_eta/data_collection/orchestration/daemon_async.py` (AsyncBaseDaemon)
+  - `src/cta_eta/data_collection/orchestration/daemon.py` (BaseDaemon - sync variant)
+  - `src/cta_eta/data_collection/orchestration/weather_daemon.py` (WeatherDaemon - main entry point)
+- Depends on: asyncio, signal handling, JSON state persistence
+- Used by: Main daemon implementation (WeatherDaemon)
+
 **API Client Layer:**
-- Purpose: Fetch raw data from external APIs, normalize responses
-- Location: `src/cta_eta/data_collection/apis/`
-- Contains: `api_train_position.py`, `api_weather_nws.py`, `api_weather_open_meteo.py`, `api_weather_openweathermap.py`, `api_cta_track_shape.py`
-- Pattern: Pure functions with `@stamina.retry` decorator
-- Depends on: httpx.Client (dependency injection), config, logging
-- Used by: Caching layer, orchestration layer (future daemon pollers)
+- Purpose: HTTP communication with external APIs
+- Contains: Stateless async functions for API calls with retry logic
+- Files:
+  - `src/cta_eta/data_collection/apis/api_train_position.py` (CTA Train Tracker)
+  - `src/cta_eta/data_collection/apis/api_weather_nws.py` (National Weather Service)
+  - `src/cta_eta/data_collection/apis/api_weather_open_meteo.py` (Open-Meteo)
+  - `src/cta_eta/data_collection/apis/api_weather_openweathermap.py` (OpenWeatherMap fallback)
+  - `src/cta_eta/data_collection/apis/api_cta_stations.py` (Station metadata)
+  - `src/cta_eta/data_collection/apis/api_track_shape.py` (Track geometry)
+- Depends on: httpx (AsyncClient), stamina (retry decorator), logging
+- Used by: Daemon orchestration layer
+- Pattern: All functions use `@stamina.retry()` + `@log_api_call()` decorators
 
-**Caching & Grid Discovery Layer:**
-- Purpose: Smart lazy loading - discover API-specific grid identifiers on-demand
-- Location: `src/cta_eta/data_collection/storage_cache/`
-- Contains: `CachedData[T]` (generic TTL cache), `WeatherGridCache` (lazy grid discovery)
-- Pattern: Lazy loading with file persistence across restarts
-- Optimization: ~300 CTA stations → ~50 weather grid points (deduplication)
-- Depends on: API clients, logging
-- Used by: Data collection daemons (future)
+**Storage & Caching Layer:**
+- Purpose: Data persistence and API call deduplication
+- Contains: Cache implementations, Parquet writers, cloud storage abstraction
+- Files:
+  - `src/cta_eta/data_collection/storage_cache/cache.py` (TTL-based generic cache)
+  - `src/cta_eta/data_collection/storage_cache/kv_cache.py` (Key-value cache)
+  - `src/cta_eta/data_collection/storage_cache/weather_grid_cache.py` (Grid mappings)
+  - `src/cta_eta/data_collection/storage_cache/storage.py` (Parquet writer, StorageBackend)
+- Depends on: pyarrow, fsspec, s3fs, gcsfs, pathlib
+- Used by: Daemon orchestration and API clients (for caching)
 
-**Storage Backend Layer:**
-- Purpose: Cloud-agnostic Parquet file writing
-- Location: `src/cta_eta/data_collection/storage_cache/storage.py`
-- Contains: `StorageBackend` (ABC), `LocalStorage`, `CloudStorage`
-- Pattern: Strategy pattern supporting local filesystem, S3, GCS
-- Features: Hive-style daily partitioning (`date=YYYY-MM-DD/`), timezone-aware splits at 3:00 AM Chicago time
-- Depends on: fsspec, pyarrow
-- Used by: Data collection daemons (future)
+**Data Merging Layer:**
+- Purpose: Multi-source weather data unification
+- Contains: Weather data merger with precedence rules
+- Files:
+  - `src/cta_eta/data_collection/merging/weather_merger.py` (merge_weather_sources)
+- Depends on: pandas, numpy
+- Used by: Weather daemon after parallel API fetches
+- Precedence: NWS > Open-Meteo > OpenWeatherMap
 
 **Configuration Layer:**
-- Purpose: Load operational settings and API keys
-- Location: `src/cta_eta/data_collection/config.py`
-- Pattern: TOML config file + environment variable secrets merging
-- Functions: `load_config()`, `_load_config_from_path()`
-- Depends on: tomllib, python-dotenv
-- Used by: All layers
+- Purpose: Hybrid TOML + environment variable configuration
+- Contains: Config loader merging operational settings with secrets
+- Files:
+  - `src/cta_eta/data_collection/config.py` (load_config)
+- Depends on: tomllib (built-in), dotenv
+- Used by: All modules requiring configuration
+- Pattern: Single `load_config()` function returns nested dict
 
-**Logging Layer:**
-- Purpose: Structured logging with dual formatters
-- Location: `src/cta_eta/data_collection/logging.py`
-- Contains: `JSONFormatter`, `HumanReadableFormatter`, `log_api_call` decorator
-- Pattern: Dual output (JSON for production, human-readable for development)
-- Features: Context-aware logging with request correlation
-- Depends on: Python logging module
-- Used by: All layers
-
-**Orchestration Layer:**
-- Purpose: Daemon lifecycle management with signal handling
-- Location: `src/cta_eta/data_collection/orchestration/daemon.py`
-- Contains: `BaseDaemon` (ABC)
-- Pattern: Abstract base class with `run()` and `_get_state()` hooks
-- Features: SIGTERM/SIGINT graceful shutdown, state persistence to `.daemon_state/{ClassName}.json`
-- Depends on: config, logging
-- Used by: Future train/weather poller daemons
+**Observability Layer:**
+- Purpose: Structured logging and diagnostics
+- Contains: JSON formatters, log decorators, span timing
+- Files:
+  - `src/cta_eta/data_collection/logging.py` (structured logging, `@log_api_call`)
+  - `src/cta_eta/data_collection/orchestration/diagnostics.py` (DaemonDiagnostics)
+- Depends on: logging (built-in), contextvars
+- Used by: All layers for observability
 
 ## Data Flow
 
-**API Request Lifecycle:**
+**Weather Collection Cycle (every 15-30 minutes):**
 
-1. **External APIs** (CTA, NWS, Open-Meteo, Chicago Data, OpenWeatherMap)
-   ↓
-2. **API Clients** (`api_*.py`)
-   - Stateless fetch functions with `@stamina.retry` decorators
-   - HTTP client dependency injection for connection pooling
-   - Response normalization to flat dictionaries
-   ↓
-3. **Grid Cache Layer** (for weather APIs)
-   - Lazy discovery of API-specific grid identifiers
-   - TTL-based refresh (24 hours for weather grids, 30 days for track shapes)
-   - File persistence across daemon restarts
-   ↓
-4. **Normalized Data Records** (Flat, JSON-serializable dicts)
-   ↓
-5. **Storage Backend** (`StorageBackend` ABC)
-   - LocalStorage (dev) or CloudStorage (S3/GCS prod)
-   - Append to daily Parquet partitions
-   ↓
-6. **Parquet Files** (Hive-partitioned)
-   ```
-   data/
-   ├── date=2026-01-17/
-   │   ├── train_positions.parquet
-   │   ├── weather_nws.parquet
-   │   └── weather_open_meteo.parquet
-   ├── weather_nws/
-   ├── weather_open_meteo/
-   └── weather_openweathermap/
-   ```
+1. Load persisted state (daemon startup)
+   - `AsyncBaseDaemon._load_state()` reads `.daemon_state/<daemon_name>.json`
+   - Restores grid mappings from cache files
+
+2. Resolve Station → Grid Mappings
+   - Load cached mappings from NWSGridCache, OpenMeteoGridCache
+   - Cache miss triggers discovery: `discover_nws_grid()`, `discover_open_meteo_grid()`
+   - Result: ~145 CTA stations deduplicated to ~50 unique weather grid points
+
+3. Parallel Multi-Source Weather Fetch
+   - NWS: `aiometer.run_on_each(get_nws_hourly_forecast, 2.0 req/sec, max 10 concurrent)`
+   - Open-Meteo: `aiometer.run_on_each(get_open_meteo_current, 0.1 req/sec, max 3 concurrent)`
+   - Both sources fetched via `await asyncio.gather()` for parallel execution
+
+4. Fallback for Failures (optional)
+   - OpenWeatherMap called for any grid point where NWS or Open-Meteo failed
+   - Deduplicated by grid point to avoid duplicate requests
+
+5. Merge Station-Level Records
+   - `merge_weather_sources(nws_data, om_data, owm_data)` with precedence
+   - Attach station coordinates, collection timestamp, metadata
+
+6. Storage
+   - `ParquetWriter.append_batch()` with daily partition key
+   - Hive-style partitioning: `dataset=weather/date=YYYY-MM-DD/`
+   - Zero-copy buffering using PyArrow
+
+**State Management:**
+- File-based state persistence via `.daemon_state/<daemon_name>.json`
+- Grid mappings cached in JSON files with per-entry TTL
+- No in-memory state between daemon restarts
+- Each collection cycle is independent (stateless polling)
 
 ## Key Abstractions
 
-**Dependency Injection:**
-- Purpose: HTTP clients passed to API functions for reusable connection pooling
-- Examples: All functions in `api_*.py` accept `client: httpx.Client` parameter
-- Pattern: Caller manages client lifecycle, function uses client
+**Daemon:**
+- Purpose: Abstract base for long-running processes
+- Examples: `AsyncBaseDaemon`, `WeatherDaemon`
+- Pattern: Template method with `start()` → `run()` → `stop()` lifecycle
+- Lifecycle:
+  ```python
+  daemon.start()  # Registers signal handlers, loads state
+  # Blocks on async run() until SIGTERM/SIGINT
+  daemon.stop()   # Cooperative shutdown, saves state
+  ```
 
-**Decorator Pattern:**
-- Purpose: Cross-cutting concerns (retry logic, logging)
-- Examples: `@stamina.retry()`, `@log_api_call()`
-- Pattern: Wrap functions with decorators for automatic behavior
+**Cache:**
+- Purpose: TTL-based persistent caching with lazy refresh
+- Examples: `CachedData[T]`, `WeatherGridCache`, `NWSGridCache`
+- Pattern: Generic cache with JSON file persistence
+- Operations: `get()`, `set()`, `delete()`, `is_expired()`
 
-**Strategy Pattern:**
-- Purpose: Pluggable storage backends
-- Examples: `StorageBackend` (ABC) → `LocalStorage`, `CloudStorage`
-- Pattern: Common interface, different implementations
+**StorageBackend:**
+- Purpose: Cloud-agnostic storage abstraction
+- Examples: Local filesystem, S3, GCS via fsspec
+- Pattern: Abstract interface with `put()`, `get()`, `list()`
+- Implementation: fsspec handles protocol translation (file://, s3://, gcs://)
 
-**Generic Caching:**
-- Purpose: Type-safe caching for flexible data types
-- Examples: `CachedData[T]` parameterized type
-- Pattern: Generic class with TTL-based expiration
+**API Client Function:**
+- Purpose: Stateless HTTP request with retry and logging
+- Pattern:
+  ```python
+  @stamina.retry(on=httpx.HTTPStatusError, attempts=10)
+  @log_api_call(logger)
+  async def get_xxx(client: httpx.AsyncClient) -> dict[str, Any]:
+      # Dependency injection: caller provides client
+  ```
+- Examples: All functions in `apis/*.py`
 
-**Template Method:**
-- Purpose: Daemon lifecycle with customizable behavior
-- Examples: `BaseDaemon` (ABC) with `run()` and `_get_state()` hooks
-- Pattern: Abstract base class defines structure, subclasses implement specifics
-
-**Lazy Loading:**
-- Purpose: Discover API grids on-demand, not upfront
-- Examples: `WeatherGridCache` discovers grid points as stations are encountered
-- Pattern: Check cache → fetch if missing → cache result
+**Rate Limiter:**
+- Purpose: Enforce API rate limits with async concurrency control
+- Examples: `aiometer.run_on_each()` with max_per_second and max_at_once
+- Pattern: Semaphore + token bucket for distributed rate limiting
 
 ## Entry Points
 
-**Current:**
-- No CLI entry points yet (commented out in `pyproject.toml` lines 82-84)
+**Weather Daemon:**
+- Location: `src/cta_eta/data_collection/orchestration/weather_daemon.py`
+- Triggers: Manual execution via `python -m` or direct script
+- Responsibilities:
+  - Initialize HTTP clients and caches
+  - Start polling loop with configured intervals
+  - Handle SIGTERM/SIGINT for graceful shutdown
+  - Persist state on exit
 
-**Planned:**
-- Train position poller daemon (inherits from `BaseDaemon`)
-- Weather data poller daemon (inherits from `BaseDaemon`)
-- Orchestration daemon (coordinates multiple pollers)
+**CLI Entry (if present):**
+- Not detected in current analysis
 
 ## Error Handling
 
-**Strategy:** Retry at API client level, fail fast at config level
+**Strategy:** Exception bubbling with retry at API client level
 
 **Patterns:**
-- API clients: `@stamina.retry` with exponential backoff (configurable attempts)
-- Config loading: Raise exceptions immediately on missing required values
-- Cache save: Log errors but don't propagate (daemon continues)
-- Daemon: Catch exceptions in `run()`, log, and gracefully shut down
+- API clients: `@stamina.retry()` decorator with exponential backoff (10 attempts)
+- Daemon main loop: `try/except Exception` catches all errors, logs, continues
+- Partial failures: One API source failing doesn't stop collection (fallback mechanism)
+- State persistence: Errors during save logged but don't crash daemon
+
+**Retry Configuration:**
+- Default: 10 attempts with exponential backoff
+- Configurable via `config.toml` retry section
+- Only retries on `httpx.HTTPStatusError` (4xx/5xx responses)
 
 ## Cross-Cutting Concerns
 
 **Logging:**
-- JSONFormatter for production (machine-parseable)
-- HumanReadableFormatter for development (colorized, readable)
-- `@log_api_call()` decorator for automatic API request/response logging
+- Structured JSON logging with context variables
+- Log decorators: `@log_api_call(logger)` for automatic API timing
+- Context manager: `log_context()` for correlation IDs
+- Formatters: JSONFormatter (production) + HumanReadableFormatter (dev)
 
-**Validation:**
-- Environment variables validated at config load time
-- API responses normalized and validated in `api_*.py` modules
-- Type hints enforced with basedpyright static analysis
+**Rate Limiting:**
+- Per-provider limits enforced via aiometer library
+- NWS: 2 req/sec soft limit (no official limit)
+- Open-Meteo: 0.1 req/sec, max 3 concurrent (10K/day)
+- OpenWeatherMap: 1 req/sec (60/min, 1M/month)
 
-**Retry Logic:**
-- Stamina decorator with exponential backoff
-- Configurable max retry attempts in `config.toml`
-- Retries on `httpx.HTTPStatusError`
+**Configuration:**
+- Hybrid TOML (operational) + .env (secrets) approach
+- Single `load_config()` merges both sources
+- Defaults for optional credentials (enables partial pipelines)
+
+**Diagnostics:**
+- Lightweight span timing via async context managers
+- Event recording with bounded memory (deque)
+- Optional JSONL event sink for offline analysis
 
 ---
 
-*Architecture analysis: 2026-01-19*
+*Architecture analysis: 2026-01-22*
 *Update when major patterns change*

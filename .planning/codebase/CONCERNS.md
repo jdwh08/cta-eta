@@ -1,169 +1,181 @@
 # Codebase Concerns
 
-**Analysis Date:** 2026-01-19
+**Analysis Date:** 2026-01-22
 
 ## Tech Debt
 
-**Unsafe Array Index Access:**
-- Issue: Multiple API response parsers access array indices without bounds checking
-- Files:
-  - `src/cta_eta/data_collection/apis/api_weather_nws.py:151` - `data["properties"]["periods"][0]` - No check if periods array is non-empty
-  - `src/cta_eta/data_collection/apis/api_weather_openweathermap.py:157` - `data["weather"][0]` - No bounds check
-  - `src/cta_eta/data_collection/apis/api_weather_openweathermap.py:244` - `data["list"][0]` - No bounds check on forecast list
-  - `src/cta_eta/data_collection/apis/api_weather_openweathermap.py:247` - `forecast["weather"][0]` - No bounds check
-- Impact: IndexError exceptions on unexpected API responses, causing daemon crashes
-- Fix approach: Add bounds checking before array access - check if array exists and has elements
+**Unguarded API Response Parsing:**
+- Issue: Multiple API client files assume specific response structures without defensive validation
+- Files affected:
+  - `src/cta_eta/data_collection/apis/api_weather_nws.py` (lines 78, 159-189)
+  - `src/cta_eta/data_collection/apis/api_weather_open_meteo.py` (lines 97-98, 171-189)
+  - `src/cta_eta/data_collection/apis/api_weather_openweathermap.py` (lines 95-96, 166-192)
+- Why: Rapid prototyping during initial development, assumed well-formed API responses
+- Impact: KeyError or IndexError if API response structure changes or is malformed
+- Fix approach: Wrap parsing in try-except blocks or use `.get()` with defaults consistently
 
-**httpx.Client Resource Leak:**
-- Issue: httpx.Client instances created but never closed in WeatherGridCache classes
-- Files:
-  - `src/cta_eta/data_collection/storage_cache/weather_grid_cache.py:156` - NWSGridCache creates client without closing
-  - `src/cta_eta/data_collection/storage_cache/weather_grid_cache.py:202` - OpenMeteoGridCache creates client without closing
-- Why: Instance variables created in `__init__` but no context manager or `__del__` method
-- Impact: Connection pool exhaustion, memory leaks, file descriptor leaks over time
-- Fix approach: Add `__enter__` and `__exit__` methods for context manager support, or add `__del__` to close client
+**Pandas Overhead for Simple Dict Merging:**
+- Issue: Weather merger creates pandas DataFrames just to merge dictionaries
+- File: `src/cta_eta/data_collection/merging/weather_merger.py` (lines 89-104)
+- Why: Initial implementation used pandas for all data operations
+- Impact: Performance overhead on every polling cycle (~100 stations × 15-30 min intervals)
+- Fix approach: Replace pandas concat with simple dict merging logic
 
-**Cache Save Errors Not Propagated:**
-- Issue: OSError during cache save is caught and logged but not raised
-- Files: `src/cta_eta/data_collection/storage_cache/cache.py:116-123` - Exception caught but not re-raised
-- Impact: Daemon runs but cache updates silently fail, restart may lose cached data
-- Fix approach: Consider re-raising or adding retry logic for cache saves
+**Hardcoded Rate Limit Constants:**
+- Issue: API rate limits hardcoded in daemon without linking to actual API documentation
+- File: `src/cta_eta/data_collection/orchestration/weather_daemon.py` (lines 62-63)
+- Values: `_OPEN_METEO_MAX_PER_SECOND = 0.1`, `_OPEN_METEO_MAX_AT_ONCE = 3`
+- Why: Quick implementation without configuration abstraction
+- Impact: Manual code updates needed if API limits change
+- Fix approach: Move to `config.toml` with comments linking to API docs
 
 ## Known Bugs
 
-**None currently identified** - No active bugs documented in code comments
+**Inconsistent Error Types for Missing Credentials:**
+- Symptoms: `KeyError` raised instead of `ValueError` for missing env vars
+- Trigger: Running without CTA_API_KEY set in environment
+- File: `src/cta_eta/data_collection/apis/api_train_position.py` (line 85)
+- Workaround: Set all required env vars in `.env` file
+- Root cause: Inconsistent error handling pattern across API clients
+- Fix: Change `raise KeyError(msg)` to `raise ValueError(msg)` for consistency
+
+**Secrets Default to Empty Strings:**
+- Symptoms: Application starts but fails later during API calls with cryptic errors
+- Trigger: Missing required env vars in `.env` file
+- File: `src/cta_eta/data_collection/config.py` (lines 39-47)
+- Workaround: Validate `.env` file against `.env.template` manually
+- Root cause: Defaults allow partial pipeline operation (by design)
+- Fix: Add startup validation distinguishing required vs optional credentials
 
 ## Security Considerations
 
-**Environment Variable Exposure:**
-- Risk: API keys stored in environment variables could be exposed if daemon state is logged
-- Current mitigation: Keys not logged in structured logging
-- Recommendations: Ensure state persistence in `.daemon_state/*.json` doesn't include secrets
+**Hardcoded Placeholder User-Agent:**
+- Risk: NWS API requires proper User-Agent, placeholder may not be overridden
+- File: `src/cta_eta/data_collection/storage_cache/weather_grid_cache.py` (line 109)
+- Code: `"User-Agent": "(cta-eta, contact@example.com)"  # Will be overridden by actual config`
+- Current mitigation: Comment suggests override, but mechanism not evident
+- Recommendations: Verify override path or inject proper User-Agent from config
 
-**.env File Presence:**
-- Risk: `.env` file exists in working directory (gitignored but could be accidentally committed)
-- Current mitigation: Properly configured in `.gitignore` (line 154)
-- Recommendations: Use `.env.local` instead to avoid confusion
+**Environment Variable Exposure:**
+- Risk: API keys logged in plaintext if debug logging enabled
+- Files: All API client files accessing `os.getenv()`
+- Current mitigation: Structured logging doesn't log env vars by default
+- Recommendations: Audit log statements to ensure secrets never logged
 
 ## Performance Bottlenecks
 
-**No current bottlenecks identified** - Data collection is I/O bound, not CPU bound
+**Pandas DataFrame Creation Per-Record:**
+- Problem: Creating DataFrames for every weather record merge
+- File: `src/cta_eta/data_collection/merging/weather_merger.py` (lines 89-104)
+- Measurement: ~100 stations × merge overhead × polling frequency
+- Cause: Using pandas for simple dictionary merging operations
+- Improvement path: Replace pandas concat with native dict operations
+
+**Grid Discovery Timeout Complexity:**
+- Problem: Complex nested async logic with multiple timeout scenarios
+- File: `src/cta_eta/data_collection/orchestration/weather_daemon.py` (lines 677-819)
+- Measurement: 143-line method with nested context managers
+- Cause: Handling multiple concurrent discovery calls with individual timeouts
+- Improvement path: Extract to separate `WeatherGridDiscoverer` class
 
 ## Fragile Areas
 
-**JSON Key Access Without Validation:**
-- Why fragile: API responses may change or omit fields
-- Files:
-  - `src/cta_eta/data_collection/apis/api_weather_nws.py:154-163` - Dewpoint access without validation
-  - `src/cta_eta/data_collection/apis/api_weather_openweathermap.py:155-157` - Weather array access
-  - `src/cta_eta/data_collection/apis/api_cta_track_shape.py:183-186` - Geometry access
-- Common failures: KeyError on malformed API responses
-- Safe modification: Add `.get()` with defaults or validate key existence first
-- Test coverage: API client tests exist for happy path, but edge cases not fully covered
+**Weather Daemon Discovery Logic:**
+- File: `src/cta_eta/data_collection/orchestration/weather_daemon.py` (lines 677-819)
+- Why fragile: 143-line method `_discover_open_meteo_grids_for_stations()` with complex async logic
+- Common failures: Timeout handling across multiple concurrent tasks
+- Safe modification: Extract grid discovery to separate class before modifying
+- Test coverage: Needs verification (test file exists but coverage unknown)
 
-**Grid ID Parsing:**
-- Why fragile: Assumes "lat,lon" format without validation
-- Files:
-  - `src/cta_eta/data_collection/apis/api_weather_openweathermap.py:140` - `grid_id.split(",")`
-  - `src/cta_eta/data_collection/apis/api_weather_openweathermap.py:228` - `grid_id.split(",")`
-- Common failures: ValueError if grid_id has unexpected format (e.g., empty string, wrong separator)
-- Safe modification: Validate split result has exactly 2 parts
-- Test coverage: Not tested
-
-**Timestamp Type Conversion:**
-- Why fragile: Assumes timestamp is string or datetime without validation
-- Files: `src/cta_eta/data_collection/storage_cache/storage.py:366-368` - Late conversion
-- Common failures: ValueError if `fromisoformat()` receives invalid string format
-- Safe modification: Validate format before conversion or use try/except
-- Test coverage: Basic tests exist, edge cases not covered
+**Configuration Access Without Guards:**
+- Files: `src/cta_eta/data_collection/storage_cache/weather_grid_cache.py` (lines 191-192, 207-209)
+- Why fragile: Direct dictionary key access assumes config structure
+- Example: `config["cache"]["directory"]` - crashes with KeyError if missing
+- Common failures: KeyError on startup if config.toml structure changes
+- Safe modification: Use `.get()` with defaults or validate config schema at load time
+- Test coverage: Config validation tests needed
 
 ## Scaling Limits
 
-**API Rate Limits:**
-- Current capacity:
-  - CTA: 50,000 requests/day (sufficient for 15s polling)
-  - Open-Meteo: 10,000 requests/day (current: ~4,500/day)
-  - OpenWeatherMap: 1,000 requests/day (fallback only)
-- Limit: Adding more weather providers or stations requires careful rate limit management
-- Symptoms at limit: 429 rate limit errors, API throttling
-- Scaling path: Optimize polling intervals, add request batching, upgrade to paid tiers
+**Open-Meteo API Rate Limit:**
+- Current capacity: 10,000 calls/day
+- Limit: ~50 grid points × 48 polls/day = 2,400 calls/day (24% utilization)
+- Symptoms at limit: 429 rate limit errors, missing weather data
+- Scaling path: Add retry with exponential backoff, consider premium tier
 
-**Storage Growth:**
-- Current capacity: Unlimited (local development)
-- Limit: Parquet files grow indefinitely without cleanup
-- Symptoms at limit: Disk space exhaustion
-- Scaling path: Implement data retention policy, archive old partitions to cold storage
+**CTA API Rate Limit:**
+- Current capacity: 50,000 requests/day
+- Limit: 15-second polling = 5,760 requests/day (12% utilization)
+- Symptoms at limit: 403 forbidden errors, missing train position data
+- Scaling path: Increase polling interval or request higher rate limit from CTA
 
 ## Dependencies at Risk
 
-**No at-risk dependencies identified** - All dependencies are actively maintained
+**No High-Risk Dependencies Detected:**
+- All major dependencies actively maintained (httpx, pandas, pytest)
+- Python 3.13 requirement may limit deployment platforms
+- Recommendation: Monitor pyarrow for breaking changes (rapid development)
 
 ## Missing Critical Features
 
-**Daemon Orchestration:**
-- Problem: No main daemon to coordinate train and weather pollers
-- Current workaround: Manual daemon execution
-- Blocks: Cannot run full 24/7 data collection pipeline
-- Implementation complexity: Medium (inherit from BaseDaemon, coordinate multiple pollers)
+**Startup Configuration Validation:**
+- Problem: No validation of required env vars at daemon startup
+- Current workaround: Errors discovered during first API call
+- Blocks: Fast failure for misconfiguration, clear error messages
+- Implementation complexity: Low (add validation in `config.py` load_config)
 
-**Data Retention Policy:**
-- Problem: No automatic cleanup of old Parquet files
-- Current workaround: Manual deletion
-- Blocks: Cannot run indefinitely without disk cleanup
-- Implementation complexity: Low (add cleanup logic to storage backend)
-
-**Graceful Degradation:**
-- Problem: No fallback when primary weather API fails
-- Current workaround: OpenWeatherMap fallback exists but not fully integrated
-- Blocks: Data collection stops if NWS API is down
-- Implementation complexity: Low (add try/except with fallback chain)
-
-**Production Deployment:**
-- Problem: No deployment scripts or systemd service files
-- Current workaround: Manual execution
-- Blocks: Cannot easily deploy to cloud VPS
-- Implementation complexity: Low (add systemd unit files, deployment scripts)
+**Comprehensive Error Classification:**
+- Problem: Generic `except Exception` in daemon main loop doesn't distinguish error types
+- File: `src/cta_eta/data_collection/orchestration/weather_daemon.py` (lines 236-237, 435, 483, 530)
+- Current workaround: Manual log inspection to determine error type
+- Blocks: Automated error handling (retry transient, exit on config errors)
+- Implementation complexity: Medium (classify exceptions, add specific handlers)
 
 ## Test Coverage Gaps
 
-**Missing API Client Tests:**
-- What's not tested:
-  - `src/cta_eta/data_collection/apis/api_train_position.py` - No tests for train position fetching
-  - `src/cta_eta/data_collection/apis/api_cta_track_shape.py` - No tests for track shape fetching
-  - `src/cta_eta/data_collection/apis/api_weather_openweathermap.py` - No tests for OpenWeatherMap client
-- Risk: Refactoring may break untested code silently
-- Priority: High (API clients are critical path)
-- Difficulty to test: Medium (requires mock HTTP responses)
+**Error Path Coverage:**
+- What's not tested: Malformed API responses, retry behavior under failures
+- Risk: Error handling code paths may not work as expected
+- Priority: High (error handling is critical for 24/7 operation)
+- Difficulty to test: Medium (need mock responses simulating failures)
 
-**Missing Cache Tests:**
-- What's not tested:
-  - `src/cta_eta/data_collection/storage_cache/weather_grid_cache.py` - No tests for NWSGridCache or OpenMeteoGridCache
-- Risk: Grid discovery logic may break without detection
-- Priority: Medium (cache reduces API calls but not critical for correctness)
-- Difficulty to test: Medium (requires mock API clients and file system)
-
-**Edge Case Coverage:**
-- What's not tested: Error paths, malformed API responses, network failures
-- Risk: Production issues from unexpected inputs
-- Priority: Medium (most errors are retried automatically)
-- Difficulty to test: Low (pytest parametrization can cover edge cases)
+**Integration Testing:**
+- What's not tested: Full daemon lifecycle with real caches and storage
+- Risk: Integration issues between components may not be caught
+- Priority: Medium (unit tests provide good coverage)
+- Difficulty to test: Medium (requires test fixtures for daemons)
 
 ## Documentation Gaps
 
-**Complex Logic Needs Comments:**
+**Complex Method Docstrings Missing:**
 - Files:
-  - `src/cta_eta/data_collection/storage_cache/storage.py:317-341` - Timezone-aware date calculation (complex, needs more explanation)
-  - `src/cta_eta/data_collection/apis/api_cta_track_shape.py:220-234` - Segment ID fingerprinting (clever but underdocumented)
-  - `src/cta_eta/data_collection/logging.py:125-182` - Decorator with performance timing (needs examples)
-- Impact: Future maintainers may not understand logic
-- Fix approach: Add inline comments explaining why logic exists and how it works
+  - `src/cta_eta/data_collection/orchestration/weather_daemon.py` (_collect_weather_cycle, _get_station_grid_mappings, _discover_open_meteo_grids_for_stations)
+- Impact: Difficult to understand multi-phase collection logic without reading full implementation
+- Fix: Add comprehensive docstrings explaining high-level flow and edge cases
 
-**No Deployment Documentation:**
-- Missing: How to deploy to cloud VPS, systemd service setup, production configuration
-- Impact: Difficult to deploy to production without trial and error
-- Fix approach: Add DEPLOYMENT.md with step-by-step instructions
+**API Rate Limit Documentation:**
+- Issue: Rate limit comments in code don't link to official API documentation
+- Files: All `api_*.py` files with rate limit comments
+- Impact: Can't verify limits without manual research
+- Fix: Add URLs to official API docs in comments
+
+## Input Validation Gaps
+
+**Grid ID Validation:**
+- Problem: Minimal validation of grid identifier format
+- File: `src/cta_eta/data_collection/apis/api_weather_open_meteo.py` (lines 141-152)
+- Example: Accepts `"999999,999999"` as valid lat/lon
+- Impact: Invalid grid IDs may cause downstream errors
+- Fix: Add range validation for latitude (-90 to 90) and longitude (-180 to 180)
+
+**Config Structure Assumptions:**
+- Problem: Config access assumes nested dictionary structure exists
+- Files: All cache factory functions (`get_nws_grid_cache`, etc.)
+- Example: `config["cache"]["directory"]` with no `.get()` fallback
+- Impact: KeyError on startup if config structure changes
+- Fix: Use `.get()` with defaults or validate config schema at load time
 
 ---
 
-*Concerns audit: 2026-01-19*
+*Concerns audit: 2026-01-22*
 *Update as issues are fixed or new ones discovered*

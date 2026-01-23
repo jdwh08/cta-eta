@@ -1,97 +1,83 @@
 # Technology Stack
 
-**Analysis Date:** 2026-01-19
+**Analysis Date:** 2026-01-22
 
 ## Languages
 
 **Primary:**
-- Python 3.13+ - All application code (`pyproject.toml` line 17, `.python-version`)
+- Python 3.13+ - All application code (`pyproject.toml`, `.python-version`)
 
 **Secondary:**
-- TOML - Configuration files (`config.toml`, `pyproject.toml`)
-- Markdown - Documentation (`README.md`, `CLAUDE.md`, `.planning/*.md`)
+- None (pure Python project)
 
 ## Runtime
 
 **Environment:**
-- Python 3.13+ required (modern features)
-- WSL Debian Linux (per `CLAUDE.md`)
+- Python 3.13+ - `pyproject.toml` requires-python = ">=3.13,<4.0"
+- WSL Debian Linux environment
 
 **Package Manager:**
-- UV - Modern Python package manager
-- Lockfile: `uv.lock` (269 KB dependency lockfile)
+- uv - Modern Python package manager (`pyproject.toml`, `uv.lock` 341MB lockfile)
+- Lockfile: `uv.lock` present (comprehensive dependency resolution)
 
 ## Frameworks
 
 **Core:**
-- None (vanilla Python data pipeline)
+- asyncio - Built-in async/await framework for concurrent I/O operations
+- httpx>=0.28.1 - Async HTTP client library for all API calls
 
 **Testing:**
-- pytest 9.0.2 - Unit testing framework (`pyproject.toml` line 73)
-- pytest-cov 7.0.0 - Code coverage (`pyproject.toml` line 74)
-- pytest-sugar 1.1.1 - Enhanced test output (`pyproject.toml` line 75)
-- pytest-mock 3.15.1 - Mocking utilities (`pyproject.toml` line 76)
+- pytest>=9.0.2 - Primary test framework
+- pytest-asyncio>=1.3.0 - Async test support
+- pytest-cov>=7.0.0 - Coverage reporting
+- pytest-sugar>=1.1.1 - Enhanced test output
+- pytest-mock>=3.15.1 - Mocking utilities
 
 **Build/Dev:**
-- Hatchling - Build backend with UV dynamic versioning
-- Ruff 0.14.13 - Fast linter and formatter (`pyproject.toml` lines 114-162)
-- basedpyright 1.37.1 - Static type checker (`pyproject.toml` line 79)
-- codespell 2.4.1 - Spell checker (`pyproject.toml` line 69)
+- hatchling - Build backend for Python package distribution
+- ruff>=0.14.13 - Fast Python linter and formatter (replaces Black + flake8)
+- basedpyright>=1.37.1 - Static type checker (Pyright fork)
 
 ## Key Dependencies
 
-**HTTP Client:**
-- httpx 0.28.1+ - Async-capable HTTP client for API requests
+**Critical:**
+- pandas>=2.3.3 - Data manipulation and DataFrame operations (`weather_merger.py`)
+- pyarrow>=22.0.0 - Apache Parquet format for efficient data storage (`storage.py`)
+- stamina>=25.2.0 - Retry decorator with exponential backoff (all API clients)
+- httpx>=0.28.1 - Async HTTP client with connection pooling
+- aiometer>=1.0.0 - Rate limiting for async operations (`weather_daemon.py`)
 
-**Retry/Resilience:**
-- stamina 25.2.0+ - Retry decorator with exponential backoff
-- tenacity 9.1.2+ - Alternative retry library
-
-**Data Storage:**
-- pyarrow 22.0.0+ - Parquet file format with Snappy compression
-- fsspec 2026.1.0+ - Filesystem abstraction (cloud-agnostic)
-- gcsfs 2026.1.0+ - Google Cloud Storage backend
-- s3fs 2026.1.0+ - AWS S3 storage backend
-
-**Configuration:**
-- python-dotenv 0.9.9+ - Environment variable loading from `.env` files
-- tomllib - Built-in TOML parser (Python 3.11+)
-
-**Utilities:**
-- rich 14.2.0+ - Terminal output formatting
-- funlog 0.2.1+ - Logging utilities
-
-**Documentation:**
-- mkdocs 1.6.1+ - Documentation generation
-- mkdocs-material 9.7.1+ - Material theme for documentation
+**Infrastructure:**
+- fsspec>=2026.1.0 - Unified filesystem interface for local/cloud storage
+- s3fs>=2026.1.0 - AWS S3 backend for fsspec
+- gcsfs>=2026.1.0 - Google Cloud Storage backend for fsspec
+- dotenv>=0.9.9 - Environment variable loading from `.env` files
 
 ## Configuration
 
 **Environment:**
-- `.env.template` - Template for API keys and secrets (CTA_API_KEY, CHIDATA_APP_TOK, etc.)
-- Environment variables loaded via python-dotenv
-
-**Application:**
-- `config.toml` - Operational settings (intervals, retry logic, storage backends, logging)
-- TOML + environment variable merging pattern
+- Hybrid TOML + environment variables approach
+- `config.toml` for operational settings (version-controlled)
+- `.env` for secrets (git-ignored, template: `.env.template`)
+- Merged via `src/cta_eta/data_collection/config.py`
 
 **Build:**
-- `pyproject.toml` - All development, build, linting, and test configuration
-- `.pre-commit-config.yaml` - Ruff linting and formatting hooks
+- `pyproject.toml` - Project metadata, dependencies, tool configuration
+- `.pre-commit-config.yaml` - Pre-commit hooks with ruff
 
 ## Platform Requirements
 
 **Development:**
-- Any platform with Python 3.13+ (Linux, macOS, Windows)
-- WSL Debian recommended (per `CLAUDE.md`)
-- UV package manager installed
+- Linux/WSL Debian (tested environment)
+- Any platform supporting Python 3.13+
+- No external runtime dependencies (database, Docker, etc.)
 
 **Production:**
-- Cloud VPS (Oracle Cloud Infrastructure, AWS EC2/Lightsail, GCP Compute Engine)
-- 24/7 uptime required for continuous data collection
-- Object storage (S3/GCS) for Parquet file backups
+- Long-running daemon processes (24/7 operation)
+- Cloud storage backend (local filesystem, AWS S3, or Google Cloud Storage)
+- Configured via `config.toml` backend selection
 
 ---
 
-*Stack analysis: 2026-01-19*
+*Stack analysis: 2026-01-22*
 *Update after major dependency changes*

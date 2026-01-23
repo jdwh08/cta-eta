@@ -1,66 +1,79 @@
 # Coding Conventions
 
-**Analysis Date:** 2026-01-19
+**Analysis Date:** 2026-01-22
 
 ## Naming Patterns
 
 **Files:**
-- `snake_case.py` for all modules (e.g., `api_train_position.py`, `weather_grid_cache.py`)
-- `test_*.py` for test files (e.g., `test_config.py`, `test_api_weather_nws.py`)
-- `UPPER_CASE.md` for important docs (e.g., `README.md`, `CLAUDE.md`)
+- snake_case for all modules: `api_train_position.py`, `weather_daemon.py`, `cache.py`
+- API modules prefixed: `api_<name>.py` (e.g., `api_weather_nws.py`)
+- Test files: `test_<module>.py` (mirrors source filename)
 
 **Functions:**
-- `snake_case` for all functions (e.g., `load_config()`, `get_train_positions()`, `normalize_train_positions()`)
-- No special prefix for async functions
-- Descriptive names (e.g., `discover_nws_grid()`, `get_open_meteo_current()`)
+- snake_case for all functions: `get_train_positions()`, `normalize_train_positions()`, `create_cached_data()`
+- Private/internal functions: `_load_from_file()`, `_is_expired()`, `_get_auth_header()`
+- Async functions: `async def` with descriptive names (no special async prefix)
 
 **Variables:**
-- `snake_case` for variables (e.g., `config`, `client`, `response_data`)
-- `UPPER_SNAKE_CASE` for constants with `Final` type hint (e.g., `TRAIN_POSITION_URL`, `MAX_RETRY_ATTEMPTS`)
-- `_leading_underscore` for private attributes (e.g., `_cache_file`, `_ttl`, `_fetch_fn`)
+- snake_case for variables: `poll_timestamp`, `cache_file`, `fetch_fn`
+- Complete type annotations on all parameters and returns
 
 **Types:**
-- `PascalCase` for classes (e.g., `CachedData`, `BaseDaemon`, `StorageBackend`)
-- `PascalCase` for interfaces (no `I` prefix)
-- No special pattern for type aliases (use descriptive names)
+- PascalCase for classes: `CachedData`, `BaseDaemon`, `WeatherDaemon`, `AsyncBaseDaemon`
+- Private classes use underscore prefix: `_AsyncRateLimiter`, `_DiscoveryStateMarker`
+- Generic type parameters in brackets: `class CachedData[T]:`
+- Modern Python 3.13+ generic syntax (no `Generic[T]` inheritance)
+
+**Constants:**
+- SCREAMING_SNAKE_CASE with `Final` type hint
+- Examples:
+  - `TRAIN_POSITION_URL: Final[str] = "..."`
+  - `CTA_LINES: Final[list[str]] = [...]`
+  - `NWS_POINTS_URL: Final[str] = "https://api.weather.gov/points"`
 
 ## Code Style
 
 **Formatting:**
-- Ruff formatter (`pyproject.toml` lines 157-162)
-- Line length: 88 characters (`pyproject.toml` line 115)
-- Indentation: 4 spaces (`pyproject.toml` line 160)
-- Quotes: Double quotes for all strings (`pyproject.toml` line 159)
-- Semicolons: Not used
+- Tool: Ruff formatter (`pyproject.toml` [tool.ruff])
+- Line length: 88 characters maximum
+- Quotes: Double quotes for all strings
+- Indentation: 4 spaces (no tabs)
+- Line endings: Auto (platform-dependent)
 
 **Linting:**
-- Ruff linter with "ALL" rules selected (`pyproject.toml` lines 114-162)
-- Selective ignores for justified violations (`pyproject.toml` lines 119-149)
-- Run: `ruff check src` or via pre-commit hooks
-- Pre-commit: `.pre-commit-config.yaml` (Ruff with `--fix`)
+- Tool: Ruff with nearly all rules enabled (`select = ["ALL"]`)
+- Config: `pyproject.toml` [tool.ruff.lint]
+- Per-file ignores for tests: PLR2004 (magic values), S101 (assert), SLF001 (private access)
+- Disabled rules: G004 (f-strings in logging - allowed)
+
+**Modern Python 3.13+ Features:**
+- Generic types: `dict[str, Any]` instead of `Dict[str, Any]` (PEP 585)
+- Union syntax: `str | int | None` instead of `Union[str, int, None]` (PEP 604)
+- Generic classes: `class CachedData[T]:` instead of `Generic[T]` (PEP 695)
+- Future annotations: `from __future__ import annotations` in all files
 
 ## Import Organization
 
 **Order:**
-1. `from __future__ import annotations` (first line after docstring)
-2. Standard library imports (e.g., `import os`, `from datetime import datetime`)
-3. Third-party imports (e.g., `import httpx`, `import stamina`)
-4. Own module imports with `### OWN MODULES` comment marker
+1. Future imports: `from __future__ import annotations`
+2. Built-in modules: `import asyncio`, `import json`, `import os`
+3. Third-party packages: `import httpx`, `import stamina`, `import pandas`
+4. Own modules: `from cta_eta.data_collection.config import load_config`
+5. TYPE_CHECKING imports: `if TYPE_CHECKING:` block for avoiding circular imports
 
 **Grouping:**
-- Blank line between import groups
-- Alphabetical within each group (Ruff auto-sorts)
+- Blank line between groups
+- Own modules marked with `### OWN MODULES` comment
+- TYPE_CHECKING imports used to avoid circular dependencies
 
-**Path Aliases:**
-- None (no custom import paths)
-
-**Examples:**
+**Example Pattern:**
 ```python
 from __future__ import annotations
 
-import os
-from datetime import datetime
-from typing import Any, Final
+import asyncio
+import json
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 import httpx
 import stamina
@@ -68,222 +81,123 @@ import stamina
 ### OWN MODULES
 from cta_eta.data_collection.config import load_config
 from cta_eta.data_collection.logging import get_logger
+
+if TYPE_CHECKING:
+    import logging
+    from collections.abc import Callable
 ```
 
 ## Error Handling
 
 **Patterns:**
-- Construct error message before raising for clarity
-- Raise built-in exceptions (ValueError, OSError, etc.)
-- Use stamina retry decorator for transient failures
-- Catch exceptions at boundaries (daemon main loop, API clients)
+- Explicit error messages with `msg = "..."` pattern before raising
+- Example:
+  ```python
+  if not api_key:
+      msg = "CTA_API_KEY must be set in environment variables"
+      raise ValueError(msg)
+  ```
+- Use `ValueError` for configuration errors, not `KeyError`
 
-**Example:**
-```python
-# Good - message constructed first
-if not periods:
-    msg = "No forecast periods returned from NWS API"
-    raise ValueError(msg)
+**Retry Logic:**
+- `@stamina.retry(on=httpx.HTTPStatusError, attempts=10)` decorator on API calls
+- Exponential backoff with configurable max attempts
+- Only retries on HTTP 4xx/5xx status errors
 
-# Bad - inline message
-raise ValueError("No forecast periods returned from NWS API")
-```
-
-**Error Types:**
-- `ValueError` - Invalid input or data
-- `OSError` - File system errors
-- `httpx.HTTPStatusError` - HTTP errors (caught by stamina)
-- No custom exception classes yet
+**Exception Propagation:**
+- Let exceptions bubble up to daemon main loop
+- Daemon catches all exceptions, logs, and continues polling
+- Partial failures don't stop entire collection cycle
 
 ## Logging
 
 **Framework:**
-- Python `logging` module with custom formatters (`src/cta_eta/data_collection/logging.py`)
-- Dual formatters: `JSONFormatter` (production), `HumanReadableFormatter` (development)
+- Structured JSON logging via custom formatters
+- Files: `src/cta_eta/data_collection/logging.py`
 
 **Patterns:**
-- Use `get_logger(__name__)` to get logger for each module
-- Use `@log_api_call()` decorator for API functions
-- Structured logging with context: `logger.info("Message", extra={"key": "value"})`
-- Log levels: `debug`, `info`, `warning`, `error`, `exception`
+- Log decorators: `@log_api_call(logger)` for automatic API timing
+- Context manager: `log_context()` for correlation IDs
+- Formatters: JSONFormatter (production) + HumanReadableFormatter (dev)
 
-**Examples:**
-```python
-from cta_eta.data_collection.logging import get_logger, log_api_call
-
-logger = get_logger(__name__)
-
-@log_api_call(logger)
-def fetch_data(client: httpx.Client) -> dict:
-    logger.info("Fetching data from API")
-    # ...
-```
+**F-strings in Logging:**
+- Allowed (ruff rule G004 disabled in config)
+- Example: `logger.info(f"Cache hit for station {station_id}: {grid_id}")`
 
 ## Comments
 
 **When to Comment:**
-- Explain why, not what (code should be self-explanatory)
-- Document business logic, algorithms, edge cases
-- Avoid obvious comments (e.g., `# increment counter`)
-- Use comments for complex logic (e.g., timezone-aware date calculation in `storage.py:317-341`)
+- Explain "why" not "what" - code should be self-explanatory
+- Document business logic, complex algorithms, non-obvious patterns
+- Mark own modules with `### OWN MODULES` comment before imports
+- Avoid obvious comments
 
-**Docstrings:**
-- Google-style docstrings for all public functions/classes
-- Multi-line with triple double-quotes
-- Sections: Summary, Args, Returns, Raises
+**Module Docstrings:**
+- Format: Google-style docstrings (PEP 257 extended)
+- Multi-line with blank line after opening quotes
+- Comprehensive module-level context and usage examples
+- Example:
+  ```python
+  """CTA Train Position API client with retry logic and response normalization.
 
-**Example:**
-```python
-def discover_nws_grid(client: httpx.Client, latitude: float, longitude: float) -> str:
-    """Discover NWS grid identifier from API response.
+  This module provides functions to fetch train positions from the CTA Train Tracker API
+  and normalize nested JSON responses into flat records for Parquet storage.
 
-    Makes API request to NWS Points endpoint and extracts the grid identifier
-    (office + X,Y coordinates) for use in subsequent forecast requests.
+  All functions accept an httpx.AsyncClient parameter for dependency injection.
+  """
+  ```
 
-    Args:
-        client: HTTP client for API requests
-        latitude: Coordinate latitude
-        longitude: Coordinate longitude
+**Function Docstrings:**
+- Summary line, blank line, then full description
+- Sections: Description, Args, Returns, Raises, Example (if applicable)
+- Complete type hints in signature (docstring types optional)
 
-    Returns:
-        NWS grid identifier (e.g., "LOT,75,73")
-
-    Raises:
-        httpx.HTTPStatusError: If API request fails after retries
-        ValueError: If response is missing required grid data
-
-    """
-```
-
-**TODO Comments:**
-- Not used (clean codebase)
-- If needed: `# TODO: description` (no username, rely on git blame)
+**Inline Comments:**
+- Linter suppressions: `# noqa: <rule>` or `# type: ignore` when necessary
+- Mark intentional patterns with explanatory comments
+- Avoid redundant comments that just restate the code
 
 ## Function Design
 
-**Size:**
-- Keep under 50-100 lines where reasonable
-- Extract helpers for complex logic
-- Single responsibility principle
+**Dependency Injection:**
+- HTTP clients passed as parameters: `async def get_xxx(client: httpx.AsyncClient)`
+- Enables connection pooling management and testability
+- Pattern used in all API client functions
 
-**Parameters:**
-- Use type hints for all parameters
-- Dependency injection for HTTP clients (e.g., `client: httpx.Client`)
-- Use `*` for keyword-only arguments where appropriate
-- Default values after required parameters
+**Decorator Stacking:**
+- Order matters: `@log_api_call(logger)` outer, `@stamina.retry(...)` inner
+- Allows unwrapping via `.__wrapped__` for testing
+- Example:
+  ```python
+  @stamina.retry(on=httpx.HTTPStatusError, attempts=10)
+  @log_api_call(logger)
+  async def get_train_positions(client: httpx.AsyncClient) -> dict[str, Any]:
+      ...
+  ```
+
+**Type Hints:**
+- Complete annotations on all function signatures
+- Use `TYPE_CHECKING` imports for avoiding circular dependencies
+- Modern Python 3.13+ syntax: `dict[str, Any]`, `str | None`
+- Generic functions: `def create_cached_data[T](...) -> CachedData[T]:`
 
 **Return Values:**
-- Explicit return type hints
-- Return early for guard clauses
-- Use None for optional returns (not empty strings)
-
-**Example:**
-```python
-@stamina.retry(on=httpx.HTTPStatusError, attempts=10)
-@log_api_call(logger)
-def get_train_positions(client: httpx.Client, *, api_key: str) -> dict[str, Any]:
-    """Fetch current train positions from CTA API.
-
-    Args:
-        client: HTTP client for requests
-        api_key: CTA API key (keyword-only)
-
-    Returns:
-        Raw JSON response from API
-
-    Raises:
-        httpx.HTTPStatusError: If request fails after retries
-
-    """
-    if not api_key:
-        msg = "CTA API key is required"
-        raise ValueError(msg)
-
-    # ... implementation
-```
+- Explicit return types in all functions
+- Use `None` for no return value
+- Union types for multiple return types: `dict[str, object] | None`
 
 ## Module Design
 
 **Exports:**
-- Use explicit `__all__` when needed (rare)
-- Most modules export all public functions/classes
-- No default exports (Python doesn't have them)
+- Named exports only (no default exports)
+- Public API defined by what's not prefixed with underscore
+- No `__all__` declarations (rely on underscore prefix convention)
 
-**Organization:**
-- Constants at top (after imports)
-- Helper functions before public functions
-- Classes after functions
-- `if __name__ == "__main__":` at bottom (rare, mostly for testing)
-
-**Examples:**
-```python
-### OWN MODULES
-from cta_eta.data_collection.logging import get_logger
-
-logger = get_logger(__name__)
-
-# Constants
-OPEN_METEO_URL: Final[str] = "https://api.open-meteo.com/v1/forecast"
-
-# Public functions
-@stamina.retry(on=httpx.HTTPStatusError, attempts=1)
-@log_api_call(logger)
-def discover_open_meteo_grid(client: httpx.Client, latitude: float, longitude: float) -> str:
-    # ...
-```
-
-## Type Annotations
-
-**Usage:**
-- Full type hints on all public functions
-- Use modern Python 3.13+ syntax (`list[str]`, not `List[str]`)
-- `from __future__ import annotations` to enable forward references
-- Generic types with `typing.TypeVar` when needed
-- Use `Final` for constants
-
-**TYPE_CHECKING:**
-- Conditional imports for type hints only (avoid circular imports)
-
-**Example:**
-```python
-from __future__ import annotations
-
-from typing import TYPE_CHECKING, Final
-
-if TYPE_CHECKING:
-    from collections.abc import Generator
-
-CONSTANT: Final[str] = "value"
-
-def function(param: str) -> dict[str, Any]:
-    # ...
-```
-
-## Special Patterns
-
-**Noqa Comments:**
-- Use sparingly for justified violations
-- Format: `# noqa: RULE_CODE`
-- Examples: `# noqa: N801` (intentional lowercase class name for `log_context`)
-
-**Context Managers:**
-- Use `with` for resource management (files, HTTP clients)
-- Example: `with httpx.Client() as client:` in `api_train_position.py:80`
-
-**Decorators:**
-- `@stamina.retry` for retry logic
-- `@log_api_call` for API logging
-- Stack decorators: retry first, logging second
-
-**Example:**
-```python
-@stamina.retry(on=httpx.HTTPStatusError, attempts=10)
-@log_api_call(logger)
-def api_function(client: httpx.Client) -> dict[str, Any]:
-    # ...
-```
+**Private Members:**
+- Leading underscore for internal use: `_load_from_file()`, `_client`
+- Double underscore for name mangling (rare, not used in this codebase)
 
 ---
 
-*Convention analysis: 2026-01-19*
+*Convention analysis: 2026-01-22*
 *Update when patterns change*
