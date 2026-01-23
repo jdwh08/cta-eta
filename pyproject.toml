@@ -158,6 +158,7 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = [
+    "PLR2004",  # Magic Value used in Comparison (meh)
     "S101",  # Use of Assert Detected (This is fine for tests)
     "SLF001",  # Private method access
     "INP001",  # Implicit Namespace

@@ -18,6 +18,7 @@ import asyncio
 import json
 import os
 import time
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, override
@@ -217,23 +218,43 @@ class WeatherDaemon(AsyncBaseDaemon):
         """Run the main weather collection loop.
 
         Runs continuous collection cycles until stopped.
+        Creates HTTP clients once and reuses them across cycles for connection pooling.
         """
-        while self.running:
-            try:
-                await self._collect_weather_cycle()
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                self.logger.exception("Weather collection cycle failed")
+        timeout = httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=10.0)
+        limits = httpx.Limits(max_connections=50, max_keepalive_connections=10)
 
-            await self.sleep(self.weather_interval)
+        async with (
+            httpx.AsyncClient(timeout=timeout, limits=limits) as nws_client,
+            httpx.AsyncClient(timeout=timeout, limits=limits) as om_client,
+            httpx.AsyncClient(timeout=timeout, limits=limits) as owm_client,
+        ):
+            while self.running:
+                try:
+                    await self._collect_weather_cycle(nws_client, om_client, owm_client)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    self.logger.exception("Weather collection cycle failed")
 
-    async def _collect_weather_cycle(self) -> None:
+                await self.sleep(self.weather_interval)
+
+    async def _collect_weather_cycle(
+        self,
+        nws_client: httpx.AsyncClient,
+        om_client: httpx.AsyncClient,
+        owm_client: httpx.AsyncClient,
+    ) -> None:
         """Execute one weather collection cycle."""
         cycle_start_time = time.time()
         cycle_id = (
             self.diagnostics.new_cycle_id() if self.diagnostics.enabled else "disabled"
         )
+
+        # Initialize variables for logging (in case of early returns)
+        unique_nws_grids: set[str] = set()
+        unique_om_grids: set[str] = set()
+        station_mappings: list[_StationGridMapping] = []
+        merged_records: list[dict[str, Any]] = []
 
         with log_context(
             daemon_class=self.__class__.__name__,
@@ -245,73 +266,94 @@ class WeatherDaemon(AsyncBaseDaemon):
                 extra={"extra_fields": {"cycle_id": cycle_id}},
             )
 
-            timeout = httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=10.0)
-            limits = httpx.Limits(max_connections=50, max_keepalive_connections=10)
+            try:
+                async with self.diagnostics.span("weather_cycle", cycle_id=cycle_id):
+                    # Step 1: Resolve station → provider grid mappings.
+                    async with self.diagnostics.span(
+                        "resolve_station_grid_mappings", cycle_id=cycle_id
+                    ):
+                        station_mappings = await self._get_station_grid_mappings(
+                            nws_client, om_client
+                        )
 
-            async with (
-                self.diagnostics.span("weather_cycle", cycle_id=cycle_id),
-                httpx.AsyncClient(timeout=timeout, limits=limits) as nws_client,
-                httpx.AsyncClient(timeout=timeout, limits=limits) as om_client,
-                httpx.AsyncClient(timeout=timeout, limits=limits) as owm_client,
-            ):
-                # Step 1: Resolve station → provider grid mappings.
-                async with self.diagnostics.span(
-                    "resolve_station_grid_mappings", cycle_id=cycle_id
-                ):
-                    station_mappings = await self._get_station_grid_mappings(
-                        nws_client, om_client
+                    if not station_mappings:
+                        self.logger.warning(
+                            "No station mappings resolved, skipping cycle"
+                        )
+                        return
+
+                    unique_nws_grids = {m.nws_grid_id for m in station_mappings}
+                    unique_om_grids = {m.open_meteo_grid_id for m in station_mappings}
+
+                    # Step 2: Fetch each provider once per unique provider grid ID.
+                    nws_by_grid_task = asyncio.create_task(
+                        self._fetch_nws_by_grid(nws_client, sorted(unique_nws_grids))
+                    )
+                    om_by_grid_task = asyncio.create_task(
+                        self._fetch_open_meteo_by_grid(
+                            om_client, sorted(unique_om_grids)
+                        )
                     )
 
-                unique_nws_grids = {m.nws_grid_id for m in station_mappings}
-                unique_om_grids = {m.open_meteo_grid_id for m in station_mappings}
-
-                # Step 2: Fetch each provider once per unique provider grid ID.
-                nws_by_grid_task = asyncio.create_task(
-                    self._fetch_nws_by_grid(nws_client, sorted(unique_nws_grids))
-                )
-                om_by_grid_task = asyncio.create_task(
-                    self._fetch_open_meteo_by_grid(om_client, sorted(unique_om_grids))
-                )
-
-                nws_by_grid, om_by_grid = await asyncio.gather(
-                    nws_by_grid_task, om_by_grid_task
-                )
-                if nws_by_grid is None or om_by_grid is None:
-                    self.logger.error("No results from weather collection cycle")
-                    return
-
-                # Step 3: Optional OpenWeatherMap fallback for stations where either primary
-                # source failed. We dedupe fallback calls by Open-Meteo grid ID (a lat,lon key).
-                fallback_grids = {
-                    m.open_meteo_grid_id
-                    for m in station_mappings
-                    if nws_by_grid.get(m.nws_grid_id) is None
-                    or om_by_grid.get(m.open_meteo_grid_id) is None
-                }
-
-                async with self.diagnostics.span(
-                    "openweathermap_fallback_fetch",
-                    cycle_id=cycle_id,
-                    fallback_grid_count=len(fallback_grids),
-                ):
-                    owm_by_grid = await self._fetch_openweathermap_by_grid(
-                        owm_client, sorted(fallback_grids)
+                    nws_by_grid, om_by_grid = await asyncio.gather(
+                        nws_by_grid_task, om_by_grid_task
                     )
 
-            merged_records = self._merge_station_weather(
-                station_mappings,
-                nws_by_grid,
-                om_by_grid,
-                owm_by_grid,
-            )
+                    # Ensure we have dicts (not None) - aiometer fixes ensure this
+                    if not isinstance(nws_by_grid, dict):
+                        nws_by_grid = {}
+                    if not isinstance(om_by_grid, dict):
+                        om_by_grid = {}
 
-            self.logger.info(
-                f"Merged {len(merged_records)} weather records from {len(station_mappings)} stations"
-            )
+                    # Step 3: Optional OpenWeatherMap fallback for stations where either primary
+                    # source failed. We dedupe fallback calls by Open-Meteo grid ID (a lat,lon key).
+                    fallback_grids = {
+                        m.open_meteo_grid_id
+                        for m in station_mappings
+                        if nws_by_grid.get(m.nws_grid_id) is None
+                        or om_by_grid.get(m.open_meteo_grid_id) is None
+                    }
 
-            self._store_merged_records(merged_records)
+                    owm_by_grid: dict[str, dict[str, Any] | None] = {}
+                    if fallback_grids:
+                        async with self.diagnostics.span(
+                            "openweathermap_fallback_fetch",
+                            cycle_id=cycle_id,
+                            fallback_grid_count=len(fallback_grids),
+                        ):
+                            owm_by_grid = await self._fetch_openweathermap_by_grid(
+                                owm_client, sorted(fallback_grids)
+                            )
 
-        # Step 6: Log summary statistics
+                    merged_records = self._merge_station_weather(
+                        station_mappings,
+                        nws_by_grid,
+                        om_by_grid,
+                        owm_by_grid,
+                    )
+
+                    self.logger.info(
+                        f"Merged {len(merged_records)} weather records from {len(station_mappings)} stations"
+                    )
+
+                    self._store_merged_records(merged_records)
+
+            except (asyncio.CancelledError, KeyboardInterrupt):
+                raise
+            except Exception as e:
+                self.logger.exception(
+                    "Error during weather collection cycle",
+                    extra={
+                        "extra_fields": {
+                            "cycle_id": cycle_id,
+                            "error_type": type(e).__name__,
+                            "error_message": str(e),
+                        }
+                    },
+                )
+                raise
+
+        # Step 6: Log summary statistics (guarded against undefined variables)
         success_count = len(merged_records)
         cycle_duration_ms = (time.time() - cycle_start_time) * 1000
 
@@ -380,7 +422,7 @@ class WeatherDaemon(AsyncBaseDaemon):
 
     async def _fetch_nws_by_grid(
         self, client: httpx.AsyncClient, grid_ids: list[str]
-    ) -> dict[str, dict[str, Any] | None] | None:
+    ) -> dict[str, dict[str, Any] | None]:
         async def _fetch_one(grid_id: str) -> tuple[str, dict[str, Any] | None]:
             try:
                 async with self.diagnostics.span(
@@ -418,11 +460,17 @@ class WeatherDaemon(AsyncBaseDaemon):
             max_per_second=2.0,
             max_at_once=10,
         )
-        return None if results is None else dict(results)
+        if results is None:
+            self.logger.warning(
+                "aiometer.run_on_each returned None for NWS fetch",
+                extra={"extra_fields": {"grid_count": len(grid_ids)}},
+            )
+            return {}
+        return dict(results)
 
     async def _fetch_open_meteo_by_grid(
         self, client: httpx.AsyncClient, grid_ids: list[str]
-    ) -> dict[str, dict[str, Any] | None] | None:
+    ) -> dict[str, dict[str, Any] | None]:
         async def _fetch_one(grid_id: str) -> tuple[str, dict[str, Any] | None]:
             try:
                 async with self.diagnostics.span(
@@ -460,7 +508,13 @@ class WeatherDaemon(AsyncBaseDaemon):
             max_per_second=_OPEN_METEO_MAX_PER_SECOND,
             max_at_once=_OPEN_METEO_MAX_AT_ONCE,
         )
-        return None if results is None else dict(results)
+        if results is None:
+            self.logger.warning(
+                "aiometer.run_on_each returned None for Open-Meteo fetch",
+                extra={"extra_fields": {"grid_count": len(grid_ids)}},
+            )
+            return {}
+        return dict(results)
 
     async def _fetch_openweathermap_by_grid(
         self, client: httpx.AsyncClient, grid_ids: list[str]
@@ -643,6 +697,11 @@ class WeatherDaemon(AsyncBaseDaemon):
 
         # Cold-cache fill can take a long time (rate limited); persist each success
         # immediately so a restart doesn't have to redo completed discoveries.
+        # Add timeout: 30 seconds per station, with overall batch timeout of 10 minutes
+        # (for ~145 stations at 0.1 req/s, worst case is ~24 minutes, but we cap at 10)
+        per_station_timeout_s: float = 30.0
+        overall_batch_timeout_s: float = 600.0  # 10 minutes
+
         out: dict[str, str] = {}
         sem = asyncio.Semaphore(_OPEN_METEO_MAX_AT_ONCE)
         limiter = _AsyncRateLimiter(max_per_second=_OPEN_METEO_MAX_PER_SECOND)
@@ -660,7 +719,22 @@ class WeatherDaemon(AsyncBaseDaemon):
                         latitude=lat,
                         longitude=lon,
                     ):
-                        grid = await discover_open_meteo_grid_async(client, lat, lon)
+                        grid = await asyncio.wait_for(
+                            discover_open_meteo_grid_async(client, lat, lon),
+                            timeout=per_station_timeout_s,
+                        )
+                except TimeoutError:
+                    self.logger.warning(
+                        f"Open-Meteo grid discovery timed out for station {station_id}",
+                        extra={
+                            "extra_fields": {
+                                "station_id": station_id,
+                                "timeout_seconds": per_station_timeout_s,
+                            }
+                        },
+                    )
+                    marker.failure()
+                    return None
                 except asyncio.CancelledError:
                     raise
                 except Exception:
@@ -683,12 +757,51 @@ class WeatherDaemon(AsyncBaseDaemon):
 
         tasks = [asyncio.create_task(_discover_one(req)) for req in requests]
         try:
-            for fut in asyncio.as_completed(tasks):
-                result = await fut
-                if result is None:
-                    continue
-                station_id, grid_id = result
-                out[station_id] = grid_id
+            # Wait for all tasks with overall timeout
+            done, pending = await asyncio.wait(
+                tasks,
+                timeout=overall_batch_timeout_s,
+                return_when=asyncio.ALL_COMPLETED,
+            )
+
+            # Process completed tasks
+            for task in done:
+                try:
+                    result = await task
+                    if result is None:
+                        continue
+                    station_id, grid_id = result
+                    out[station_id] = grid_id
+                except (asyncio.CancelledError, TimeoutError):
+                    # These are expected and already handled
+                    pass
+                except Exception as e:  # noqa: BLE001
+                    # Catch-all for unexpected errors in task results
+                    # (task itself may have caught and returned None)
+                    self.logger.warning(
+                        f"Discovery task failed: {e}",
+                        extra={
+                            "extra_fields": {
+                                "error_type": type(e).__name__,
+                                "error_message": str(e),
+                            }
+                        },
+                    )
+
+            # Cancel pending tasks if we hit the overall timeout
+            if pending:
+                self.logger.warning(
+                    f"Discovery batch timed out: {len(pending)} tasks still pending",
+                    extra={
+                        "extra_fields": {
+                            "pending_count": len(pending),
+                            "overall_timeout_seconds": overall_batch_timeout_s,
+                        }
+                    },
+                )
+                for task in pending:
+                    task.cancel()
+
         except asyncio.CancelledError:
             marker.finish("cancelled")
             raise
@@ -699,6 +812,8 @@ class WeatherDaemon(AsyncBaseDaemon):
             for t in tasks:
                 if not t.done():
                     t.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await t
 
         marker.finish("completed")
         return out
