@@ -38,7 +38,7 @@ async def test_discover_open_meteo_grid_returns_actual_coordinates(
     )
 
     # Act
-    grid_id = await api_weather_open_meteo.discover_open_meteo_grid_async(
+    grid_id = await api_weather_open_meteo.discover_open_meteo_grid(
         open_meteo_client, 41.72, -87.62
     )
 
@@ -78,7 +78,7 @@ async def test_get_open_meteo_current_defaults_missing_fields_and_converts_visib
     )
 
     # Act
-    current = await api_weather_open_meteo.get_open_meteo_current_async(
+    current = await api_weather_open_meteo.get_open_meteo_current(
         open_meteo_client, grid_id
     )
 
@@ -99,9 +99,7 @@ async def test_get_open_meteo_current_defaults_missing_fields_and_converts_visib
     assert (
         open_meteo_client.get.call_args.args[0] == api_weather_open_meteo.OPEN_METEO_URL
     )
-    assert (
-        open_meteo_client.get.call_args.kwargs["params"]["forecast_days"] == 2  # noqa: PLR2004
-    )
+    assert open_meteo_client.get.call_args.kwargs["params"]["forecast_days"] == 2
     assert open_meteo_client.get.call_args.kwargs["params"]["wind_speed_unit"] == "mph"
     assert (
         open_meteo_client.get.call_args.kwargs["params"]["temperature_unit"]
@@ -123,7 +121,7 @@ async def test_get_open_meteo_current_rejects_bad_grid_id(
     # Arrange
     # Act / Assert
     with pytest.raises(ValueError, match="Invalid grid ID: not-a-grid-id"):
-        await api_weather_open_meteo.get_open_meteo_current_async(
+        await api_weather_open_meteo.get_open_meteo_current(
             open_meteo_client, "not-a-grid-id"
         )
 
@@ -135,7 +133,7 @@ async def test_get_open_meteo_current_rejects_bad_grid_id_list(
     # Arrange
     # Act / Assert
     with pytest.raises(ValueError, match="Invalid grid ID: not_coord,not_coord"):
-        await api_weather_open_meteo.get_open_meteo_current_async(
+        await api_weather_open_meteo.get_open_meteo_current(
             open_meteo_client, "not_coord,not_coord"
         )
 
@@ -146,7 +144,7 @@ async def test_get_open_meteo_current_rejects_grid_id_with_too_many_commas(
     """Test that the get_open_meteo_current function rejects grid IDs with 2+ commas."""
     # Arrange / Act / Assert
     with pytest.raises(ValueError, match=r"Invalid grid ID: 41\.88,-87\.63,0"):
-        await api_weather_open_meteo.get_open_meteo_current_async(
+        await api_weather_open_meteo.get_open_meteo_current(
             open_meteo_client, "41.88,-87.63,0"
         )
 
@@ -158,9 +156,9 @@ async def test_open_meteo_propagates_http_errors(
     """Test that the open_meteo_propagates_http_errors function propagates HTTP errors."""
     # Arrange
     fn_no_retry = getattr(
-        api_weather_open_meteo.discover_open_meteo_grid_async,
+        api_weather_open_meteo.discover_open_meteo_grid,
         "__wrapped__",
-        api_weather_open_meteo.discover_open_meteo_grid_async,
+        api_weather_open_meteo.discover_open_meteo_grid,
     )
     open_meteo_client.get.return_value = httpx_json_response(
         {"error": "nope"}, 429, "https://example.com"
@@ -178,9 +176,9 @@ async def test_get_open_meteo_current_propagates_http_errors_without_retry_delay
     """Test that current endpoint propagates HTTP errors without retry delay."""
     # Arrange
     fn_no_retry = getattr(
-        api_weather_open_meteo.get_open_meteo_current_async,
+        api_weather_open_meteo.get_open_meteo_current,
         "__wrapped__",
-        api_weather_open_meteo.get_open_meteo_current_async,
+        api_weather_open_meteo.get_open_meteo_current,
     )
     open_meteo_client.get.return_value = httpx_json_response(
         {"error": "nope"}, 503, "https://example.com"

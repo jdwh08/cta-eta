@@ -99,17 +99,25 @@ class NWSGridCache(WeatherGridCache):
 
         """
         super().__init__(cache_file, ttl)
-        self._client = httpx.Client(
-            headers={
-                "User-Agent": "(cta-eta, contact@example.com)"
-            }  # Will be overridden by actual config
-        )
+        self._client: httpx.AsyncClient | None = None
 
-    def __del__(self) -> None:
+    async def _ensure_client(self) -> httpx.AsyncClient:
+        """Ensure async HTTP client is initialized."""
+        if self._client is None:
+            self._client = httpx.AsyncClient(
+                headers={
+                    "User-Agent": "(cta-eta, contact@example.com)"
+                }  # Will be overridden by actual config
+            )
+        return self._client
+
+    async def aclose(self) -> None:
         """Close the HTTP client."""
-        self._client.close()
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
 
-    def resolve_grid_identifier(
+    async def resolve_grid_identifier(
         self, station_id: str, latitude: float, longitude: float
     ) -> str:
         """Resolve NWS grid identifier for a station, discovering on miss/expiry.
@@ -133,14 +141,17 @@ class NWSGridCache(WeatherGridCache):
         logger.info(
             f"Cache miss for station {station_id}, discovering NWS grid from Points API"
         )
-        grid_id = self._discover_grid(latitude, longitude)
+        client = await self._ensure_client()
+        grid_id = await self._discover_grid(client, latitude, longitude)
         self.set_grid_identifier(station_id, grid_id)
         return grid_id
 
     @stamina.retry(on=httpx.HTTPStatusError, attempts=10)
-    def _discover_grid(self, latitude: float, longitude: float) -> str:
+    async def _discover_grid(
+        self, client: httpx.AsyncClient, latitude: float, longitude: float
+    ) -> str:
         """Discover NWS grid identifier from Points API for given coordinates."""
-        return discover_nws_grid(self._client, latitude, longitude)
+        return await discover_nws_grid(client, latitude, longitude)
 
 
 class OpenMeteoGridCache(WeatherGridCache):

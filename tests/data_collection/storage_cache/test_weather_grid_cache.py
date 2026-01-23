@@ -89,6 +89,7 @@ class TestWeatherGridCache:
         assert expired is None
 
 
+@pytest.mark.asyncio
 class TestNWSGridCache:
     """Test cases for NWS-specific cache with lazy grid discovery."""
 
@@ -102,7 +103,7 @@ class TestNWSGridCache:
         """Create an NWSGridCache instance."""
         return NWSGridCache(cache_file=cache_file, ttl=60)
 
-    def test_resolve_returns_cached_grid_without_discovery(
+    async def test_resolve_returns_cached_grid_without_discovery(
         self, mocker: pytest.MockFixture, cache: NWSGridCache
     ) -> None:
         """Test that a cache hit avoids NWS discovery calls."""
@@ -112,15 +113,15 @@ class TestNWSGridCache:
         discover_spy = mocker.patch.object(cache, "_discover_grid")
 
         # Act
-        grid_id = cache.resolve_grid_identifier(
+        grid_id = await cache.resolve_grid_identifier(
             station_id, latitude=41.88, longitude=-87.63
         )
 
         # Assert
         assert grid_id == "LOT/1,2"
-        discover_spy.assert_not_called()
+        discover_spy.assert_not_awaited()
 
-    def test_resolve_on_miss_discovers_and_persists_mapping(
+    async def test_resolve_on_miss_discovers_and_persists_mapping(
         self, mocker: pytest.MockFixture, cache: NWSGridCache, cache_file: Path
     ) -> None:
         """Test discovery path stores the discovered grid and reuses it."""
@@ -131,22 +132,26 @@ class TestNWSGridCache:
         discovered = "LOT/85,67"
         discover = mocker.patch(
             "cta_eta.data_collection.storage_cache.weather_grid_cache.discover_nws_grid",
-            return_value=discovered,
+            new=mocker.AsyncMock(return_value=discovered),
         )
 
         # Act
-        first = cache.resolve_grid_identifier(station_id, latitude=lat, longitude=lon)
-        second = cache.resolve_grid_identifier(station_id, latitude=lat, longitude=lon)
+        first = await cache.resolve_grid_identifier(
+            station_id, latitude=lat, longitude=lon
+        )
+        second = await cache.resolve_grid_identifier(
+            station_id, latitude=lat, longitude=lon
+        )
 
         # Assert
         assert first == discovered
         assert second == discovered
-        discover.assert_called_once()
+        discover.assert_awaited_once()
         assert cache_file.exists()
         payload = json.loads(cache_file.read_text())
         assert payload["data"][station_id]["value"] == discovered
 
-    def test_resolve_propagates_http_status_error_and_does_not_cache(
+    async def test_resolve_propagates_http_status_error_and_does_not_cache(
         self, mocker: pytest.MockFixture, cache: NWSGridCache, cache_file: Path
     ) -> None:
         """Test failures do not poison the cache and exceptions bubble up."""
@@ -162,23 +167,28 @@ class TestNWSGridCache:
 
         # Act & Assert
         with pytest.raises(httpx.HTTPStatusError, match="upstream error"):
-            cache.resolve_grid_identifier(station_id, latitude=41.88, longitude=-87.63)
+            await cache.resolve_grid_identifier(
+                station_id, latitude=41.88, longitude=-87.63
+            )
 
         assert not cache_file.exists()
         set_spy.assert_not_called()
 
-    def test_del_closes_http_client(
+    async def test_aclose_closes_http_client(
         self, mocker: pytest.MockFixture, cache: NWSGridCache
     ) -> None:
-        """Test __del__ closes the underlying httpx client."""
+        """Test aclose closes the underlying httpx async client."""
         # Arrange
-        close_spy = mocker.spy(cache._client, "close")
+        await cache._ensure_client()
+        assert cache._client is not None
+        close_spy = mocker.spy(cache._client, "aclose")
 
         # Act
-        cache.__del__()
+        await cache.aclose()
 
         # Assert
-        close_spy.assert_called_once()
+        close_spy.assert_awaited_once()
+        assert cache._client is None
 
 
 class TestWeatherGridCacheFactories:
@@ -204,7 +214,7 @@ class TestWeatherGridCacheFactories:
 
         # Assert
         assert isinstance(cache, NWSGridCache)
-        assert cache._ttl == 123  # noqa: PLR2004
+        assert cache._ttl == 123
         assert cache._cache._cache_file.name == expected_name
 
     def test_get_open_meteo_grid_cache_builds_expected_instance(
@@ -219,7 +229,7 @@ class TestWeatherGridCacheFactories:
 
         # Assert
         assert isinstance(cache, WeatherGridCache)
-        assert cache._ttl == 123  # noqa: PLR2004
+        assert cache._ttl == 123
         assert cache._cache._cache_file.name == expected_name
 
     def test_get_openweathermap_grid_cache_builds_expected_instance(
@@ -234,5 +244,5 @@ class TestWeatherGridCacheFactories:
 
         # Assert
         assert isinstance(cache, WeatherGridCache)
-        assert cache._ttl == 123  # noqa: PLR2004
+        assert cache._ttl == 123
         assert cache._cache._cache_file.name == expected_name

@@ -2,6 +2,9 @@
 
 This module provides functions to fetch train positions from the CTA Train Tracker API
 and normalize nested JSON responses into flat records for Parquet storage.
+
+All functions accept an httpx.AsyncClient parameter for dependency injection and proper
+connection pooling management by the caller.
 """
 
 import os
@@ -12,6 +15,9 @@ import httpx
 import stamina
 
 from cta_eta.data_collection.config import load_config
+from cta_eta.data_collection.logging import get_logger, log_api_call
+
+logger = get_logger(__name__)
 
 # CTA API endpoint and configuration
 TRAIN_POSITION_URL: Final[str] = (
@@ -26,11 +32,15 @@ MAX_RETRY_ATTEMPTS: Final[int] = int(retry_config.get("max_retry_attempts", 10))
 
 
 @stamina.retry(on=httpx.HTTPStatusError, attempts=MAX_RETRY_ATTEMPTS)
-def get_train_positions() -> dict[str, Any]:
+@log_api_call(logger)
+async def get_train_positions(client: httpx.AsyncClient) -> dict[str, Any]:
     """Fetch current train positions for all CTA lines from the Train Tracker API.
 
     Makes a single API call to retrieve positions for all 8 CTA train lines at once.
     Uses stamina retry decorator for resilience against transient HTTP errors.
+
+    Args:
+        client: HTTP client for API requests
 
     Returns:
         dict[str, Any]: Raw JSON response from the API with structure:
@@ -77,17 +87,16 @@ def get_train_positions() -> dict[str, Any]:
         msg = "CTA_API_KEY environment variable not set"
         raise KeyError(msg)
 
-    with httpx.Client() as client:
-        response = client.get(
-            TRAIN_POSITION_URL,
-            params={
-                "key": api_key,
-                "rt": ",".join(CTA_LINES),
-                "outputType": "JSON",
-            },
-        )
-        response.raise_for_status()
-        return response.json()
+    response = await client.get(
+        TRAIN_POSITION_URL,
+        params={
+            "key": api_key,
+            "rt": ",".join(CTA_LINES),
+            "outputType": "JSON",
+        },
+    )
+    response.raise_for_status()
+    return response.json()
 
 
 def normalize_train_positions(
@@ -120,7 +129,8 @@ def normalize_train_positions(
             - is_delayed: Whether train is delayed (bool)
 
     Example:
-        >>> response = get_train_positions()
+        >>> async with httpx.AsyncClient() as client:
+        ...     response = await get_train_positions(client)
         >>> poll_time = datetime.now(timezone.utc)
         >>> records = normalize_train_positions(response, poll_time)
         >>> len(records)  # Number of active trains across all lines

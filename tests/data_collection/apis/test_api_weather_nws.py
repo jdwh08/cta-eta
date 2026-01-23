@@ -65,9 +65,7 @@ async def test_get_nws_forecast_url_calls_points_api(
     )
 
     # Act
-    result = await api_weather_nws.get_nws_forecast_url_async(
-        client, latitude, longitude
-    )
+    result = await api_weather_nws.get_nws_forecast_url(client, latitude, longitude)
 
     # Assert
     assert result == forecast_hourly
@@ -116,9 +114,7 @@ async def test_get_nws_forecast_url_follows_points_redirect(
 
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport) as client:
-        result = await api_weather_nws.get_nws_forecast_url_async(
-            client, latitude, longitude
-        )
+        result = await api_weather_nws.get_nws_forecast_url(client, latitude, longitude)
 
     assert result == forecast_hourly
     assert seen_urls == [url, redirected_url]
@@ -137,14 +133,14 @@ async def test_discover_nws_grid_parses_grid_id(
     client = mocker.AsyncMock(spec=httpx.AsyncClient)
     mocker.patch.object(
         api_weather_nws,
-        "get_nws_forecast_url_async",
+        "get_nws_forecast_url",
         new=mocker.AsyncMock(
             return_value="https://api.weather.gov/gridpoints/LOT/85,67/forecast/hourly"
         ),
     )
 
     # Act
-    grid_id = await api_weather_nws.discover_nws_grid_async(client, 41.88, -87.63)
+    grid_id = await api_weather_nws.discover_nws_grid(client, 41.88, -87.63)
 
     # Assert
     assert grid_id == "LOT/85,67"
@@ -158,13 +154,13 @@ async def test_discover_nws_grid_rejects_unexpected_url(
     client = mocker.AsyncMock(spec=httpx.AsyncClient)
     mocker.patch.object(
         api_weather_nws,
-        "get_nws_forecast_url_async",
+        "get_nws_forecast_url",
         new=mocker.AsyncMock(return_value="https://bad.example/x"),
     )
 
     # Act / Assert
     with pytest.raises(ValueError, match="Unexpected NWS forecast URL format"):
-        await api_weather_nws.discover_nws_grid_async(client, 41.88, -87.63)
+        await api_weather_nws.discover_nws_grid(client, 41.88, -87.63)
 
 
 async def test_get_nws_hourly_forecast_converts_units_and_defaults(
@@ -199,16 +195,16 @@ async def test_get_nws_hourly_forecast_converts_units_and_defaults(
     client.get.return_value = httpx_json_response(payload, 200, forecast_url)
 
     # Act
-    weather = await api_weather_nws.get_nws_hourly_forecast_async(client, grid_id)
+    weather = await api_weather_nws.get_nws_hourly_forecast(client, grid_id)
 
     # Assert
     assert weather["start_time"] == "2026-01-14T21:00:00-06:00"
     assert weather["end_time"] == "2026-01-14T22:00:00-06:00"
-    assert weather["temperature_f"] == 32  # noqa: PLR2004
-    assert weather["dewpoint_f"] == 32.0  # noqa: PLR2004
+    assert weather["temperature_f"] == 32
+    assert weather["dewpoint_f"] == 32.0
     assert weather["prob_precip_pct"] == 0.0
     assert weather["humidity_pct"] == 0.0
-    assert weather["wind_speed_mph"] == 20.0  # noqa: PLR2004
+    assert weather["wind_speed_mph"] == 20.0
     assert weather["wind_direction"] == "NW"
     assert weather["forecast_desc"] == "Clear"
     client.get.assert_awaited_once()
@@ -247,7 +243,7 @@ async def test_get_nws_hourly_forecast_handles_non_numeric_wind_speed(
     client.get.return_value = httpx_json_response(payload, 200, forecast_url)
 
     # Act
-    weather = await api_weather_nws.get_nws_hourly_forecast_async(client, grid_id)
+    weather = await api_weather_nws.get_nws_hourly_forecast(client, grid_id)
 
     # Assert
     assert weather["wind_speed_mph"] == 0.0
@@ -285,13 +281,13 @@ async def test_get_nws_hourly_forecast_keeps_fahrenheit_units(
     client.get.return_value = httpx_json_response(payload, 200, forecast_url)
 
     # Act
-    weather = await api_weather_nws.get_nws_hourly_forecast_async(client, grid_id)
+    weather = await api_weather_nws.get_nws_hourly_forecast(client, grid_id)
 
     # Assert
-    assert weather["temperature_f"] == 10  # noqa: PLR2004
-    assert weather["dewpoint_f"] == 5.0  # noqa: PLR2004
+    assert weather["temperature_f"] == 10
+    assert weather["dewpoint_f"] == 5.0
     assert weather["prob_precip_pct"] == 0
-    assert weather["humidity_pct"] == 42  # noqa: PLR2004
+    assert weather["humidity_pct"] == 42
 
 
 async def test_get_nws_hourly_forecast_parses_wind_speed_range_prefix(
@@ -326,10 +322,10 @@ async def test_get_nws_hourly_forecast_parses_wind_speed_range_prefix(
     client.get.return_value = httpx_json_response(payload, 200, forecast_url)
 
     # Act
-    weather = await api_weather_nws.get_nws_hourly_forecast_async(client, grid_id)
+    weather = await api_weather_nws.get_nws_hourly_forecast(client, grid_id)
 
     # Assert
-    assert weather["wind_speed_mph"] == 5.0  # noqa: PLR2004
+    assert weather["wind_speed_mph"] == 5.0
 
 
 async def test_get_nws_forecast_url_propagates_http_errors_without_retry_delay(
@@ -342,9 +338,9 @@ async def test_get_nws_forecast_url_propagates_http_errors_without_retry_delay(
     # Avoid stamina retry/backoff by calling through one wrapper level.
     # (Decorator order: stamina.retry(log_api_call(original)))
     fn_no_retry = getattr(
-        api_weather_nws.get_nws_forecast_url_async,
+        api_weather_nws.get_nws_forecast_url,
         "__wrapped__",
-        api_weather_nws.get_nws_forecast_url_async,
+        api_weather_nws.get_nws_forecast_url,
     )
 
     client = mocker.AsyncMock(spec=httpx.AsyncClient)
@@ -369,9 +365,9 @@ async def test_get_nws_hourly_forecast_propagates_http_errors_without_retry_dela
     """Test that hourly forecast propagates HTTP errors without retry delay."""
     # Arrange
     fn_no_retry = getattr(
-        api_weather_nws.get_nws_hourly_forecast_async,
+        api_weather_nws.get_nws_hourly_forecast,
         "__wrapped__",
-        api_weather_nws.get_nws_hourly_forecast_async,
+        api_weather_nws.get_nws_hourly_forecast,
     )
 
     client = mocker.AsyncMock(spec=httpx.AsyncClient)

@@ -9,7 +9,7 @@ Open-Meteo that are not available in NWS hourly forecasts. These include:
 - Apparent temperature
 - Rain, showers, snowfall
 
-All functions accept an httpx.Client parameter for dependency injection and proper
+All functions accept an httpx.AsyncClient parameter for dependency injection and proper
 connection pooling management by the caller.
 
 Rate limit calculation:
@@ -61,8 +61,8 @@ _RETRY_ON: Final[tuple[type[Exception], ...]] = (
     wait_jitter=0.5,
 )
 @log_api_call(logger)
-def discover_open_meteo_grid(
-    client: httpx.Client, latitude: float, longitude: float
+async def discover_open_meteo_grid(
+    client: httpx.AsyncClient, latitude: float, longitude: float
 ) -> str:
     """Discover Open-Meteo grid identifier from API response.
 
@@ -81,8 +81,7 @@ def discover_open_meteo_grid(
         httpx.HTTPStatusError: If API request fails after retries
 
     """
-    # Make minimal request to Open-Meteo API
-    response = client.get(
+    response = await client.get(
         OPEN_METEO_URL,
         params={
             "latitude": latitude,
@@ -103,33 +102,6 @@ def discover_open_meteo_grid(
 
 @stamina.retry(
     on=_RETRY_ON,
-    attempts=_DISCOVERY_ATTEMPTS,
-    timeout=20.0,
-    wait_initial=0.2,
-    wait_max=2.0,
-    wait_jitter=0.5,
-)
-@log_api_call(logger)
-async def discover_open_meteo_grid_async(
-    client: httpx.AsyncClient, latitude: float, longitude: float
-) -> str:
-    """Async version of `discover_open_meteo_grid`."""
-    response = await client.get(
-        OPEN_METEO_URL,
-        params={
-            "latitude": latitude,
-            "longitude": longitude,
-            "current": "temperature_2m",
-            "timezone": "America/Chicago",
-        },
-    )
-    response.raise_for_status()
-    data = response.json()
-    return f"{data['latitude']},{data['longitude']}"
-
-
-@stamina.retry(
-    on=_RETRY_ON,
     attempts=_CURRENT_ATTEMPTS,
     timeout=45.0,
     wait_initial=0.2,
@@ -137,8 +109,8 @@ async def discover_open_meteo_grid_async(
     wait_jitter=1.0,
 )
 @log_api_call(logger)
-def get_open_meteo_current(
-    client: httpx.Client, grid_id: str
+async def get_open_meteo_current(
+    client: httpx.AsyncClient, grid_id: str
 ) -> dict[str, str | float]:
     """Get current supplementary weather variables from Open-Meteo for a known grid.
 
@@ -179,7 +151,7 @@ def get_open_meteo_current(
         msg = f"Invalid grid ID: {grid_id}"
         raise ValueError(msg) from e
 
-    response = client.get(
+    response = await client.get(
         OPEN_METEO_URL,
         params={
             "latitude": lat,
@@ -204,63 +176,6 @@ def get_open_meteo_current(
         "timestamp": current["time"],
         "visibility_mi": current.get("visibility", 0.0)
         / 5280.0,  # Convert feet to miles
-        "snow_depth_in": current.get("snow_depth", 0.0),
-        "surface_pressure_hpa": current.get("surface_pressure", 0.0),
-        "wind_gusts_mph": current.get("wind_gusts_10m", 0.0),
-        "apparent_temp_f": current.get("apparent_temperature", 0.0),
-        "rain_in": current.get("rain", 0.0),
-        "showers_in": current.get("showers", 0.0),
-        "snowfall_in": current.get("snowfall", 0.0),
-    }
-
-
-@stamina.retry(
-    on=_RETRY_ON,
-    attempts=_CURRENT_ATTEMPTS,
-    timeout=45.0,
-    wait_initial=0.2,
-    wait_max=5.0,
-    wait_jitter=1.0,
-)
-@log_api_call(logger)
-async def get_open_meteo_current_async(
-    client: httpx.AsyncClient, grid_id: str
-) -> dict[str, str | float]:
-    """Async version of `get_open_meteo_current`."""
-    if grid_id.count(",") != 1:
-        msg = f"Invalid grid ID: {grid_id}"
-        raise ValueError(msg)
-
-    grid_lat, grid_lon = grid_id.split(",")
-    try:
-        lat = float(grid_lat)
-        lon = float(grid_lon)
-    except ValueError as e:
-        msg = f"Invalid grid ID: {grid_id}"
-        raise ValueError(msg) from e
-
-    response = await client.get(
-        OPEN_METEO_URL,
-        params={
-            "latitude": lat,
-            "longitude": lon,
-            "current": "visibility,snow_depth,surface_pressure,wind_gusts_10m,apparent_temperature,rain,showers,snowfall",
-            "timezone": "America/Chicago",
-            "forecast_days": 2,
-            "wind_speed_unit": "mph",
-            "temperature_unit": "fahrenheit",
-            "precipitation_unit": "inch",
-        },
-    )
-    response.raise_for_status()
-    data = response.json()
-    current = data["current"]
-
-    return {
-        "latitude": data["latitude"],
-        "longitude": data["longitude"],
-        "timestamp": current["time"],
-        "visibility_mi": current.get("visibility", 0.0) / 5280.0,
         "snow_depth_in": current.get("snow_depth", 0.0),
         "surface_pressure_hpa": current.get("surface_pressure", 0.0),
         "wind_gusts_mph": current.get("wind_gusts_10m", 0.0),

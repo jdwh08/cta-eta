@@ -148,14 +148,14 @@ class TestWeatherDaemonGetUniqueGridPoints:
         mappings = asyncio.run(daemon._get_station_grid_mappings())
 
         # Assert
-        assert len(mappings) == 2  # noqa: PLR2004
+        assert len(mappings) == 2
         assert {m.station_id for m in mappings} == {"s1", "s2"}
         assert {m.nws_grid_id for m in mappings} == {"LOT/1,2"}
         assert {m.open_meteo_grid_id for m in mappings} == {"41.0,-87.0"}
-        assert mappings[0].station_latitude == 41.0  # noqa: PLR2004
-        assert mappings[0].station_longitude == -87.0  # noqa: PLR2004
-        assert mappings[1].station_latitude == 41.0  # noqa: PLR2004
-        assert mappings[1].station_longitude == -87.0  # noqa: PLR2004
+        assert mappings[0].station_latitude == 41.0
+        assert mappings[0].station_longitude == -87.0
+        assert mappings[1].station_latitude == 41.0
+        assert mappings[1].station_longitude == -87.0
         om_cache.set_grid_identifier.assert_not_called()
 
     @pytest.mark.usefixtures("cleanup_state_files")
@@ -184,11 +184,11 @@ class TestWeatherDaemonGetUniqueGridPoints:
         om_cache.get_grid_identifier.return_value = None
 
         mocker.patch(
-            "cta_eta.data_collection.orchestration.weather_daemon.discover_nws_grid_async",
+            "cta_eta.data_collection.orchestration.weather_daemon.discover_nws_grid",
             new=mocker.AsyncMock(return_value="LOT/9,9"),
         )
         mocker.patch(
-            "cta_eta.data_collection.orchestration.weather_daemon.discover_open_meteo_grid_async",
+            "cta_eta.data_collection.orchestration.weather_daemon.discover_open_meteo_grid",
             new=mocker.AsyncMock(return_value="41.10,-87.10"),
         )
 
@@ -198,8 +198,8 @@ class TestWeatherDaemonGetUniqueGridPoints:
         # Assert
         assert len(mappings) == 1
         assert mappings[0].station_id == "s1"
-        assert mappings[0].station_latitude == 41.1  # noqa: PLR2004
-        assert mappings[0].station_longitude == -87.1  # noqa: PLR2004
+        assert mappings[0].station_latitude == 41.1
+        assert mappings[0].station_longitude == -87.1
         assert mappings[0].nws_grid_id == "LOT/9,9"
         assert mappings[0].open_meteo_grid_id == "41.10,-87.10"
         nws_cache.set_grid_identifier.assert_called_once_with("s1", "LOT/9,9")
@@ -222,7 +222,7 @@ class TestWeatherDaemonGetUniqueGridPoints:
         nws_cache.get_grid_identifier.return_value = None
         om_cache.get_grid_identifier.return_value = "41.0,-87.0"
         mocker.patch(
-            "cta_eta.data_collection.orchestration.weather_daemon.discover_nws_grid_async",
+            "cta_eta.data_collection.orchestration.weather_daemon.discover_nws_grid",
             new=mocker.AsyncMock(side_effect=RuntimeError("boom")),
         )
 
@@ -258,7 +258,7 @@ class TestWeatherDaemonGetUniqueGridPoints:
         nws_cache.get_grid_identifier.return_value = "LOT/1,2"
         om_cache.get_grid_identifier.return_value = None
         mocker.patch(
-            "cta_eta.data_collection.orchestration.weather_daemon.discover_open_meteo_grid_async",
+            "cta_eta.data_collection.orchestration.weather_daemon.discover_open_meteo_grid",
             new=mocker.AsyncMock(side_effect=RuntimeError("nope")),
         )
 
@@ -306,7 +306,7 @@ class TestWeatherDaemonColdCacheDiscovery:
             raise asyncio.CancelledError(msg)
 
         mocker.patch(
-            "cta_eta.data_collection.orchestration.weather_daemon.discover_open_meteo_grid_async",
+            "cta_eta.data_collection.orchestration.weather_daemon.discover_open_meteo_grid",
             new=mocker.AsyncMock(side_effect=discover_side_effect),
         )
 
@@ -341,7 +341,7 @@ class TestWeatherDaemonColdCacheDiscovery:
         assert payload["daemon_class"] == "WeatherDaemon"
         assert payload["provider"] == "open_meteo"
         assert payload["status"] == "cancelled"
-        assert payload["total"] == 2  # noqa: PLR2004
+        assert payload["total"] == 2
         assert payload["succeeded"] == 1
 
 
@@ -379,15 +379,15 @@ class TestWeatherDaemonCollectWeatherCycle:
 
         # Simulate NWS failure -> triggers OpenWeatherMap fallback
         mocker.patch(
-            "cta_eta.data_collection.orchestration.weather_daemon.get_nws_hourly_forecast_async",
+            "cta_eta.data_collection.orchestration.weather_daemon.get_nws_hourly_forecast",
             new=mocker.AsyncMock(side_effect=RuntimeError("nws down")),
         )
         mocker.patch(
-            "cta_eta.data_collection.orchestration.weather_daemon.get_open_meteo_current_async",
+            "cta_eta.data_collection.orchestration.weather_daemon.get_open_meteo_current",
             new=mocker.AsyncMock(return_value={"om": True}),
         )
         mocker.patch(
-            "cta_eta.data_collection.orchestration.weather_daemon.get_openweathermap_current_async",
+            "cta_eta.data_collection.orchestration.weather_daemon.get_openweathermap_current",
             new=mocker.AsyncMock(return_value={"owm": True}),
         )
 
@@ -429,13 +429,13 @@ class TestWeatherDaemonCollectWeatherCycle:
 
         stored_records = storage.append_batch.call_args[0][0]
         assert len(stored_records) == 1
-        assert stored_records[0]["temp_f"] == 10.0  # noqa: PLR2004
+        assert stored_records[0]["temp_f"] == 10.0
         assert stored_records[0]["station_id"] == "s1"
         assert stored_records[0]["nws_grid_id"] == "LOT/1,2"
         assert stored_records[0]["open_meteo_grid_id"] == "41.0,-87.0"
-        assert stored_records[0]["latitude"] == 41.0  # noqa: PLR2004
-        assert stored_records[0]["longitude"] == -87.0  # noqa: PLR2004
-        assert stored_records[0]["collection_timestamp"] == 1000.5  # noqa: PLR2004
+        assert stored_records[0]["latitude"] == 41.0
+        assert stored_records[0]["longitude"] == -87.0
+        assert stored_records[0]["collection_timestamp"] == 1000.5
         assert daemon.records_stored_last_cycle == 1
 
     @pytest.mark.usefixtures("cleanup_state_files")
@@ -555,11 +555,11 @@ class TestWeatherDaemonCollectWeatherCycle:
             autospec=True,
         )
         mocker.patch(
-            "cta_eta.data_collection.orchestration.weather_daemon.get_nws_hourly_forecast_async",
+            "cta_eta.data_collection.orchestration.weather_daemon.get_nws_hourly_forecast",
             new=mocker.AsyncMock(return_value={"nws": True}),
         )
         mocker.patch(
-            "cta_eta.data_collection.orchestration.weather_daemon.get_open_meteo_current_async",
+            "cta_eta.data_collection.orchestration.weather_daemon.get_open_meteo_current",
             new=mocker.AsyncMock(return_value={"om": True}),
         )
 
@@ -623,11 +623,11 @@ class TestWeatherDaemonCollectWeatherCycle:
             autospec=True,
         )
         mocker.patch(
-            "cta_eta.data_collection.orchestration.weather_daemon.get_nws_hourly_forecast_async",
+            "cta_eta.data_collection.orchestration.weather_daemon.get_nws_hourly_forecast",
             new=mocker.AsyncMock(return_value={"nws": True}),
         )
         mocker.patch(
-            "cta_eta.data_collection.orchestration.weather_daemon.get_open_meteo_current_async",
+            "cta_eta.data_collection.orchestration.weather_daemon.get_open_meteo_current",
             new=mocker.AsyncMock(return_value={"om": True}),
         )
         storage.append_batch.side_effect = RuntimeError("disk full")
@@ -716,7 +716,7 @@ class TestWeatherDaemonRunLoop:
             assert nws_client is not None
             assert om_client is not None
             assert owm_client is not None
-            if cycle_count >= 2:  # noqa: PLR2004
+            if cycle_count >= 2:
                 daemon.running = False
 
         mocker.patch.object(
@@ -749,8 +749,8 @@ class TestWeatherDaemonRunLoop:
 
         # Assert
         # Should create 3 clients (nws, om, owm) once
-        assert client_constructor.call_count == 3  # noqa: PLR2004
-        assert cycle_count == 2  # noqa: PLR2004
+        assert client_constructor.call_count == 3
+        assert cycle_count == 2
 
 
 class TestWeatherDaemonDiscoveryTimeouts:
@@ -785,7 +785,7 @@ class TestWeatherDaemonDiscoveryTimeouts:
             return "2.0,2.0"
 
         mocker.patch(
-            "cta_eta.data_collection.orchestration.weather_daemon.discover_open_meteo_grid_async",
+            "cta_eta.data_collection.orchestration.weather_daemon.discover_open_meteo_grid",
             new=mocker.AsyncMock(side_effect=slow_discover),
         )
 
@@ -859,7 +859,7 @@ class TestWeatherDaemonDiscoveryTimeouts:
             return f"{lat},{lon}"
 
         mocker.patch(
-            "cta_eta.data_collection.orchestration.weather_daemon.discover_open_meteo_grid_async",
+            "cta_eta.data_collection.orchestration.weather_daemon.discover_open_meteo_grid",
             new=mocker.AsyncMock(side_effect=fast_discover),
         )
 

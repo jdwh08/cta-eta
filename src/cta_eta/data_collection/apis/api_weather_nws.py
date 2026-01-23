@@ -1,13 +1,13 @@
 """National Weather Service (NWS) API client for hourly weather forecasts.
 
-This module provides stateless functions to fetch hourly weather forecasts from the
+This module provides stateless async functions to fetch hourly weather forecasts from the
 National Weather Service API at weather.gov. NWS has no rate limit but requires
 a User-Agent header per their API policy.
 
 Per NWS API policy, all requests must include:
 User-Agent: (<app name>, <email address>)
 
-All functions accept an httpx.Client parameter for dependency injection and proper
+All functions accept an httpx.AsyncClient parameter for dependency injection and proper
 connection pooling management by the caller.
 """
 
@@ -49,8 +49,8 @@ def _get_auth_header() -> dict[str, str]:
 
 @stamina.retry(on=httpx.HTTPStatusError, attempts=10)
 @log_api_call(logger)
-def get_nws_forecast_url(
-    client: httpx.Client, latitude: float, longitude: float
+async def get_nws_forecast_url(
+    client: httpx.AsyncClient, latitude: float, longitude: float
 ) -> str:
     """Get the forecastHourly URL for a given location from NWS.
 
@@ -66,7 +66,7 @@ def get_nws_forecast_url(
         httpx.HTTPStatusError: If API request fails after retries
 
     """
-    response = client.get(
+    response = await client.get(
         f"{NWS_POINTS_URL}/{latitude},{longitude}",
         headers=_get_auth_header(),
         # NWS may redirect overly-precise lat/lon to a canonical points URL.
@@ -80,23 +80,9 @@ def get_nws_forecast_url(
 
 @stamina.retry(on=httpx.HTTPStatusError, attempts=10)
 @log_api_call(logger)
-async def get_nws_forecast_url_async(
+async def discover_nws_grid(
     client: httpx.AsyncClient, latitude: float, longitude: float
 ) -> str:
-    """Async version of `get_nws_forecast_url`."""
-    response = await client.get(
-        f"{NWS_POINTS_URL}/{latitude},{longitude}",
-        headers=_get_auth_header(),
-        follow_redirects=True,
-    )
-    response.raise_for_status()
-    data = response.json()
-    return data["properties"]["forecastHourly"]
-
-
-@stamina.retry(on=httpx.HTTPStatusError, attempts=10)
-@log_api_call(logger)
-def discover_nws_grid(client: httpx.Client, latitude: float, longitude: float) -> str:
     """Discover NWS grid identifier from points API.
 
     Calls NWS points API to get forecast URL, then extracts gridpoint
@@ -116,7 +102,7 @@ def discover_nws_grid(client: httpx.Client, latitude: float, longitude: float) -
 
     """
     # Get forecast URL from NWS points API
-    forecast_url = get_nws_forecast_url(client, latitude, longitude)
+    forecast_url = await get_nws_forecast_url(client, latitude, longitude)
 
     # Extract gridpoint from URL: /gridpoints/LOT/85,67/forecast/hourly
     match = re.search(r"/gridpoints/([A-Z]+)/(\d+),(\d+)/", forecast_url)
@@ -133,27 +119,8 @@ def discover_nws_grid(client: httpx.Client, latitude: float, longitude: float) -
 
 @stamina.retry(on=httpx.HTTPStatusError, attempts=10)
 @log_api_call(logger)
-async def discover_nws_grid_async(
-    client: httpx.AsyncClient, latitude: float, longitude: float
-) -> str:
-    """Async version of `discover_nws_grid`."""
-    forecast_url = await get_nws_forecast_url_async(client, latitude, longitude)
-
-    match = re.search(r"/gridpoints/([A-Z]+)/(\d+),(\d+)/", forecast_url)
-    if not match:
-        msg = f"Unexpected NWS forecast URL format: {forecast_url}"
-        raise ValueError(msg)
-
-    office = match.group(1)
-    grid_x = match.group(2)
-    grid_y = match.group(3)
-    return f"{office}/{grid_x},{grid_y}"
-
-
-@stamina.retry(on=httpx.HTTPStatusError, attempts=10)
-@log_api_call(logger)
-def get_nws_hourly_forecast(
-    client: httpx.Client, grid_id: str
+async def get_nws_hourly_forecast(
+    client: httpx.AsyncClient, grid_id: str
 ) -> dict[str, str | float]:
     """Get current hourly weather forecast from NWS for a known grid.
 
@@ -184,7 +151,7 @@ def get_nws_hourly_forecast(
     forecast_url = f"https://api.weather.gov/gridpoints/{grid_id}/forecast/hourly"
 
     # Fetch hourly forecast data
-    response = client.get(forecast_url, headers=_get_auth_header())
+    response = await client.get(forecast_url, headers=_get_auth_header())
     response.raise_for_status()
     data = response.json()
 
@@ -209,46 +176,6 @@ def get_nws_hourly_forecast(
     wind_speed = float(wind_speed_match.group(1)) if wind_speed_match else 0.0
 
     # Build normalized response
-    return {
-        "start_time": period["startTime"],
-        "end_time": period["endTime"],
-        "temperature_f": temperature,
-        "prob_precip_pct": period["probabilityOfPrecipitation"]["value"] or 0.0,
-        "dewpoint_f": dewpoint,
-        "humidity_pct": period["relativeHumidity"]["value"] or 0.0,
-        "wind_speed_mph": wind_speed,
-        "wind_direction": period["windDirection"],
-        "forecast_desc": period["shortForecast"],
-    }
-
-
-@stamina.retry(on=httpx.HTTPStatusError, attempts=10)
-@log_api_call(logger)
-async def get_nws_hourly_forecast_async(
-    client: httpx.AsyncClient, grid_id: str
-) -> dict[str, str | float]:
-    """Async version of `get_nws_hourly_forecast`."""
-    forecast_url = f"https://api.weather.gov/gridpoints/{grid_id}/forecast/hourly"
-    response = await client.get(forecast_url, headers=_get_auth_header())
-    response.raise_for_status()
-    data = response.json()
-
-    period = data["properties"]["periods"][0]
-
-    temperature = period["temperature"]
-    temp_unit = period["temperatureUnit"]
-    if temp_unit == "wmoUnit:degC":
-        temperature = temperature * 9 / 5 + 32
-
-    dewpoint = period["dewpoint"]["value"]
-    dewpoint_unit = period["dewpoint"]["unitCode"]
-    if dewpoint_unit == "wmoUnit:degC":
-        dewpoint = dewpoint * 9 / 5 + 32
-
-    wind_speed_str = period["windSpeed"]
-    wind_speed_match = re.match(r"(\d+)", wind_speed_str)
-    wind_speed = float(wind_speed_match.group(1)) if wind_speed_match else 0.0
-
     return {
         "start_time": period["startTime"],
         "end_time": period["endTime"],

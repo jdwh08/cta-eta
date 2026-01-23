@@ -66,7 +66,7 @@ async def test_discover_openweathermap_grid_returns_actual_coordinates(
     )
 
     # Act
-    grid_id = await api_weather_openweathermap.discover_openweathermap_grid_async(
+    grid_id = await api_weather_openweathermap.discover_openweathermap_grid(
         client, latitude, longitude
     )
 
@@ -122,7 +122,7 @@ async def test_get_openweathermap_current_defaults_missing_fields_and_converts_v
     )
 
     # Act
-    current = await api_weather_openweathermap.get_openweathermap_current_async(
+    current = await api_weather_openweathermap.get_openweathermap_current(
         client, grid_id
     )
 
@@ -156,7 +156,7 @@ async def test_get_openweathermap_current_rejects_bad_grid_id(
 
     # Act / Assert
     with pytest.raises(ValueError, match="Invalid grid ID: not-a-grid-id"):
-        await api_weather_openweathermap.get_openweathermap_current_async(
+        await api_weather_openweathermap.get_openweathermap_current(
             client, "not-a-grid-id"
         )
 
@@ -171,7 +171,7 @@ async def test_get_openweathermap_current_rejects_non_numeric_grid_id(
 
     # Act / Assert
     with pytest.raises(ValueError, match="Invalid grid ID: not_coord,not_coord"):
-        await api_weather_openweathermap.get_openweathermap_current_async(
+        await api_weather_openweathermap.get_openweathermap_current(
             client, "not_coord,not_coord"
         )
 
@@ -210,7 +210,7 @@ async def test_get_openweathermap_current_converts_visibility_meters_to_miles(
     )
 
     # Act
-    current = await api_weather_openweathermap.get_openweathermap_current_async(
+    current = await api_weather_openweathermap.get_openweathermap_current(
         client, grid_id
     )
 
@@ -261,10 +261,8 @@ async def test_get_openweathermap_forecast_hourly_converts_pop_and_visibility_an
     )
 
     # Act
-    forecast = (
-        await api_weather_openweathermap.get_openweathermap_forecast_hourly_async(
-            client, grid_id
-        )
+    forecast = await api_weather_openweathermap.get_openweathermap_forecast_hourly(
+        client, grid_id
     )
 
     # Assert
@@ -322,10 +320,8 @@ async def test_get_openweathermap_forecast_hourly_defaults_missing_optional_fiel
     )
 
     # Act
-    forecast = (
-        await api_weather_openweathermap.get_openweathermap_forecast_hourly_async(
-            client, grid_id
-        )
+    forecast = await api_weather_openweathermap.get_openweathermap_forecast_hourly(
+        client, grid_id
     )
 
     # Assert
@@ -346,7 +342,7 @@ async def test_get_openweathermap_forecast_hourly_rejects_non_numeric_grid_id(
 
     # Act / Assert
     with pytest.raises(ValueError, match="Invalid grid ID: not_coord,not_coord"):
-        await api_weather_openweathermap.get_openweathermap_forecast_hourly_async(
+        await api_weather_openweathermap.get_openweathermap_forecast_hourly(
             client, "not_coord,not_coord"
         )
 
@@ -361,9 +357,9 @@ async def test_openweathermap_propagates_http_errors_without_retry_delay(
     # Avoid stamina retry/backoff by calling through one wrapper level.
     # (Decorator order: stamina.retry(log_api_call(original)))
     fn_no_retry = getattr(
-        api_weather_openweathermap.discover_openweathermap_grid_async,
+        api_weather_openweathermap.discover_openweathermap_grid,
         "__wrapped__",
-        api_weather_openweathermap.discover_openweathermap_grid_async,
+        api_weather_openweathermap.discover_openweathermap_grid,
     )
 
     client = mocker.AsyncMock(spec=httpx.AsyncClient)

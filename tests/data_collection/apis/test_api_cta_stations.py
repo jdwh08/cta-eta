@@ -12,6 +12,8 @@ from cta_eta.data_collection.apis import api_cta_stations
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from pytest_mock import MockerFixture
+
 
 def test_get_chidata_headers_requires_token() -> None:
     """Test that _get_chidata_headers requires CHIDATA_APP_TOK."""
@@ -52,7 +54,7 @@ def test_get_chidata_headers_strips_whitespace() -> None:
 
 
 def test_get_cta_stations_calls_expected_endpoint_and_headers(
-    mocker: pytest.MockFixture,
+    mocker: MockerFixture,
     httpx_json_response: Callable[[Any, int, str], httpx.Response],
 ) -> None:
     """Test that get_cta_stations calls the correct URL with auth headers."""
@@ -90,7 +92,7 @@ def test_get_cta_stations_calls_expected_endpoint_and_headers(
 
 
 def test_get_cta_stations_rejects_non_list_json(
-    mocker: pytest.MockFixture,
+    mocker: MockerFixture,
     httpx_json_response: Callable[[Any, int, str], httpx.Response],
 ) -> None:
     """Test that get_cta_stations rejects non-list JSON payloads."""
@@ -111,7 +113,7 @@ def test_get_cta_stations_rejects_non_list_json(
 
 
 def test_get_cta_stations_propagates_http_errors_without_retry_delay(
-    mocker: pytest.MockFixture,
+    mocker: MockerFixture,
     httpx_json_response: Callable[[Any, int, str], httpx.Response],
 ) -> None:
     """Test that get_cta_stations propagates HTTP errors without retry delay."""
@@ -181,7 +183,7 @@ def test_normalize_cta_stations_raises_on_non_numeric_coordinates() -> None:
 
 
 def test_get_stations_cache_wires_fetch_fn_without_network(
-    mocker: pytest.MockFixture,
+    mocker: MockerFixture,
 ) -> None:
     """Test that get_stations_cache builds a cache wired to fetch and normalize stations."""
     # Arrange
@@ -242,7 +244,7 @@ def test_get_stations_cache_wires_fetch_fn_without_network(
 
 
 def test_get_stations_cache_defaults_to_module_config(
-    mocker: pytest.MockFixture,
+    mocker: MockerFixture,
 ) -> None:
     """Test that get_stations_cache defaults cfg to the module config when omitted."""
     # Arrange

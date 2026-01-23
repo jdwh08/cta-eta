@@ -29,15 +29,15 @@ import httpx
 # Own modules
 from cta_eta.data_collection.apis.api_cta_stations import get_stations_cache
 from cta_eta.data_collection.apis.api_weather_nws import (
-    discover_nws_grid_async,
-    get_nws_hourly_forecast_async,
+    discover_nws_grid,
+    get_nws_hourly_forecast,
 )
 from cta_eta.data_collection.apis.api_weather_open_meteo import (
-    discover_open_meteo_grid_async,
-    get_open_meteo_current_async,
+    discover_open_meteo_grid,
+    get_open_meteo_current,
 )
 from cta_eta.data_collection.apis.api_weather_openweathermap import (
-    get_openweathermap_current_async,
+    get_openweathermap_current,
 )
 from cta_eta.data_collection.logging import log_context
 from cta_eta.data_collection.merging.weather_merger import merge_weather_sources
@@ -429,7 +429,7 @@ class WeatherDaemon(AsyncBaseDaemon):
                     "nws.get_hourly_forecast",
                     grid_id=grid_id,
                 ):
-                    data = await get_nws_hourly_forecast_async(client, grid_id)
+                    data = await get_nws_hourly_forecast(client, grid_id)
             except asyncio.CancelledError:
                 raise
             except Exception as e:  # noqa: BLE001
@@ -477,7 +477,7 @@ class WeatherDaemon(AsyncBaseDaemon):
                     "open_meteo.get_current",
                     grid_id=grid_id,
                 ):
-                    data = await get_open_meteo_current_async(client, grid_id)
+                    data = await get_open_meteo_current(client, grid_id)
             except asyncio.CancelledError:
                 raise
             except Exception as e:  # noqa: BLE001
@@ -524,7 +524,7 @@ class WeatherDaemon(AsyncBaseDaemon):
 
         async def _fetch_one(grid_id: str) -> tuple[str, dict[str, Any] | None]:
             try:
-                data = await get_openweathermap_current_async(client, grid_id)
+                data = await get_openweathermap_current(client, grid_id)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -599,7 +599,7 @@ class WeatherDaemon(AsyncBaseDaemon):
                         latitude=lat,
                         longitude=lon,
                     ):
-                        nws_grid = await discover_nws_grid_async(nws_client, lat, lon)
+                        nws_grid = await discover_nws_grid(nws_client, lat, lon)
                 except Exception:
                     self.logger.exception(
                         f"Failed to discover NWS grid for station {station_id}",
@@ -720,7 +720,7 @@ class WeatherDaemon(AsyncBaseDaemon):
                         longitude=lon,
                     ):
                         grid = await asyncio.wait_for(
-                            discover_open_meteo_grid_async(client, lat, lon),
+                            discover_open_meteo_grid(client, lat, lon),
                             timeout=per_station_timeout_s,
                         )
                 except TimeoutError:
