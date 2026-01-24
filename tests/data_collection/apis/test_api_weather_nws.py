@@ -25,6 +25,16 @@ def nws_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("NWS_EMAIL", "data@example.com")
 
 
+@pytest.fixture
+def minimal_valid_period() -> dict[str, object]:
+    """Minimal NWS period dict with required fields for parse-error tests."""
+    return {
+        "temperature": 50,
+        "dewpoint": {"value": 10.0, "unitCode": "wmoUnit:degF"},
+        "windSpeed": "5 mph",
+    }
+
+
 async def test_get_auth_header_requires_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test that the get_auth_header function requires the NWS_APP_NAME and NWS_EMAIL environment variables."""
     # Arrange
@@ -202,8 +212,8 @@ async def test_get_nws_hourly_forecast_converts_units_and_defaults(
     assert weather["end_time"] == "2026-01-14T22:00:00-06:00"
     assert weather["temperature_f"] == 32
     assert weather["dewpoint_f"] == 32.0
-    assert weather["prob_precip_pct"] == 0.0
-    assert weather["humidity_pct"] == 0.0
+    assert weather["prob_precip_pct"] is None
+    assert weather["humidity_pct"] is None
     assert weather["wind_speed_mph"] == 20.0
     assert weather["wind_direction"] == "NW"
     assert weather["forecast_desc"] == "Clear"
@@ -246,7 +256,7 @@ async def test_get_nws_hourly_forecast_handles_non_numeric_wind_speed(
     weather = await api_weather_nws.get_nws_hourly_forecast(client, grid_id)
 
     # Assert
-    assert weather["wind_speed_mph"] == 0.0
+    assert weather["wind_speed_mph"] is None
 
 
 async def test_get_nws_hourly_forecast_keeps_fahrenheit_units(
@@ -328,6 +338,44 @@ async def test_get_nws_hourly_forecast_parses_wind_speed_range_prefix(
     assert weather["wind_speed_mph"] == 5.0
 
 
+async def test_get_nws_forecast_url_invalid_latitude(
+    nws_env: None,  # noqa: ARG001
+    mocker: MockerFixture,
+) -> None:
+    """Test that get_nws_forecast_url rejects invalid latitude via validate_lat_lon."""
+    # Arrange
+    client = mocker.AsyncMock(spec=httpx.AsyncClient)
+
+    # Act / Assert
+    with pytest.raises(ValueError, match="Invalid latitude"):
+        await api_weather_nws.get_nws_forecast_url(client, 100.0, -87.63)
+
+    client.get.assert_not_awaited()
+
+
+async def test_get_nws_forecast_url_handles_safe_get_nested_value_error(
+    nws_env: None,  # noqa: ARG001
+    mocker: MockerFixture,
+    httpx_json_response: Callable[[dict, int, str], httpx.Response],
+) -> None:
+    """Test that get_nws_forecast_url logs and re-raises when safe_get_nested raises ValueError."""
+    # Arrange
+    client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    url = f"{api_weather_nws.NWS_POINTS_URL}/41.88,-87.63"
+    client.get.return_value = httpx_json_response({"properties": {}}, 200, url)
+    mocker.patch.object(
+        api_weather_nws,
+        "safe_get_nested",
+        side_effect=ValueError("missing forecastHourly"),
+    )
+
+    # Act / Assert
+    with pytest.raises(ValueError, match="missing forecastHourly"):
+        await api_weather_nws.get_nws_forecast_url(client, 41.88, -87.63)
+
+    client.get.assert_awaited_once()
+
+
 async def test_get_nws_forecast_url_propagates_http_errors_without_retry_delay(
     nws_env: None,  # noqa: ARG001
     mocker: MockerFixture,
@@ -355,6 +403,229 @@ async def test_get_nws_forecast_url_propagates_http_errors_without_retry_delay(
 
     client.get.assert_awaited_once()
     assert client.get.call_args.kwargs["follow_redirects"] is True
+
+
+async def test_get_nws_hourly_forecast_parse_error_properties_not_dict(
+    nws_env: None,  # noqa: ARG001
+    mocker: MockerFixture,
+    httpx_json_response: Callable[[dict, int, str], httpx.Response],
+) -> None:
+    """Test that hourly forecast raises when properties is not a dict."""
+    # Arrange
+    client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    grid_id = "LOT/76,73"
+    forecast_url = f"https://api.weather.gov/gridpoints/{grid_id}/forecast/hourly"
+    client.get.return_value = httpx_json_response(
+        {"properties": 123}, 200, forecast_url
+    )
+
+    # Act / Assert
+    with pytest.raises(
+        ValueError, match="Failed to parse NWS hourly forecast response"
+    ):
+        await api_weather_nws.get_nws_hourly_forecast(client, grid_id)
+
+
+async def test_get_nws_hourly_forecast_parse_error_periods_missing_or_empty(
+    nws_env: None,  # noqa: ARG001
+    mocker: MockerFixture,
+    httpx_json_response: Callable[[dict, int, str], httpx.Response],
+) -> None:
+    """Test that hourly forecast raises when periods is missing or empty."""
+    # Arrange
+    client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    grid_id = "LOT/76,73"
+    forecast_url = f"https://api.weather.gov/gridpoints/{grid_id}/forecast/hourly"
+    client.get.return_value = httpx_json_response(
+        {"properties": {}},
+        200,
+        forecast_url,
+    )
+
+    # Act / Assert
+    with pytest.raises(
+        ValueError, match="Failed to parse NWS hourly forecast response"
+    ):
+        await api_weather_nws.get_nws_hourly_forecast(client, grid_id)
+
+
+async def test_get_nws_hourly_forecast_parse_error_period_not_dict(
+    nws_env: None,  # noqa: ARG001
+    mocker: MockerFixture,
+    httpx_json_response: Callable[[dict, int, str], httpx.Response],
+) -> None:
+    """Test that hourly forecast raises when first period is not a dict."""
+    # Arrange
+    client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    grid_id = "LOT/76,73"
+    forecast_url = f"https://api.weather.gov/gridpoints/{grid_id}/forecast/hourly"
+    client.get.return_value = httpx_json_response(
+        {"properties": {"periods": [42]}},
+        200,
+        forecast_url,
+    )
+
+    # Act / Assert
+    with pytest.raises(
+        ValueError, match="Failed to parse NWS hourly forecast response"
+    ):
+        await api_weather_nws.get_nws_hourly_forecast(client, grid_id)
+
+
+async def test_get_nws_hourly_forecast_parse_error_temperature_none(
+    nws_env: None,  # noqa: ARG001
+    mocker: MockerFixture,
+    httpx_json_response: Callable[[dict, int, str], httpx.Response],
+    minimal_valid_period: dict[str, object],
+) -> None:
+    """Test that hourly forecast raises when temperature is None."""
+    # Arrange
+    period = dict(minimal_valid_period)
+    period["temperature"] = None
+    client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    grid_id = "LOT/76,73"
+    forecast_url = f"https://api.weather.gov/gridpoints/{grid_id}/forecast/hourly"
+    client.get.return_value = httpx_json_response(
+        {"properties": {"periods": [period]}},
+        200,
+        forecast_url,
+    )
+
+    # Act / Assert
+    with pytest.raises(
+        ValueError, match="Failed to parse NWS hourly forecast response"
+    ):
+        await api_weather_nws.get_nws_hourly_forecast(client, grid_id)
+
+
+async def test_get_nws_hourly_forecast_parse_error_temperature_not_numeric(
+    nws_env: None,  # noqa: ARG001
+    mocker: MockerFixture,
+    httpx_json_response: Callable[[dict, int, str], httpx.Response],
+    minimal_valid_period: dict[str, object],
+) -> None:
+    """Test that hourly forecast raises when temperature is not numeric."""
+    # Arrange
+    period = dict(minimal_valid_period)
+    period["temperature"] = "cold"
+    client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    grid_id = "LOT/76,73"
+    forecast_url = f"https://api.weather.gov/gridpoints/{grid_id}/forecast/hourly"
+    client.get.return_value = httpx_json_response(
+        {"properties": {"periods": [period]}},
+        200,
+        forecast_url,
+    )
+
+    # Act / Assert
+    with pytest.raises(
+        ValueError, match="Failed to parse NWS hourly forecast response"
+    ):
+        await api_weather_nws.get_nws_hourly_forecast(client, grid_id)
+
+
+async def test_get_nws_hourly_forecast_parse_error_dewpoint_not_dict(
+    nws_env: None,  # noqa: ARG001
+    mocker: MockerFixture,
+    httpx_json_response: Callable[[dict, int, str], httpx.Response],
+    minimal_valid_period: dict[str, object],
+) -> None:
+    """Test that hourly forecast raises when dewpoint is not a dict."""
+    # Arrange
+    period = dict(minimal_valid_period)
+    period["dewpoint"] = "invalid"
+    client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    grid_id = "LOT/76,73"
+    forecast_url = f"https://api.weather.gov/gridpoints/{grid_id}/forecast/hourly"
+    client.get.return_value = httpx_json_response(
+        {"properties": {"periods": [period]}},
+        200,
+        forecast_url,
+    )
+
+    # Act / Assert
+    with pytest.raises(
+        ValueError, match="Failed to parse NWS hourly forecast response"
+    ):
+        await api_weather_nws.get_nws_hourly_forecast(client, grid_id)
+
+
+async def test_get_nws_hourly_forecast_parse_error_dewpoint_value_none(
+    nws_env: None,  # noqa: ARG001
+    mocker: MockerFixture,
+    httpx_json_response: Callable[[dict, int, str], httpx.Response],
+    minimal_valid_period: dict[str, object],
+) -> None:
+    """Test that hourly forecast raises when dewpoint.value is None."""
+    # Arrange
+    period = dict(minimal_valid_period)
+    period["dewpoint"] = {"value": None}
+    client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    grid_id = "LOT/76,73"
+    forecast_url = f"https://api.weather.gov/gridpoints/{grid_id}/forecast/hourly"
+    client.get.return_value = httpx_json_response(
+        {"properties": {"periods": [period]}},
+        200,
+        forecast_url,
+    )
+
+    # Act / Assert
+    with pytest.raises(
+        ValueError, match="Failed to parse NWS hourly forecast response"
+    ):
+        await api_weather_nws.get_nws_hourly_forecast(client, grid_id)
+
+
+async def test_get_nws_hourly_forecast_parse_error_dewpoint_value_not_numeric(
+    nws_env: None,  # noqa: ARG001
+    mocker: MockerFixture,
+    httpx_json_response: Callable[[dict, int, str], httpx.Response],
+    minimal_valid_period: dict[str, object],
+) -> None:
+    """Test that hourly forecast raises when dewpoint.value is not numeric."""
+    # Arrange
+    period = dict(minimal_valid_period)
+    period["dewpoint"] = {"value": "x", "unitCode": "wmoUnit:degF"}
+    client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    grid_id = "LOT/76,73"
+    forecast_url = f"https://api.weather.gov/gridpoints/{grid_id}/forecast/hourly"
+    client.get.return_value = httpx_json_response(
+        {"properties": {"periods": [period]}},
+        200,
+        forecast_url,
+    )
+
+    # Act / Assert
+    with pytest.raises(
+        ValueError, match="Failed to parse NWS hourly forecast response"
+    ):
+        await api_weather_nws.get_nws_hourly_forecast(client, grid_id)
+
+
+async def test_get_nws_hourly_forecast_wind_speed_non_string_coerced(
+    nws_env: None,  # noqa: ARG001
+    mocker: MockerFixture,
+    httpx_json_response: Callable[[dict, int, str], httpx.Response],
+    minimal_valid_period: dict[str, object],
+) -> None:
+    """Test that non-string windSpeed (e.g. int) is coerced to str before regex parse."""
+    # Arrange
+    period = dict(minimal_valid_period)
+    period["windSpeed"] = 15
+    client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    grid_id = "LOT/76,73"
+    forecast_url = f"https://api.weather.gov/gridpoints/{grid_id}/forecast/hourly"
+    client.get.return_value = httpx_json_response(
+        {"properties": {"periods": [period]}},
+        200,
+        forecast_url,
+    )
+
+    # Act
+    weather = await api_weather_nws.get_nws_hourly_forecast(client, grid_id)
+
+    # Assert
+    assert weather["wind_speed_mph"] == 15.0
 
 
 async def test_get_nws_hourly_forecast_propagates_http_errors_without_retry_delay(

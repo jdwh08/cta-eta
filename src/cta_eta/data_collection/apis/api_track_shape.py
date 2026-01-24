@@ -47,9 +47,10 @@ import httpx
 import stamina
 
 ### OWN MODULES
-from cta_eta.data_collection.config import load_config
+from cta_eta.data_collection.config import get_config_section, load_config
 from cta_eta.data_collection.logging import get_logger, log_api_call
 from cta_eta.data_collection.storage_cache.cache import CachedData, create_cached_data
+from cta_eta.data_collection.utils import validate_lat_lon
 
 logger = get_logger(__name__)
 
@@ -58,7 +59,7 @@ CTA_TRACK_SHAPES_DATASET_ID: Final[str] = "xbyr-jnvx"
 MIN_POINT_DIMENSIONS: Final[int] = 2
 
 config = load_config()
-retry_config = config.get("retry", {})
+retry_config = get_config_section("retry", config=config)
 MAX_RETRY_ATTEMPTS: Final[int] = int(retry_config.get("max_retry_attempts", 10))
 
 
@@ -157,6 +158,9 @@ def _extract_bbox(coords: list[list[list[float]]]) -> tuple[float, float, float,
             min_lat = min(min_lat, lat)
             max_lon = max(max_lon, lon)
             max_lat = max(max_lat, lat)
+
+    validate_lat_lon(min_lat, min_lon)
+    validate_lat_lon(max_lat, max_lon)
 
     return min_lon, min_lat, max_lon, max_lat
 

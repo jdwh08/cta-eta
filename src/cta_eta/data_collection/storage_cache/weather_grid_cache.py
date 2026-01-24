@@ -15,15 +15,24 @@ Grid identifier formats:
 
 import logging
 from pathlib import Path
+from typing import Final
 
 import httpx
 import stamina
 
 ### OWN MODULES
-from cta_eta.data_collection.apis.api_weather_nws import discover_nws_grid
+from cta_eta.data_collection.apis.api_weather_nws import (
+    _get_auth_header,
+    discover_nws_grid,
+)
+from cta_eta.data_collection.config import get_config_section, load_config
 from cta_eta.data_collection.storage_cache.kv_cache import PersistentKVCache
 
 logger = logging.getLogger(__name__)
+
+config = load_config()
+retry_config = get_config_section("retry", config=config)
+MAX_RETRY_ATTEMPTS: Final[int] = int(retry_config.get("max_retry_attempts", 10))
 
 
 class WeatherGridCache:
@@ -102,13 +111,22 @@ class NWSGridCache(WeatherGridCache):
         self._client: httpx.AsyncClient | None = None
 
     async def _ensure_client(self) -> httpx.AsyncClient:
-        """Ensure async HTTP client is initialized."""
+        """Ensure async HTTP client is initialized with proper User-Agent header.
+
+        Uses NWS API authentication header from environment variables (NWS_APP_NAME,
+        NWS_EMAIL) as required by NWS API policy.
+
+        """
         if self._client is None:
-            self._client = httpx.AsyncClient(
-                headers={
-                    "User-Agent": "(cta-eta, contact@example.com)"
-                }  # Will be overridden by actual config
-            )
+            try:
+                headers = _get_auth_header()
+            except ValueError:
+                logger.exception(
+                    "Failed to get NWS User-Agent header. "
+                    "NWS_APP_NAME and NWS_EMAIL must be set in environment variables."
+                )
+                raise
+            self._client = httpx.AsyncClient(headers=headers)
         return self._client
 
     async def aclose(self) -> None:
@@ -146,7 +164,7 @@ class NWSGridCache(WeatherGridCache):
         self.set_grid_identifier(station_id, grid_id)
         return grid_id
 
-    @stamina.retry(on=httpx.HTTPStatusError, attempts=10)
+    @stamina.retry(on=httpx.HTTPStatusError, attempts=MAX_RETRY_ATTEMPTS)
     async def _discover_grid(
         self, client: httpx.AsyncClient, latitude: float, longitude: float
     ) -> str:
@@ -187,10 +205,19 @@ def get_nws_grid_cache(config: dict) -> NWSGridCache:
     Returns:
         Configured NWSGridCache instance
 
+    Raises:
+        ValueError: If required cache configuration is missing
+
     """
-    cache_file = Path(str(config["cache"]["directory"])) / "nws_grid_mapping.json"
-    ttl = int(config["cache"]["weather_mapping_ttl"])
-    return NWSGridCache(cache_file, ttl)
+    cache_config = get_config_section("cache", config=config)
+    cache_dir = cache_config.get("directory", ".cache")
+    if not cache_dir:
+        msg = "config['cache']['directory'] is required but missing or empty"
+        raise ValueError(msg)
+
+    ttl = cache_config.get("weather_mapping_ttl", 604800)  # Default: 7 days
+    cache_file = Path(str(cache_dir)) / "nws_grid_mapping.json"
+    return NWSGridCache(cache_file, int(ttl))
 
 
 def get_open_meteo_grid_cache(config: dict) -> OpenMeteoGridCache:
@@ -202,12 +229,19 @@ def get_open_meteo_grid_cache(config: dict) -> OpenMeteoGridCache:
     Returns:
         Configured OpenMeteoGridCache instance
 
+    Raises:
+        ValueError: If required cache configuration is missing
+
     """
-    cache_file = (
-        Path(str(config["cache"]["directory"])) / "open_meteo_grid_mapping.json"
-    )
-    ttl = int(config["cache"]["weather_mapping_ttl"])
-    return OpenMeteoGridCache(cache_file, ttl)
+    cache_config = get_config_section("cache", config=config)
+    cache_dir = cache_config.get("directory", ".cache")
+    if not cache_dir:
+        msg = "config['cache']['directory'] is required but missing or empty"
+        raise ValueError(msg)
+
+    ttl = cache_config.get("weather_mapping_ttl", 604800)  # Default: 7 days
+    cache_file = Path(str(cache_dir)) / "open_meteo_grid_mapping.json"
+    return OpenMeteoGridCache(cache_file, int(ttl))
 
 
 def get_openweathermap_grid_cache(config: dict) -> OpenWeatherMapGridCache:
@@ -219,9 +253,16 @@ def get_openweathermap_grid_cache(config: dict) -> OpenWeatherMapGridCache:
     Returns:
         Configured OpenWeatherMapGridCache instance
 
+    Raises:
+        ValueError: If required cache configuration is missing
+
     """
-    cache_file = (
-        Path(str(config["cache"]["directory"])) / "openweathermap_grid_mapping.json"
-    )
-    ttl = int(config["cache"]["weather_mapping_ttl"])
-    return OpenWeatherMapGridCache(cache_file, ttl)
+    cache_config = get_config_section("cache", config=config)
+    cache_dir = cache_config.get("directory", ".cache")
+    if not cache_dir:
+        msg = "config['cache']['directory'] is required but missing or empty"
+        raise ValueError(msg)
+
+    ttl = cache_config.get("weather_mapping_ttl", 604800)  # Default: 7 days
+    cache_file = Path(str(cache_dir)) / "openweathermap_grid_mapping.json"
+    return OpenWeatherMapGridCache(cache_file, int(ttl))

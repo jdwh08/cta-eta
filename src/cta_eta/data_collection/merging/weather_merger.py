@@ -8,8 +8,9 @@ Precedence for overlapping fields: NWS > Open-Meteo > OpenWeatherMap
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
-import pandas as pd
 
 
 def _convert_to_python_type(value: object) -> object:
@@ -84,51 +85,50 @@ def merge_weather_sources(
 
     # If only one source, return it directly (no merge needed)
     if len(available_sources) == 1:
-        return next(iter(available_sources.values()))
+        source_dict = next(iter(available_sources.values()))
+        if not isinstance(source_dict, dict):
+            msg = "Source data is not a dictionary!"
+            raise ValueError(msg)
 
-    # Multiple sources present - merge with pandas
-    sources = []
-    source_names = []
+        # Convert to Python native types
+        output = {
+            key: _convert_to_python_type(value)
+            for key, value in source_dict.items()
+            if value is not None
+        }
+        return output
 
-    for source_name in ["nws", "om", "owm"]:  # Maintain precedence order
-        if source_name in available_sources:
-            sources.append(pd.DataFrame([available_sources[source_name]]))
-            source_names.append(source_name)
-
-    # Concatenate all sources with suffixes to track origin
-    merged = pd.concat(sources, axis=1, keys=source_names)
-
-    # Flatten MultiIndex columns
-    merged.columns = [
-        f"{col}_{source}" if source else col for source, col in merged.columns
-    ]
-
-    # Extract unique base column names (without source suffixes)
-    suffixes = ("_nws", "_om", "_owm")
-    all_columns = {
-        col.removesuffix(suffix)
-        for col in merged.columns
-        for suffix in suffixes
-        if col.endswith(suffix)
-    }
-
-    # Coalesce columns with precedence: NWS > Open-Meteo > OpenWeatherMap
+    # Multiple sources present - merge with precedence: NWS > Open-Meteo > OpenWeatherMap
     result_dict: dict[str, object] = {}
 
-    for base_col in all_columns:
-        # Try each source in order of precedence
+    # Collect all unique keys from all sources
+    all_keys: set[str] = set()
+    for source_dict in available_sources.values():
+        if isinstance(source_dict, dict):
+            all_keys.update(source_dict.keys())
+
+    # For each key, use value from highest precedence source that has it
+    precedence_order = ["nws", "om", "owm"]
+    for key in all_keys:
         value = None
-        for source in ["nws", "om", "owm"]:
-            source_col = f"{base_col}_{source}"
-            if source_col in merged.columns:
-                candidate = merged[source_col].iloc[0]
-                # Use first non-null value
-                if pd.notna(candidate):
-                    value = candidate
-                    break
+        # Try each source in order of precedence
+        for source_name in precedence_order:
+            if source_name not in available_sources:
+                continue
+            source_dict = available_sources.get(source_name)
+            if not isinstance(source_dict, dict):
+                continue
+            if key not in source_dict:
+                continue
 
-        # Only include non-null values in final result
-        if pd.notna(value):
-            result_dict[base_col] = _convert_to_python_type(value)
+            candidate = source_dict[key]
+            if candidate is None or (
+                isinstance(candidate, (float, np.floating)) and (math.isnan(candidate))
+            ):
+                continue
+            value = candidate
+            break
 
-    return result_dict
+        result_dict[key] = _convert_to_python_type(value)
+
+    return result_dict if result_dict else None

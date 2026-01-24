@@ -140,17 +140,17 @@ def test_normalize_track_shapes_skips_invalid_geometry_and_is_deterministic() ->
 
     # Assert
     assert normalized_1 == normalized_2
-    assert len(normalized_1) == 2  # noqa: PLR2004
+    assert len(normalized_1) == 2
 
     rec = next(r for r in normalized_1 if r["description"] == "Tower 12 to Library")
     assert rec["lines"] == ["Brown", "Orange"]
     assert rec["endpoint_a"] == "Tower 12"
     assert rec["endpoint_b"] == "Library"
-    assert rec["shape_len"] == 647.793224715  # noqa: PLR2004
-    assert rec["start_lat"] == 41.876  # noqa: PLR2004
-    assert rec["start_lon"] == -87.628  # noqa: PLR2004
-    assert rec["end_lat"] == 41.877  # noqa: PLR2004
-    assert rec["end_lon"] == -87.626  # noqa: PLR2004
+    assert rec["shape_len"] == 647.793224715
+    assert rec["start_lat"] == 41.876
+    assert rec["start_lon"] == -87.628
+    assert rec["end_lat"] == 41.877
+    assert rec["end_lon"] == -87.626
     assert rec["bbox"] == {
         "min_lon": -87.628,
         "min_lat": 41.876,
@@ -193,7 +193,7 @@ def test_fetch_track_shapes_raw_paginates_and_uses_expected_request_params(
 
     # Assert
     assert rows == page_0
-    assert client.get.call_count == 2  # noqa: PLR2004
+    assert client.get.call_count == 2
 
     expected_headers = {"X-App-Token": "tok", "X-App-Secret": "sec"}
     select = "the_geom,lines,description,type,legend,shape_len"

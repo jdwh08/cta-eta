@@ -37,7 +37,7 @@ import httpx
 import stamina
 
 ### OWN MODULES
-from cta_eta.data_collection.config import load_config
+from cta_eta.data_collection.config import get_config_section, load_config
 from cta_eta.data_collection.logging import get_logger, log_api_call
 from cta_eta.data_collection.storage_cache.cache import CachedData, create_cached_data
 
@@ -48,7 +48,7 @@ CTA_STATIONS_DATASET_ID: Final[str] = "3tzw-cg4m"
 MIN_COORDINATE_DIMENSIONS: Final[int] = 2
 
 config = load_config()
-retry_config = config.get("retry", {})
+retry_config = get_config_section("retry", config=config)
 MAX_RETRY_ATTEMPTS: Final[int] = int(retry_config.get("max_retry_attempts", 10))
 
 

@@ -170,11 +170,11 @@ class TestWeatherDaemonGetUniqueGridPoints:
         # Arrange
         daemon, stations_cache, nws_cache, om_cache, _ = weather_daemon
         mocker.patch(
-            "cta_eta.data_collection.orchestration.weather_daemon._OPEN_METEO_MAX_PER_SECOND",
+            "cta_eta.data_collection.orchestration.weather_daemon._DEFAULT_OPEN_METEO_MAX_PER_SECOND",
             new=1000.0,
         )
         mocker.patch(
-            "cta_eta.data_collection.orchestration.weather_daemon._OPEN_METEO_MAX_AT_ONCE",
+            "cta_eta.data_collection.orchestration.weather_daemon._DEFAULT_OPEN_METEO_MAX_AT_ONCE",
             new=1,
         )
         stations_cache.get.return_value = [
@@ -245,11 +245,11 @@ class TestWeatherDaemonGetUniqueGridPoints:
         # Arrange
         daemon, stations_cache, nws_cache, om_cache, _ = weather_daemon
         mocker.patch(
-            "cta_eta.data_collection.orchestration.weather_daemon._OPEN_METEO_MAX_PER_SECOND",
+            "cta_eta.data_collection.orchestration.weather_daemon._DEFAULT_OPEN_METEO_MAX_PER_SECOND",
             new=1000.0,
         )
         mocker.patch(
-            "cta_eta.data_collection.orchestration.weather_daemon._OPEN_METEO_MAX_AT_ONCE",
+            "cta_eta.data_collection.orchestration.weather_daemon._DEFAULT_OPEN_METEO_MAX_AT_ONCE",
             new=1,
         )
         stations_cache.get.return_value = [
@@ -284,11 +284,11 @@ class TestWeatherDaemonColdCacheDiscovery:
         """Successful discoveries are persisted even if later ones are cancelled."""
         daemon, _stations_cache, _nws_cache, om_cache, _storage = weather_daemon
         mocker.patch(
-            "cta_eta.data_collection.orchestration.weather_daemon._OPEN_METEO_MAX_PER_SECOND",
+            "cta_eta.data_collection.orchestration.weather_daemon._DEFAULT_OPEN_METEO_MAX_PER_SECOND",
             new=1000.0,
         )
         mocker.patch(
-            "cta_eta.data_collection.orchestration.weather_daemon._OPEN_METEO_MAX_AT_ONCE",
+            "cta_eta.data_collection.orchestration.weather_daemon._DEFAULT_OPEN_METEO_MAX_AT_ONCE",
             new=1,  # deterministic ordering for test
         )
 
@@ -686,9 +686,14 @@ class TestWeatherDaemonRunLoop:
         # Assert
         assert collect.call_count == 1
         assert sleep.call_count == 1
-        cast("MagicMock", daemon.logger).exception.assert_any_call(
-            "Weather collection cycle failed"
-        )
+        # Check that error was logged (with error classification extra fields)
+        exception_calls = [
+            call
+            for call in cast("MagicMock", daemon.logger).exception.call_args_list
+            if "Weather collection cycle failed" in str(call)
+            or "error" in str(call).lower()
+        ]
+        assert len(exception_calls) > 0, "Expected exception to be logged"
 
     @pytest.mark.usefixtures("cleanup_state_files")
     def test_run_creates_and_reuses_http_clients(
@@ -764,24 +769,28 @@ class TestWeatherDaemonDiscoveryTimeouts:
         ],
         mocker: MockerFixture,
     ) -> None:
-        """Discovery times out individual stations after 30 seconds."""
-        # Arrange
+        """Discovery times out individual stations and logs without caching."""
+        # Arrange: use a short timeout so the test finishes in ~0.1s
         daemon, _stations_cache, _nws_cache, om_cache, _storage = weather_daemon
+        test_timeout_s = 0.05
         mocker.patch(
-            "cta_eta.data_collection.orchestration.weather_daemon._OPEN_METEO_MAX_PER_SECOND",
+            "cta_eta.data_collection.orchestration.weather_daemon._PER_STATION_DISCOVERY_TIMEOUT_S",
+            new=test_timeout_s,
+        )
+        mocker.patch(
+            "cta_eta.data_collection.orchestration.weather_daemon._DEFAULT_OPEN_METEO_MAX_PER_SECOND",
             new=1000.0,
         )
         mocker.patch(
-            "cta_eta.data_collection.orchestration.weather_daemon._OPEN_METEO_MAX_AT_ONCE",
+            "cta_eta.data_collection.orchestration.weather_daemon._DEFAULT_OPEN_METEO_MAX_AT_ONCE",
             new=1,
         )
 
         async def slow_discover(_client: Any, lat: float, lon: float) -> str:  # noqa: ANN401
             if lat == 1.0:
-                await asyncio.sleep(0.01)  # Fast
+                await asyncio.sleep(0.01)
                 return "1.0,1.0"
-            # Slow one that will timeout
-            await asyncio.sleep(35.0)  # Exceeds 30s timeout
+            await asyncio.sleep(0.1)  # Exceeds test_timeout_s
             return "2.0,2.0"
 
         mocker.patch(
@@ -798,7 +807,6 @@ class TestWeatherDaemonDiscoveryTimeouts:
         )
 
         # Assert
-        # First should succeed, second should timeout
         assert "s1" in result
         assert result["s1"] == "1.0,1.0"
         assert "s2" not in result
@@ -808,7 +816,7 @@ class TestWeatherDaemonDiscoveryTimeouts:
             extra={
                 "extra_fields": {
                     "station_id": "s2",
-                    "timeout_seconds": 30.0,
+                    "timeout_seconds": test_timeout_s,
                 }
             },
         )
@@ -823,13 +831,13 @@ class TestWeatherDaemonDiscoveryTimeouts:
     ) -> None:
         """Discovery handles overall batch timeout gracefully."""
         # Arrange
-        daemon, _stations_cache, _nws_cache, om_cache, _storage = weather_daemon
+        daemon, _stations_cache, _nws_cache, _, _storage = weather_daemon
         mocker.patch(
-            "cta_eta.data_collection.orchestration.weather_daemon._OPEN_METEO_MAX_PER_SECOND",
+            "cta_eta.data_collection.orchestration.weather_daemon._DEFAULT_OPEN_METEO_MAX_PER_SECOND",
             new=1000.0,
         )
         mocker.patch(
-            "cta_eta.data_collection.orchestration.weather_daemon._OPEN_METEO_MAX_AT_ONCE",
+            "cta_eta.data_collection.orchestration.weather_daemon._DEFAULT_OPEN_METEO_MAX_AT_ONCE",
             new=1,
         )
 

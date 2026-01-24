@@ -20,6 +20,7 @@ import os
 import time
 from contextlib import suppress
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, override
 
@@ -39,6 +40,7 @@ from cta_eta.data_collection.apis.api_weather_open_meteo import (
 from cta_eta.data_collection.apis.api_weather_openweathermap import (
     get_openweathermap_current,
 )
+from cta_eta.data_collection.config import validate_config
 from cta_eta.data_collection.logging import log_context
 from cta_eta.data_collection.merging.weather_merger import merge_weather_sources
 from cta_eta.data_collection.orchestration.daemon_async import AsyncBaseDaemon
@@ -59,10 +61,88 @@ if TYPE_CHECKING:
         OpenMeteoGridCache,
     )
 
-_OPEN_METEO_MAX_PER_SECOND: float = 0.1  # 6/minute
-_OPEN_METEO_MAX_AT_ONCE: int = 3
+# TODO(jdwh08): move these to config.toml
+# Default rate limits (fallback if config missing)
+# Open-Meteo API: https://open-meteo.com/en/docs
+# Free tier: 10,000 calls/day
+_DEFAULT_OPEN_METEO_MAX_PER_SECOND: float = 0.1  # 6/minute
+_DEFAULT_OPEN_METEO_MAX_AT_ONCE: int = 3
+_PER_STATION_DISCOVERY_TIMEOUT_S: float = (
+    30.0  # NOTE(jdwh08): constant so that we can patch it in tests
+)
 
 
+# TODO(jdwh08): Move this into daemon_async.py
+class ErrorCategory(Enum):
+    """Error classification categories for daemon error handling."""
+
+    TRANSIENT = "transient"  # Temporary errors that should be retried
+    CONFIGURATION = "configuration"  # Configuration errors requiring immediate exit
+    RATE_LIMIT = "rate_limit"  # Rate limit errors requiring backoff
+    UNKNOWN = "unknown"  # Unknown errors, log and continue
+
+
+# TODO(jdwh08): Move this into daemon_async.py
+def classify_error(error: Exception) -> ErrorCategory:
+    """Classify an exception into an error category for appropriate handling.
+
+    This function distinguishes between different types of errors to enable
+    appropriate handling strategies:
+    - TRANSIENT: Network errors, timeouts, temporary API failures (retry)
+    - CONFIGURATION: Missing credentials, invalid config (exit gracefully)
+    - RATE_LIMIT: HTTP 429 errors (apply backoff)
+    - UNKNOWN: All other errors (log and continue)
+
+    Args:
+        error: Exception to classify
+
+    Returns:
+        ErrorCategory enum value indicating how to handle the error
+
+    """
+    # Configuration errors (missing credentials, invalid config)
+    if isinstance(error, ValueError) and any(
+        keyword in str(error).lower()
+        for keyword in ["missing", "required", "invalid", "not set", "must be set"]
+    ):
+        return ErrorCategory.CONFIGURATION
+
+    # Rate limit errors
+    if (
+        isinstance(error, httpx.HTTPStatusError)
+        and error.response is not None
+        and error.response.status_code == httpx.codes.TOO_MANY_REQUESTS
+    ):
+        return ErrorCategory.RATE_LIMIT
+
+    # Transient errors (network issues, timeouts, temporary failures)
+    if isinstance(error, (httpx.RequestError, httpx.TimeoutException, TimeoutError)):
+        return ErrorCategory.TRANSIENT
+
+    if isinstance(error, httpx.HTTPStatusError):
+        # 5xx errors are typically transient
+        if (
+            error.response is not None
+            and httpx.codes.INTERNAL_SERVER_ERROR
+            <= error.response.status_code
+            < httpx.codes.BAD_GATEWAY
+        ):
+            return ErrorCategory.TRANSIENT
+        # 4xx errors (except 429) are typically configuration or client errors
+        if (
+            error.response is not None
+            and httpx.codes.BAD_REQUEST
+            <= error.response.status_code
+            < httpx.codes.INTERNAL_SERVER_ERROR
+        ):
+            return ErrorCategory.CONFIGURATION
+
+    # Default to unknown
+    return ErrorCategory.UNKNOWN
+
+
+# TODO(jdwh08): Move this into daemon_async.py
+# Also, why is this better than using aiometer?
 class _AsyncRateLimiter:
     """Simple rate limiter for asyncio (spreads request starts over time)."""
 
@@ -145,6 +225,220 @@ class _StationGridMapping:
     open_meteo_grid_id: str
 
 
+# TODO(jdwh08): Move this into weather_grid_discovery.py
+class WeatherGridDiscoverer:
+    """Handles grid discovery for weather APIs with rate limiting and timeout management.
+
+    This class encapsulates the complex logic for discovering weather grid identifiers
+    for multiple stations concurrently, with proper rate limiting, timeouts, and error
+    handling. It manages the discovery state and persists results to cache.
+
+    Attributes:
+        logger: Logger instance for structured logging
+        diagnostics: DaemonDiagnostics instance for telemetry
+        om_grid_cache: OpenMeteoGridCache for persisting discovered grids
+        open_meteo_max_per_second: Rate limit for Open-Meteo API (requests per second)
+        open_meteo_max_at_once: Maximum concurrent requests to Open-Meteo API
+        write_discovery_state_marker: Callable to write discovery state markers
+
+    """
+
+    def __init__(
+        self,
+        *,
+        logger: logging.Logger,
+        diagnostics: Any,  # DaemonDiagnostics
+        om_grid_cache: OpenMeteoGridCache,
+        open_meteo_max_per_second: float,
+        open_meteo_max_at_once: int,
+        write_discovery_state_marker: Callable[[dict[str, object]], None],
+        daemon_class: str,
+    ) -> None:
+        """Initialize grid discoverer with dependencies.
+
+        Args:
+            logger: Logger instance for structured logging
+            diagnostics: DaemonDiagnostics instance for telemetry
+            om_grid_cache: OpenMeteoGridCache for persisting discovered grids
+            open_meteo_max_per_second: Rate limit for Open-Meteo API
+            open_meteo_max_at_once: Maximum concurrent requests
+            write_discovery_state_marker: Function to write discovery state markers
+            daemon_class: Name of daemon class for state markers
+
+        """
+        self.logger = logger
+        self.diagnostics = diagnostics
+        self.om_grid_cache = om_grid_cache
+        self.open_meteo_max_per_second = open_meteo_max_per_second
+        self.open_meteo_max_at_once = open_meteo_max_at_once
+        self._write_discovery_state_marker = write_discovery_state_marker
+        self._daemon_class = daemon_class
+
+    async def discover_open_meteo_grids_for_stations(
+        self,
+        client: httpx.AsyncClient,
+        requests: list[tuple[str, float, float]],
+    ) -> dict[str, str]:
+        """Discover Open-Meteo grid identifiers for multiple stations concurrently.
+
+        This method handles the complex orchestration of discovering grid identifiers
+        for multiple stations with:
+        - Rate limiting (max_per_second, max_at_once)
+        - Per-station timeouts (30 seconds)
+        - Overall batch timeout (10 minutes)
+        - Immediate cache persistence on success
+        - Graceful handling of partial failures
+
+        Args:
+            client: HTTP client for API requests
+            requests: List of (station_id, latitude, longitude) tuples
+
+        Returns:
+            Dictionary mapping station_id to grid_id for successfully discovered grids
+
+        """
+        marker = _DiscoveryStateMarker(
+            provider="open_meteo",
+            total=len(requests),
+            write=self._write_discovery_state_marker,
+            daemon_class=self._daemon_class,
+        )
+        marker.start()
+
+        self.diagnostics.record_event(
+            "aiometer_run",
+            operation="open_meteo.discover_grid",
+            item_count=len(requests),
+            max_per_second=self.open_meteo_max_per_second,
+            max_at_once=self.open_meteo_max_at_once,
+        )
+
+        # Cold-cache fill can take a long time (rate limited); persist each success
+        # immediately so a restart doesn't have to redo completed discoveries.
+        # Add timeout: 30 seconds per station, with overall batch timeout of 10 minutes
+        # (for ~145 stations at 0.1 req/s, worst case is ~24 minutes, but we cap at 10)
+        per_station_timeout_s = _PER_STATION_DISCOVERY_TIMEOUT_S
+        overall_batch_timeout_s: float = 600.0  # 10 minutes
+
+        out: dict[str, str] = {}
+        sem = asyncio.Semaphore(self.open_meteo_max_at_once)
+        limiter = _AsyncRateLimiter(max_per_second=self.open_meteo_max_per_second)
+
+        async def _discover_one(
+            req: tuple[str, float, float],
+        ) -> tuple[str, str] | None:
+            station_id, lat, lon = req
+            async with sem:
+                await limiter.wait_turn()
+                try:
+                    async with self.diagnostics.span(
+                        "open_meteo.discover_grid",
+                        station_id=station_id,
+                        latitude=lat,
+                        longitude=lon,
+                    ):
+                        grid = await asyncio.wait_for(
+                            discover_open_meteo_grid(client, lat, lon),
+                            timeout=per_station_timeout_s,
+                        )
+                except TimeoutError:
+                    self.logger.warning(
+                        f"Open-Meteo grid discovery timed out for station {station_id}",
+                        extra={
+                            "extra_fields": {
+                                "station_id": station_id,
+                                "timeout_seconds": per_station_timeout_s,
+                            }
+                        },
+                    )
+                    marker.failure()
+                    return None
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    self.logger.exception(
+                        f"Failed to discover Open-Meteo grid for station {station_id}",
+                        extra={"extra_fields": {"station_id": station_id}},
+                    )
+                    marker.failure()
+                    return None
+                else:
+                    self.om_grid_cache.set_grid_identifier(station_id, grid)
+                    self.diagnostics.record_event(
+                        "cache_write",
+                        provider="open_meteo",
+                        station_id=station_id,
+                        grid_id=grid,
+                    )
+                    marker.success()
+                    return (station_id, grid)
+
+        tasks = [asyncio.create_task(_discover_one(req)) for req in requests]
+        try:
+            # Wait for all tasks with overall timeout
+            done, pending = await asyncio.wait(
+                tasks,
+                timeout=overall_batch_timeout_s,
+                return_when=asyncio.ALL_COMPLETED,
+            )
+
+            # Process completed tasks
+            for task in done:
+                try:
+                    result = await task
+                    if result is None:
+                        continue
+                    station_id, grid_id = result
+                    out[station_id] = grid_id
+                except (asyncio.CancelledError, TimeoutError):
+                    # These are expected and already handled
+                    pass
+                except Exception as e:  # noqa: BLE001
+                    # Catch-all for unexpected errors in task results
+                    # (task itself may have caught and returned None)
+                    self.logger.warning(
+                        f"Discovery task failed: {e}",
+                        extra={
+                            "extra_fields": {
+                                "error_type": type(e).__name__,
+                                "error_message": str(e),
+                            }
+                        },
+                    )
+
+            # Cancel pending tasks if we hit the overall timeout
+            if pending:
+                self.logger.warning(
+                    f"Discovery batch timed out: {len(pending)} tasks still pending",
+                    extra={
+                        "extra_fields": {
+                            "pending_count": len(pending),
+                            "overall_timeout_seconds": overall_batch_timeout_s,
+                        }
+                    },
+                )
+                for task in pending:
+                    task.cancel()
+                # Wait briefly for cancellations to complete
+                await asyncio.gather(*pending, return_exceptions=True)
+
+        except asyncio.CancelledError:
+            marker.finish("cancelled")
+            raise
+        except Exception as e:
+            marker.finish("failed", error=e)
+            raise
+        finally:
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await t
+
+        marker.finish("completed")
+        return out
+
+
 class WeatherDaemon(AsyncBaseDaemon):
     """Continuous weather collection daemon with parallel multi-source polling.
 
@@ -177,6 +471,8 @@ class WeatherDaemon(AsyncBaseDaemon):
     weather_interval: int
     last_collection_time: float
     records_stored_last_cycle: int
+    open_meteo_max_per_second: float
+    open_meteo_max_at_once: int
 
     def __init__(
         self,
@@ -191,6 +487,9 @@ class WeatherDaemon(AsyncBaseDaemon):
 
         """
         super().__init__(config, logger)
+
+        # Validate configuration for required credentials
+        validate_config(config, required_features=["weather_collection"])
 
         # Load stations cache for deduplication
         self.stations_cache = get_stations_cache(config)
@@ -209,9 +508,31 @@ class WeatherDaemon(AsyncBaseDaemon):
         )
         self.weather_interval = weather_interval_minutes * 60
 
+        # Load rate limits from config with fallback defaults
+        # Open-Meteo API: https://open-meteo.com/en/docs
+        rate_limits_config = config.get("rate_limits", {})
+        open_meteo_config = rate_limits_config.get("open_meteo", {})
+        self.open_meteo_max_per_second = float(
+            open_meteo_config.get("max_per_second", _DEFAULT_OPEN_METEO_MAX_PER_SECOND)
+        )
+        self.open_meteo_max_at_once = int(
+            open_meteo_config.get("max_at_once", _DEFAULT_OPEN_METEO_MAX_AT_ONCE)
+        )
+
         # Initialize state tracking
         self.last_collection_time = 0.0
         self.records_stored_last_cycle = 0
+
+        # Initialize grid discoverer
+        self._grid_discoverer = WeatherGridDiscoverer(
+            logger=logger,
+            diagnostics=self.diagnostics,
+            om_grid_cache=self.om_grid_cache,
+            open_meteo_max_per_second=self.open_meteo_max_per_second,
+            open_meteo_max_at_once=self.open_meteo_max_at_once,
+            write_discovery_state_marker=self._write_discovery_state_marker,
+            daemon_class=self.__class__.__name__,
+        )
 
     @override
     async def run(self) -> None:
@@ -233,8 +554,57 @@ class WeatherDaemon(AsyncBaseDaemon):
                     await self._collect_weather_cycle(nws_client, om_client, owm_client)
                 except asyncio.CancelledError:
                     raise
-                except Exception:
-                    self.logger.exception("Weather collection cycle failed")
+                except Exception as e:
+                    category = classify_error(e)
+                    if category == ErrorCategory.CONFIGURATION:
+                        self.logger.exception(
+                            "Configuration error detected. Exiting daemon.",
+                            extra={
+                                "extra_fields": {
+                                    "error_type": type(e).__name__,
+                                    "error_category": category.value,
+                                    "error_message": str(e),
+                                }
+                            },
+                        )
+                        # Exit gracefully on configuration errors
+                        self.running = False
+                        raise
+                    if category == ErrorCategory.RATE_LIMIT:
+                        self.logger.warning(
+                            f"Rate limit error: {e}. Applying backoff.",
+                            extra={
+                                "extra_fields": {
+                                    "error_type": type(e).__name__,
+                                    "error_category": category.value,
+                                    "error_message": str(e),
+                                }
+                            },
+                        )
+                        # Apply longer backoff for rate limits
+                        await self.sleep(self.weather_interval * 2)
+                        continue
+                    if category == ErrorCategory.TRANSIENT:
+                        self.logger.warning(
+                            f"Transient error in collection cycle: {e}. Will retry next cycle.",
+                            extra={
+                                "extra_fields": {
+                                    "error_type": type(e).__name__,
+                                    "error_category": category.value,
+                                }
+                            },
+                        )
+                    else:
+                        self.logger.exception(
+                            "Weather collection cycle failed",
+                            extra={
+                                "extra_fields": {
+                                    "error_type": type(e).__name__,
+                                    "error_category": category.value,
+                                    "error_message": str(e),
+                                }
+                            },
+                        )
 
                 await self.sleep(self.weather_interval)
 
@@ -244,7 +614,36 @@ class WeatherDaemon(AsyncBaseDaemon):
         om_client: httpx.AsyncClient,
         owm_client: httpx.AsyncClient,
     ) -> None:
-        """Execute one weather collection cycle."""
+        """Execute one complete weather collection cycle.
+
+        This method orchestrates the multi-phase weather collection process:
+
+        1. **Resolve Station → Grid Mappings**: Maps each CTA station to its corresponding
+           weather grid identifiers for NWS and Open-Meteo. Uses cached mappings when
+           available, performs discovery for cache misses. This deduplication step reduces
+           ~145 stations to ~50 unique weather grid points.
+
+        2. **Parallel Multi-Source Fetch**: Fetches weather data from NWS and Open-Meteo
+           in parallel using asyncio.gather(). Each unique grid point is fetched once,
+           and the result is reused for all stations mapping to that grid.
+
+        3. **Fallback Handling**: If NWS or Open-Meteo fails for any grid point,
+           OpenWeatherMap is called as a fallback source.
+
+        4. **Merge and Store**: Merges weather data from all sources using precedence
+           rules (NWS > Open-Meteo > OpenWeatherMap), attaches station metadata, and
+           stores unified records to Parquet storage.
+
+        The method handles partial failures gracefully - one source failing for one grid
+        point doesn't stop collection for other grid points. All errors are logged but
+        don't stop the cycle.
+
+        Args:
+            nws_client: HTTP client for NWS API requests
+            om_client: HTTP client for Open-Meteo API requests
+            owm_client: HTTP client for OpenWeatherMap API requests (fallback)
+
+        """
         cycle_start_time = time.time()
         cycle_id = (
             self.diagnostics.new_cycle_id() if self.diagnostics.enabled else "disabled"
@@ -499,14 +898,14 @@ class WeatherDaemon(AsyncBaseDaemon):
             "aiometer_run",
             operation="open_meteo.get_current",
             item_count=len(grid_ids),
-            max_per_second=_OPEN_METEO_MAX_PER_SECOND,
-            max_at_once=_OPEN_METEO_MAX_AT_ONCE,
+            max_per_second=self.open_meteo_max_per_second,
+            max_at_once=self.open_meteo_max_at_once,
         )
         results = await aiometer.run_on_each(
             _fetch_one,
             grid_ids,
-            max_per_second=_OPEN_METEO_MAX_PER_SECOND,
-            max_at_once=_OPEN_METEO_MAX_AT_ONCE,
+            max_per_second=self.open_meteo_max_per_second,
+            max_at_once=self.open_meteo_max_at_once,
         )
         if results is None:
             self.logger.warning(
@@ -557,10 +956,33 @@ class WeatherDaemon(AsyncBaseDaemon):
     ) -> list[_StationGridMapping]:
         """Resolve station → provider grid mappings for this polling cycle.
 
-        This method returns station-scoped mappings so the caller can:
-        - dedupe NWS calls by NWS grid ID
-        - dedupe Open-Meteo calls by Open-Meteo grid ID
-        and reuse provider responses across all stations mapping to the same grid.
+        This method performs the critical deduplication step that reduces API calls from
+        ~145 stations to ~50 unique weather grid points. For each station:
+
+        1. **NWS Grid Resolution**: Checks cache for NWS grid ID. On cache miss, calls
+           NWS Points API to discover grid identifier (format: "LOT/85,67"). Discovery
+           is done synchronously per station to avoid overwhelming the API.
+
+        2. **Open-Meteo Grid Resolution**: Checks cache for Open-Meteo grid ID. On cache
+           miss, adds station to discovery batch. Batch discovery is performed
+           concurrently with rate limiting (see WeatherGridDiscoverer).
+
+        3. **Cache Persistence**: All discovered grid identifiers are immediately
+           persisted to cache files to survive daemon restarts.
+
+        The method returns station-scoped mappings so the caller can:
+        - Deduplicate NWS calls by NWS grid ID (multiple stations → one NWS grid)
+        - Deduplicate Open-Meteo calls by Open-Meteo grid ID
+        - Reuse provider responses across all stations mapping to the same grid
+
+        Args:
+            nws_client: HTTP client for NWS API (created if None)
+            om_client: HTTP client for Open-Meteo API (created if None)
+
+        Returns:
+            List of _StationGridMapping objects, one per station, with both NWS and
+            Open-Meteo grid identifiers resolved.
+
         """
         if nws_client is None or om_client is None:
             timeout = httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=10.0)
@@ -634,8 +1056,8 @@ class WeatherDaemon(AsyncBaseDaemon):
                 "station_grid_mapping_cache_miss",
                 provider="open_meteo",
                 miss_count=len(om_discovery_requests),
-                max_per_second=_OPEN_METEO_MAX_PER_SECOND,
-                max_at_once=_OPEN_METEO_MAX_AT_ONCE,
+                max_per_second=self.open_meteo_max_per_second,
+                max_at_once=self.open_meteo_max_at_once,
             )
             discovered = await self._discover_open_meteo_grids_for_stations(
                 om_client, om_discovery_requests
@@ -674,149 +1096,26 @@ class WeatherDaemon(AsyncBaseDaemon):
 
         return mappings
 
-    async def _discover_open_meteo_grids_for_stations(  # noqa: C901
+    async def _discover_open_meteo_grids_for_stations(
         self,
         client: httpx.AsyncClient,
         requests: list[tuple[str, float, float]],
     ) -> dict[str, str]:
-        marker = _DiscoveryStateMarker(
-            provider="open_meteo",
-            total=len(requests),
-            write=self._write_discovery_state_marker,
-            daemon_class=self.__class__.__name__,
+        """Discover Open-Meteo grid identifiers for multiple stations.
+
+        Delegates to WeatherGridDiscoverer for the actual discovery logic.
+
+        Args:
+            client: HTTP client for API requests
+            requests: List of (station_id, latitude, longitude) tuples
+
+        Returns:
+            Dictionary mapping station_id to grid_id
+
+        """
+        return await self._grid_discoverer.discover_open_meteo_grids_for_stations(
+            client, requests
         )
-        marker.start()
-
-        self.diagnostics.record_event(
-            "aiometer_run",
-            operation="open_meteo.discover_grid",
-            item_count=len(requests),
-            max_per_second=_OPEN_METEO_MAX_PER_SECOND,
-            max_at_once=_OPEN_METEO_MAX_AT_ONCE,
-        )
-
-        # Cold-cache fill can take a long time (rate limited); persist each success
-        # immediately so a restart doesn't have to redo completed discoveries.
-        # Add timeout: 30 seconds per station, with overall batch timeout of 10 minutes
-        # (for ~145 stations at 0.1 req/s, worst case is ~24 minutes, but we cap at 10)
-        per_station_timeout_s: float = 30.0
-        overall_batch_timeout_s: float = 600.0  # 10 minutes
-
-        out: dict[str, str] = {}
-        sem = asyncio.Semaphore(_OPEN_METEO_MAX_AT_ONCE)
-        limiter = _AsyncRateLimiter(max_per_second=_OPEN_METEO_MAX_PER_SECOND)
-
-        async def _discover_one(
-            req: tuple[str, float, float],
-        ) -> tuple[str, str] | None:
-            station_id, lat, lon = req
-            async with sem:
-                await limiter.wait_turn()
-                try:
-                    async with self.diagnostics.span(
-                        "open_meteo.discover_grid",
-                        station_id=station_id,
-                        latitude=lat,
-                        longitude=lon,
-                    ):
-                        grid = await asyncio.wait_for(
-                            discover_open_meteo_grid(client, lat, lon),
-                            timeout=per_station_timeout_s,
-                        )
-                except TimeoutError:
-                    self.logger.warning(
-                        f"Open-Meteo grid discovery timed out for station {station_id}",
-                        extra={
-                            "extra_fields": {
-                                "station_id": station_id,
-                                "timeout_seconds": per_station_timeout_s,
-                            }
-                        },
-                    )
-                    marker.failure()
-                    return None
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    self.logger.exception(
-                        f"Failed to discover Open-Meteo grid for station {station_id}",
-                        extra={"extra_fields": {"station_id": station_id}},
-                    )
-                    marker.failure()
-                    return None
-                else:
-                    self.om_grid_cache.set_grid_identifier(station_id, grid)
-                    self.diagnostics.record_event(
-                        "cache_write",
-                        provider="open_meteo",
-                        station_id=station_id,
-                        grid_id=grid,
-                    )
-                    marker.success()
-                    return (station_id, grid)
-
-        tasks = [asyncio.create_task(_discover_one(req)) for req in requests]
-        try:
-            # Wait for all tasks with overall timeout
-            done, pending = await asyncio.wait(
-                tasks,
-                timeout=overall_batch_timeout_s,
-                return_when=asyncio.ALL_COMPLETED,
-            )
-
-            # Process completed tasks
-            for task in done:
-                try:
-                    result = await task
-                    if result is None:
-                        continue
-                    station_id, grid_id = result
-                    out[station_id] = grid_id
-                except (asyncio.CancelledError, TimeoutError):
-                    # These are expected and already handled
-                    pass
-                except Exception as e:  # noqa: BLE001
-                    # Catch-all for unexpected errors in task results
-                    # (task itself may have caught and returned None)
-                    self.logger.warning(
-                        f"Discovery task failed: {e}",
-                        extra={
-                            "extra_fields": {
-                                "error_type": type(e).__name__,
-                                "error_message": str(e),
-                            }
-                        },
-                    )
-
-            # Cancel pending tasks if we hit the overall timeout
-            if pending:
-                self.logger.warning(
-                    f"Discovery batch timed out: {len(pending)} tasks still pending",
-                    extra={
-                        "extra_fields": {
-                            "pending_count": len(pending),
-                            "overall_timeout_seconds": overall_batch_timeout_s,
-                        }
-                    },
-                )
-                for task in pending:
-                    task.cancel()
-
-        except asyncio.CancelledError:
-            marker.finish("cancelled")
-            raise
-        except Exception as e:
-            marker.finish("failed", error=e)
-            raise
-        finally:
-            for t in tasks:
-                if not t.done():
-                    t.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await t
-
-        marker.finish("completed")
-        return out
 
     def _write_discovery_state_marker(self, state: dict[str, object]) -> None:
         """Write an atomic discovery progress marker to `.daemon_state/` (best-effort)."""

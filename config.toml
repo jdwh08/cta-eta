@@ -13,17 +13,8 @@ weather_interval_minutes = 30
 
 [retry]
 # Maximum retry attempts for transient API failures
-# Using stamina decorator with exponential backoff
+# Using stamina decorator with exponential backoff w/ Jitter
 max_retry_attempts = 10
-
-# Initial backoff delay in seconds
-initial_backoff_seconds = 1
-
-# Maximum backoff delay in seconds
-max_backoff_seconds = 60
-
-# Backoff multiplier for exponential backoff
-backoff_multiplier = 2
 
 [storage]
 # Storage backend selection
@@ -85,6 +76,26 @@ track_geometry_ttl = 2592000
 # TTL for station-to-weather grid mapping in seconds (7 days)
 # Maps ~300 CTA stations to ~50 weather grid points
 weather_mapping_ttl = 604800
+
+# TODO(jdwh08): Add weather_fallback option, add rate_limits for each API
+[features]
+# Feature flags to enable/disable parts of the pipeline
+# Only credentials for enabled features will be validated at startup
+train_positions = false  # Requires CTA_API_KEY
+weather_collection = true  # Requires NWS_APP_NAME and NWS_EMAIL
+station_data = false  # Requires CHIDATA_APP_TOK and CHIDATA_APP_SECRET
+# Note: openweathermap_fallback is optional and doesn't require validation
+
+[rate_limits]
+# API rate limit configuration
+# These limits are enforced to stay within API provider quotas
+
+[rate_limits.open_meteo]
+# Open-Meteo API: https://open-meteo.com/en/docs
+# Free tier: 10,000 calls/day
+# Current usage: ~50 grid points × 48 polls/day = 2,400 calls/day (24% utilization)
+max_per_second = 0.1  # 6/minute, ~8,640/day (well under 10K limit)
+max_at_once = 3  # Maximum concurrent requests
 
 [diagnostics]
 # Off by default. When enabled, daemons emit structured span timing + error telemetry,

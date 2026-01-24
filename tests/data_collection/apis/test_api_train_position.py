@@ -32,7 +32,7 @@ async def test_get_train_positions_requires_api_key(
     client = mocker.AsyncMock(spec=httpx.AsyncClient)
 
     # Act / Assert
-    with pytest.raises(KeyError, match="CTA_API_KEY environment variable not set"):
+    with pytest.raises(ValueError, match="CTA_API_KEY environment variable not set"):
         await api_train_position.get_train_positions(client)
 
 
@@ -63,7 +63,7 @@ async def test_get_train_positions_calls_expected_endpoint_and_params(
     }
     response = httpx_json_response(response_payload, 200, expected_url)
     # Mock raise_for_status to verify it's called
-    response.raise_for_status = mocker.Mock()  # type: ignore[method-assign]
+    response.raise_for_status = mocker.Mock()
     client.get.return_value = response
 
     # Act
@@ -319,8 +319,11 @@ def test_normalize_train_positions_defaults_missing_fields() -> None:
                     "train": [
                         {
                             "rn": "519",
-                            # Missing: lat, lon, heading, nextStaId, nextStaNm,
+                            "lat": 32.7121,
+                            "lon": -117.1605,
+                            # Missing: heading, nextStaId, nextStaNm,
                             # destSt, destNm, prdt, arrT, isApp, isDly
+                            # NOTE(jdwh08): can't be missing lat/lon due to validation
                         }
                     ],
                 }
@@ -338,9 +341,9 @@ def test_normalize_train_positions_defaults_missing_fields() -> None:
     assert record["api_timestamp"] == "2026-01-14T20:34:15"
     assert record["route"] == "red"
     assert record["train_id"] == "519"
-    assert record["lat"] == 0.0  # Default
-    assert record["lon"] == 0.0  # Default
-    assert record["heading"] == 0  # Default
+    assert record["lat"] == 32.7121
+    assert record["lon"] == -117.1605
+    assert record["heading"] is None
     assert record["next_station_id"] is None
     assert record["next_station_name"] is None
     assert record["destination_id"] is None
@@ -517,16 +520,22 @@ def test_normalize_train_positions_converts_bool_flags_correctly() -> None:
                             "rn": "519",
                             "isApp": "1",
                             "isDly": "0",
+                            "lat": "42.06106",
+                            "lon": "-87.68393",
                         },
                         {
                             "rn": "520",
                             "isApp": "0",
                             "isDly": "1",
+                            "lat": "42.06106",
+                            "lon": "-87.68393",
                         },
                         {
                             "rn": "521",
                             "isApp": "1",
                             "isDly": "1",
+                            "lat": "42.06106",
+                            "lon": "-87.68393",
                         },
                     ],
                 }
@@ -596,21 +605,20 @@ def test_normalize_train_positions_handles_all_cta_lines() -> None:
     """Test normalization with all CTA lines present."""
     # Arrange
     poll_timestamp = datetime(2026, 1, 14, 20, 34, 15, tzinfo=UTC)
-    routes = []
-    for line in api_train_position.CTA_LINES:
-        routes.append(
-            {
-                "@name": line,
-                "train": [
-                    {
-                        "rn": f"{line}-001",
-                        "lat": "41.88",
-                        "lon": "-87.63",
-                        "heading": "90",
-                    }
-                ],
-            }
-        )
+    routes = [
+        {
+            "@name": line,
+            "train": [
+                {
+                    "rn": f"{line}-001",
+                    "lat": "41.88",
+                    "lon": "-87.63",
+                    "heading": "90",
+                }
+            ],
+        }
+        for line in api_train_position.CTA_LINES
+    ]
 
     response = {
         "ctatt": {
@@ -674,7 +682,7 @@ def test_normalize_train_positions_handles_invalid_numeric_strings() -> None:
     }
 
     # Act / Assert
-    with pytest.raises(ValueError):
+    with pytest.raises(TypeError):
         api_train_position.normalize_train_positions(response, poll_timestamp)
 
 

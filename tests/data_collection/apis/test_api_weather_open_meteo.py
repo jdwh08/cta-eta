@@ -87,13 +87,13 @@ async def test_get_open_meteo_current_defaults_missing_fields_and_converts_visib
     assert current["longitude"] == lon
     assert current["timestamp"] == "2026-01-14T21:00"
     assert current["visibility_mi"] == pytest.approx(2.0, abs=1e-6)
-    assert current["snow_depth_in"] == 0.0
-    assert current["surface_pressure_hpa"] == 0.0
-    assert current["wind_gusts_mph"] == 0.0
-    assert current["apparent_temp_f"] == 0.0
-    assert current["rain_in"] == 0.0
-    assert current["showers_in"] == 0.0
-    assert current["snowfall_in"] == 0.0
+    assert current["snow_depth_in"] is None
+    assert current["surface_pressure_hpa"] is None
+    assert current["wind_gusts_mph"] is None
+    assert current["apparent_temp_f"] is None
+    assert current["rain_in"] is None
+    assert current["showers_in"] is None
+    assert current["snowfall_in"] is None
 
     open_meteo_client.get.assert_awaited_once()
     assert (
@@ -187,3 +187,116 @@ async def test_get_open_meteo_current_propagates_http_errors_without_retry_delay
     # Act / Assert
     with pytest.raises(httpx.HTTPStatusError):
         await fn_no_retry(open_meteo_client, "41.88,-87.63")
+
+
+async def test_discover_open_meteo_grid_parse_error_non_numeric_lat_lon(
+    open_meteo_client: AsyncMock,
+    httpx_json_response: Callable[[dict, int, str], httpx.Response],
+) -> None:
+    """discover_open_meteo_grid raises when API returns non-numeric latitude/longitude."""
+    # Arrange
+    open_meteo_client.get.return_value = httpx_json_response(
+        {"latitude": "41.71", "longitude": -87.63},
+        200,
+        api_weather_open_meteo.OPEN_METEO_URL,
+    )
+
+    # Act / Assert
+    with pytest.raises(TypeError, match=r"latitude.*or.*longitude.*not numeric"):
+        await api_weather_open_meteo.discover_open_meteo_grid(
+            open_meteo_client, 41.72, -87.62
+        )
+
+
+async def test_discover_open_meteo_grid_parse_error_propagates(
+    open_meteo_client: AsyncMock,
+    httpx_json_response: Callable[[dict, int, str], httpx.Response],
+) -> None:
+    """discover_open_meteo_grid logs and re-raises when parsing discovery response fails."""
+    # Arrange: missing "latitude" causes safe_get_nested to raise
+    open_meteo_client.get.return_value = httpx_json_response(
+        {"longitude": -87.63699},
+        200,
+        api_weather_open_meteo.OPEN_METEO_URL,
+    )
+
+    # Act / Assert
+    with pytest.raises(TypeError, match="missing required field"):
+        await api_weather_open_meteo.discover_open_meteo_grid(
+            open_meteo_client, 41.72, -87.62
+        )
+
+
+async def test_get_open_meteo_current_parse_error_current_not_dict(
+    open_meteo_client: AsyncMock,
+    httpx_json_response: Callable[[dict, int, str], httpx.Response],
+) -> None:
+    """get_open_meteo_current raises when API returns current that is not a dict."""
+    # Arrange
+    open_meteo_client.get.return_value = httpx_json_response(
+        {
+            "latitude": 41.88,
+            "longitude": -87.63,
+            "current": "not-a-dict",
+        },
+        200,
+        api_weather_open_meteo.OPEN_METEO_URL,
+    )
+
+    # Act / Assert
+    with pytest.raises(
+        ValueError, match="Open-Meteo API response structure unexpected"
+    ):
+        await api_weather_open_meteo.get_open_meteo_current(
+            open_meteo_client, "41.88,-87.63"
+        )
+
+
+async def test_get_open_meteo_current_parse_error_lat_lon_not_numeric(
+    open_meteo_client: AsyncMock,
+    httpx_json_response: Callable[[dict, int, str], httpx.Response],
+) -> None:
+    """get_open_meteo_current raises when latitude/longitude in response are not numeric."""
+    # Arrange
+    open_meteo_client.get.return_value = httpx_json_response(
+        {
+            "latitude": None,
+            "longitude": -87.63,
+            "current": {"time": "2026-01-14T21:00"},
+        },
+        200,
+        api_weather_open_meteo.OPEN_METEO_URL,
+    )
+
+    # Act / Assert
+    with pytest.raises(
+        ValueError, match="Open-Meteo API response structure unexpected"
+    ):
+        await api_weather_open_meteo.get_open_meteo_current(
+            open_meteo_client, "41.88,-87.63"
+        )
+
+
+async def test_get_open_meteo_current_parse_error_missing_current_time(
+    open_meteo_client: AsyncMock,
+    httpx_json_response: Callable[[dict, int, str], httpx.Response],
+) -> None:
+    """get_open_meteo_current raises when current.time is missing."""
+    # Arrange
+    open_meteo_client.get.return_value = httpx_json_response(
+        {
+            "latitude": 41.88,
+            "longitude": -87.63,
+            "current": {},
+        },
+        200,
+        api_weather_open_meteo.OPEN_METEO_URL,
+    )
+
+    # Act / Assert
+    with pytest.raises(
+        ValueError, match="Open-Meteo API response structure unexpected"
+    ):
+        await api_weather_open_meteo.get_open_meteo_current(
+            open_meteo_client, "41.88,-87.63"
+        )

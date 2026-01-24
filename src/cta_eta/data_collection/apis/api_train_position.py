@@ -3,8 +3,45 @@
 This module provides functions to fetch train positions from the CTA Train Tracker API
 and normalize nested JSON responses into flat records for Parquet storage.
 
+API Documentation: https://www.transitchicago.com/developers/ttdocs/
+Rate Limit: 50,000 requests/day (see Appendix D of API documentation)
+
 All functions accept an httpx.AsyncClient parameter for dependency injection and proper
 connection pooling management by the caller.
+
+Example raw response:
+{
+    "ctatt": {
+        "tmst": "2026-01-14T20:34:15",  # API timestamp
+        "errCd": "0",
+        "errNm": null,
+        "route": [  # Array of train lines
+            {
+                "@name": "p",
+                "train": [  # Array of trains on this line
+                    {
+                        "rn": "519",
+                        "destSt": "30176",
+                        "destNm": "Howard",
+                        "trDr": "5",
+                        "nextStaId": "40400",
+                        "nextStpId": "30079",
+                        "nextStaNm": "Noyes",
+                        "prdt": "2026-01-14T20:33:52",
+                        "arrT": "2026-01-14T20:34:52",
+                        "isApp": "1",
+                        "isDly": "0",
+                        "flags": null,
+                        "lat": "42.06106",
+                        "lon": "-87.68393",
+                        "heading": "150"
+                    },
+                    ...
+                ]
+            }
+        ]
+    }
+}
 """
 
 import os
@@ -16,6 +53,7 @@ import stamina
 
 from cta_eta.data_collection.config import load_config
 from cta_eta.data_collection.logging import get_logger, log_api_call
+from cta_eta.data_collection.utils import validate_lat_lon
 
 logger = get_logger(__name__)
 
@@ -43,49 +81,17 @@ async def get_train_positions(client: httpx.AsyncClient) -> dict[str, Any]:
         client: HTTP client for API requests
 
     Returns:
-        dict[str, Any]: Raw JSON response from the API with structure:
-            {
-                "ctatt": {
-                    "tmst": "2026-01-14T20:34:15",  # API timestamp
-                    "errCd": "0",
-                    "errNm": null,
-                    "route": [  # Array of train lines
-                        {
-                            "@name": "p",
-                            "train": [  # Array of trains on this line
-                                {
-                                    "rn": "519",
-                                    "destSt": "30176",
-                                    "destNm": "Howard",
-                                    "trDr": "5",
-                                    "nextStaId": "40400",
-                                    "nextStpId": "30079",
-                                    "nextStaNm": "Noyes",
-                                    "prdt": "2026-01-14T20:33:52",
-                                    "arrT": "2026-01-14T20:34:52",
-                                    "isApp": "1",
-                                    "isDly": "0",
-                                    "flags": null,
-                                    "lat": "42.06106",
-                                    "lon": "-87.68393",
-                                    "heading": "150"
-                                },
-                                ...
-                            ]
-                        }
-                    ]
-                }
-            }
+        dict[str, Any]: Raw JSON response from the API.
 
     Raises:
         httpx.HTTPStatusError: After max retry attempts exhausted
-        KeyError: If CTA_API_KEY environment variable not set
+        ValueError: If CTA_API_KEY environment variable not set
 
     """
     api_key = os.getenv("CTA_API_KEY")
     if not api_key:
         msg = "CTA_API_KEY environment variable not set"
-        raise KeyError(msg)
+        raise ValueError(msg)
 
     response = await client.get(
         TRAIN_POSITION_URL,
@@ -144,21 +150,26 @@ def normalize_train_positions(
     routes = ctatt.get("route", [])
 
     # Normalize: one row per train
-    records: list[dict[str, Any]] = []
+    records: list[dict[str, object]] = []
 
     for route in routes:
         route_name = route.get("@name")
         trains = route.get("train", [])
 
         for train in trains:
+            v_lat = train.get("lat")
+            v_lon = train.get("lon")
+            validate_lat_lon(v_lat, v_lon)
+
+            v_heading = train.get("heading")
             record = {
                 "poll_timestamp": poll_timestamp,
                 "api_timestamp": api_timestamp,
                 "route": route_name,
                 "train_id": train.get("rn"),
-                "lat": float(train.get("lat", 0.0)),
-                "lon": float(train.get("lon", 0.0)),
-                "heading": int(train.get("heading", 0)),
+                "lat": float(v_lat) if v_lat is not None else None,
+                "lon": float(v_lon) if v_lon is not None else None,
+                "heading": int(v_heading) if v_heading is not None else None,
                 "next_station_id": train.get("nextStaId"),
                 "next_station_name": train.get("nextStaNm"),
                 "destination_id": train.get("destSt"),

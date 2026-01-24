@@ -363,7 +363,7 @@ class TestDaemonDiagnosticsInit:
     def test_init_initializes_counters(
         self, mock_logger: MagicMock, enabled_config: DaemonDiagnosticsConfig
     ) -> None:
-        """__init__ initializes all counters and deques."""
+        """__init__ initializes all counters and dequeues."""
         # Arrange & Act
         diag = DaemonDiagnostics(
             logger=mock_logger, daemon_name="TestDaemon", config=enabled_config
