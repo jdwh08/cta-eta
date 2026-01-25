@@ -20,8 +20,8 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 2: Storage Abstraction** - Cloud-agnostic Parquet storage with timezone-aware partitioning
 - [x] **Phase 3: Static Data Management** - Cache infrastructure and weather grid mapping
 - [x] **Phase 4: Static File Caching** - TTL-based caching for CTA stations and track geometry
-- [x] **Phase 5: Weather Data Collection** - Multi-source weather integration with rate limit management (Completed 2026-01-19)
-- [ ] **Phase 6: Train Position Polling Daemon** - Continuous 15-second polling with retry logic
+- [x] **Phase 5: Weather Data Collection** - Multi-source weather integration with rate limit management (Completed 2026-01-24)
+- [ ] **Phase 6: Train Position Polling Daemon** - Continuous 15-second polling with retry logic (2/3 plans complete)
 - [ ] **Phase 7: Resilience & Recovery** - Intelligent retry, gap detection, graceful shutdown
 - [ ] **Phase 8: Monitoring & Metrics** - Metrics collection, dashboard, performance tracking
 - [ ] **Phase 9: Alerting & Deployment** - Email alerts, health checks, systemd service
@@ -89,9 +89,9 @@ Plans:
 **Plans**: 3 plans
 
 Plans:
-- [ ] 06-01: Train position API integration with polling loop
-- [ ] 06-02: Per-line polling coordination and scheduling
-- [ ] 06-03: Rate limit management and backoff strategies
+- [x] 06-01: Train position API integration with polling loop
+- [x] 06-02: Rate limiting and integration validation
+- [ ] 06-03: Error handling and recovery mechanisms
 
 ### Phase 7: Resilience & Recovery
 **Goal**: Intelligent retry logic, gap detection, and graceful shutdown with state preservation
@@ -138,9 +138,9 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 | 1. Foundation & Configuration | 3/3 | Complete | 2026-01-17 |
 | 2. Storage Abstraction | 1/1 | Complete | 2026-01-17 |
 | 3. Static Data Management | 2/2 | Complete | 2026-01-18 |
-| 4. Static File Caching | 2/2 | Complete | 2026-01-19 |
-| 5. Weather Data Collection | 0/3 | Not started | - |
-| 6. Train Position Polling Daemon | 0/3 | Not started | - |
+| 4. Static File Caching | 2/2 | Complete | 2026-01-24 |
+| 5. Weather Data Collection | 3/3 | Complete | 2026-01-19 |
+| 6. Train Position Polling Daemon | 2/3 | In progress | - |
 | 7. Resilience & Recovery | 0/3 | Not started | - |
 | 8. Monitoring & Metrics | 0/3 | Not started | - |
 | 9. Alerting & Deployment | 0/3 | Not started | - |

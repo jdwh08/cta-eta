@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-01-17)
 
 **Core value:** Never miss a data collection cycle when APIs are healthy - bulletproof scheduling, recovery, and gap detection ensure complete temporal coverage for model training.
-**Current focus:** Phase 5 — Weather Data Collection
+**Current focus:** Phase 6 — Train Position Polling Daemon
 
 ## Current Position
 
-Phase: 5 of 9 (Weather Data Collection)
-Plan: 3 of 3 in current phase
-Status: Phase complete
-Last activity: 2026-01-19 — Completed Phase 5 via parallel execution
+Phase: 6 of 9 (Train Position Polling Daemon)
+Plan: 2 of 3 in current phase
+Status: In progress
+Last activity: 2026-01-25 — Completed 06-02-PLAN.md
 
-Progress: ██████░░░░ 61% (11/18 plans complete)
+Progress: ███████░░░ 67% (12/18 plans complete)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 11
-- Average duration: ~3 min
-- Total execution time: ~0.7 hours
+- Total plans completed: 12
+- Average duration: ~9 min
+- Total execution time: ~2.4 hours
 
 **By Phase:**
 
@@ -32,6 +32,7 @@ Progress: ██████░░░░ 61% (11/18 plans complete)
 | 3. Static Data | 2 | ~8 min | ~4 min |
 | 4. Static File Caching | 2 | ~2 min | ~1 min |
 | 5. Weather Data Collection | 3 | ~8 min | ~3 min |
+| 6. Train Polling | 2 | ~102 min | ~51 min |
 
 **Recent Trend:**
 - Last 5 plans: Steady completion rate
@@ -52,6 +53,7 @@ Recent decisions affecting current work:
 - Phase 5: aiometer rate limiting (6 calls/min) for Open-Meteo 10k/day limit
 - Phase 5: OpenWeatherMap as fallback-only to conserve free tier quota
 - Phase 5: dataset_name parameter for organized multi-dataset Parquet storage
+- Phase 6: aiometer for CTA API calls despite single-call pattern (consistent rate limiting, diagnostic tracking, future-proofing)
 
 ### Deferred Issues
 
@@ -67,6 +69,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-01-19
-Stopped at: Phase 5 complete (parallel execution) - Ready for Phase 6
+Last session: 2026-01-25
+Stopped at: Completed 06-02-PLAN.md
 Resume file: None
