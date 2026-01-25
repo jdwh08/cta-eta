@@ -70,7 +70,7 @@ class TestCachedData:
         assert cached_data._memory_cache is not None
         assert cached_data._memory_cache["data"] == {"test": "data"}
         assert "cached_at" in cached_data._memory_cache
-        assert cached_data._memory_cache["ttl"] == 3600  # noqa: PLR2004
+        assert cached_data._memory_cache["ttl"] == 3600
 
     def test_get_with_no_file_saves_to_file(
         self, cached_data: CachedData[dict[str, str]], cache_file: Path
@@ -88,7 +88,7 @@ class TestCachedData:
             saved_data = json.load(f)
         assert saved_data["data"] == {"test": "data"}
         assert "cached_at" in saved_data
-        assert saved_data["ttl"] == 3600  # noqa: PLR2004
+        assert saved_data["ttl"] == 3600
 
     def test_get_with_valid_file_loads_from_file(
         self,
@@ -381,8 +381,8 @@ class TestCachedData:
         with cache_file.open() as f:
             saved_data = json.load(f)
         assert saved_data["data"] == {"saved": "value"}
-        assert saved_data["cached_at"] == 1234567890.0  # noqa: PLR2004
-        assert saved_data["ttl"] == 3600  # noqa: PLR2004  # noqa: PLR2004
+        assert saved_data["cached_at"] == 1234567890.0
+        assert saved_data["ttl"] == 3600
 
     def test_save_to_file_handles_write_failure_gracefully(
         self, cached_data: CachedData[dict[str, str]], cache_file: Path
@@ -584,7 +584,7 @@ class TestCreateCachedData:
 
         # Assert
         assert isinstance(cache, CachedData)
-        assert cache._ttl == 604800  # noqa: PLR2004
+        assert cache._ttl == 604800
         assert cache._fetch_fn is mock_fetch_fn
         cache_dir = Path(mock_config["cache"]["directory"])
         assert cache._cache_file == cache_dir / "stations.json"
@@ -647,10 +647,10 @@ class TestCreateCachedData:
         ]
 
         # Assert
-        assert len(caches) == 3  # noqa: PLR2004
-        assert caches[0]._ttl == 604800  # noqa: PLR2004  # stations_ttl
-        assert caches[1]._ttl == 2592000  # noqa: PLR2004  # track_geometry_ttl
-        assert caches[2]._ttl == 604800  # noqa: PLR2004  # weather_mapping_ttl
+        assert len(caches) == 3
+        assert caches[0]._ttl == 604800  # stations_ttl
+        assert caches[1]._ttl == 2592000  # track_geometry_ttl
+        assert caches[2]._ttl == 604800  # weather_mapping_ttl
 
         cache_dir = Path(mock_config["cache"]["directory"])
         assert caches[0]._cache_file == cache_dir / "stations.json"
@@ -728,5 +728,5 @@ class TestCreateCachedData:
         cache = create_cached_data("test", config, mock_fetch_fn)
 
         # Assert
-        assert cache._ttl == 3600  # noqa: PLR2004
+        assert cache._ttl == 3600
         assert isinstance(cache._ttl, int)

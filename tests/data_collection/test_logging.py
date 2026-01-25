@@ -544,7 +544,7 @@ class TestLogApiCall:
         callable_obj = CallableWithoutName()
 
         # Act & Assert
-        with pytest.raises(ValueError, match="__name__ attribute"):
+        with pytest.raises(TypeError, match="__name__ attribute"):
             log_api_call(logger)(callable_obj)()
 
 

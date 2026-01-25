@@ -196,7 +196,7 @@ class TestLocalStorage:
         result = local_storage.list("")
 
         # Assert
-        assert len(result) == 3  # noqa: PLR2004
+        assert len(result) == 3
         assert "file1.txt" in result
         assert "file2.txt" in result
         assert "subdir/file3.txt" in result
@@ -213,7 +213,7 @@ class TestLocalStorage:
         result = local_storage.list("data/**")
 
         # Assert
-        assert len(result) == 2  # noqa: PLR2004
+        assert len(result) == 2
         assert "data/file1.txt" in result
         assert "data/file2.txt" in result
         assert "other/file3.txt" not in result
@@ -231,7 +231,7 @@ class TestLocalStorage:
         result = local_storage.list("*.txt")
 
         # Assert
-        assert len(result) == 2  # noqa: PLR2004
+        assert len(result) == 2
         assert "file1.txt" in result
         assert "file3.txt" in result
         assert "file2.json" not in result
@@ -512,7 +512,7 @@ class TestCloudStorage:
 
         # Assert
         mock_filesystem.glob.assert_called_once_with("test-bucket/data/*")
-        assert len(result) == 2  # noqa: PLR2004
+        assert len(result) == 2
         assert "data/file1.txt" in result
         assert "data/file2.txt" in result
 
@@ -531,7 +531,7 @@ class TestCloudStorage:
 
         # Assert
         mock_filesystem.glob.assert_called_once_with("test-bucket/*")
-        assert len(result) == 2  # noqa: PLR2004
+        assert len(result) == 2
 
     def test_cloud_storage_list_filters_bucket_prefix(
         self, cloud_storage_s3: CloudStorage, mock_filesystem: MagicMock
@@ -634,7 +634,7 @@ class TestParquetWriter:
 
         # Assert
         assert writer.storage_backend == mock_storage_backend
-        assert writer.partition_hour == 3  # noqa: PLR2004
+        assert writer.partition_hour == 3
         assert writer.compression == "snappy"
         assert writer.timezone == ZoneInfo("America/Chicago")
 
@@ -649,7 +649,7 @@ class TestParquetWriter:
         )
 
         # Assert
-        assert writer.partition_hour == 5  # noqa: PLR2004
+        assert writer.partition_hour == 5
         assert writer.compression == "gzip"
         assert writer.timezone == ZoneInfo("UTC")
 
@@ -702,7 +702,7 @@ class TestParquetWriter:
             call_data = mock_storage_backend.put.call_args[0][1]
             # Verify we can read the parquet data back
             table = pq.read_table(io.BytesIO(call_data))
-            assert len(table) == 2  # noqa: PLR2004
+            assert len(table) == 2
 
     def test_parquet_writer_write_empty_data(
         self, parquet_writer: ParquetWriter
@@ -1044,7 +1044,7 @@ class TestCreateParquetWriter:
         # Assert
         assert isinstance(writer, ParquetWriter)
         assert isinstance(writer.storage_backend, LocalStorage)
-        assert writer.partition_hour == 3  # noqa: PLR2004
+        assert writer.partition_hour == 3
         assert writer.compression == "snappy"
 
     def test_create_parquet_writer_custom_settings(self, tmp_path: Path) -> None:
@@ -1065,7 +1065,7 @@ class TestCreateParquetWriter:
 
         # Assert
         assert isinstance(writer, ParquetWriter)
-        assert writer.partition_hour == 5  # noqa: PLR2004
+        assert writer.partition_hour == 5
         assert writer.compression == "gzip"
         assert writer.storage_backend.base_path == custom_path
 
@@ -1096,5 +1096,5 @@ class TestCreateParquetWriter:
 
         # Assert
         assert isinstance(writer, ParquetWriter)
-        assert writer.partition_hour == 3  # noqa: PLR2004
+        assert writer.partition_hour == 3
         assert writer.compression == "snappy"

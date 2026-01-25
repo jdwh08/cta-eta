@@ -10,7 +10,15 @@ from unittest.mock import patch
 import pytest
 
 import cta_eta.data_collection.config as cta_config
-from cta_eta.data_collection.config import _load_config_from_path, load_config
+from cta_eta.data_collection.config import (
+    _load_config_from_path,
+    _sanitize_config_for_logging,
+    get_config_section,
+    load_config,
+)
+from cta_eta.data_collection.config import (
+    validate_config_secrets as validate_config,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -58,6 +66,97 @@ class TestLoadConfig:
             assert result == {"test": {"key": "value"}}
 
 
+class TestSanitizeConfigForLogging:
+    """Test cases for _sanitize_config_for_logging (internal, redacts secrets)."""
+
+    def test_sanitize_redacts_sensitive_keys(self) -> None:
+        # Arrange
+        config = {
+            "secrets": {
+                "cta_api_key": "sk-abc",
+                "chidata_app_token": "tok",
+                "chidata_app_secret": "sec",
+                "openweathermap_api_key": "owm",
+                "other": "keep",
+            },
+        }
+
+        # Act
+        out = _sanitize_config_for_logging(config)
+
+        # Assert
+        assert out["secrets"]["cta_api_key"] == "<REDACTED>"
+        assert out["secrets"]["chidata_app_token"] == "<REDACTED>"  # noqa: S105
+        assert out["secrets"]["chidata_app_secret"] == "<REDACTED>"  # noqa: S105
+        assert out["secrets"]["openweathermap_api_key"] == "<REDACTED>"
+        assert out["secrets"]["other"] == "keep"
+
+    def test_sanitize_redacts_key_in_name(self) -> None:
+        # Arrange
+        config = {"sect": {"my_custom_key": "v", "api_key_extra": "v2"}}
+
+        # Act
+        out = _sanitize_config_for_logging(config)
+
+        # Assert
+        assert out["sect"]["my_custom_key"] == "<REDACTED>"
+        assert out["sect"]["api_key_extra"] == "<REDACTED>"
+
+    def test_sanitize_redacts_secret_in_name(self) -> None:
+        # Arrange
+        config = {"sect": {"my_secret": "x", "client_secret": "y"}}
+
+        # Act
+        out = _sanitize_config_for_logging(config)
+
+        # Assert
+        assert out["sect"]["my_secret"] == "<REDACTED>"  # noqa: S105
+        assert out["sect"]["client_secret"] == "<REDACTED>"  # noqa: S105
+
+    def test_sanitize_redacts_token_in_name(self) -> None:
+        # Arrange
+        config = {"sect": {"auth_token": "t", "refresh_token": "r"}}
+
+        # Act
+        out = _sanitize_config_for_logging(config)
+
+        # Assert
+        assert out["sect"]["auth_token"] == "<REDACTED>"  # noqa: S105
+        assert out["sect"]["refresh_token"] == "<REDACTED>"  # noqa: S105
+
+    def test_sanitize_preserves_non_sensitive(self) -> None:
+        # Arrange
+        config = {"collection": {"train_interval_seconds": 15, "foo": "bar"}}
+
+        # Act
+        out = _sanitize_config_for_logging(config)
+
+        # Assert
+        assert out["collection"]["train_interval_seconds"] == 15
+        assert out["collection"]["foo"] == "bar"
+
+    def test_sanitize_section_not_dict_copied_as_is(self) -> None:
+        # Arrange
+        config = {"str_section": "string_val", "int_section": 42}
+
+        # Act
+        out = _sanitize_config_for_logging(config)
+
+        # Assert
+        assert out["str_section"] == "string_val"
+        assert out["int_section"] == 42
+
+    def test_sanitize_empty_config(self) -> None:
+        # Arrange
+        config: dict[str, dict[str, str | int | float | bool]] = {}
+
+        # Act
+        out = _sanitize_config_for_logging(config)
+
+        # Assert
+        assert out == {}
+
+
 class TestLoadConfigFromPath:
     """Test cases for _load_config_from_path function (internal, testable API)."""
 
@@ -75,8 +174,8 @@ class TestLoadConfigFromPath:
 
         # Assert
         assert "collection" in config
-        assert config["collection"]["train_interval_seconds"] == 15  # noqa: PLR2004
-        assert config["collection"]["weather_interval_minutes"] == 30  # noqa: PLR2004
+        assert config["collection"]["train_interval_seconds"] == 15
+        assert config["collection"]["weather_interval_minutes"] == 30
         assert "secrets" in config
         assert config["secrets"]["cta_api_key"] == "test_api_key_123"
         assert config["secrets"]["chidata_app_token"] == "test_token"  # noqa: S105
@@ -158,9 +257,9 @@ quoted = 'world'
         config = _load_config_from_path(complex_config)
 
         # Assert
-        assert config["numbers"]["integer"] == 42  # noqa: PLR2004
-        assert config["numbers"]["float"] == 3.14  # noqa: PLR2004
-        assert config["numbers"]["negative"] == -10  # noqa: PLR2004
+        assert config["numbers"]["integer"] == 42
+        assert config["numbers"]["float"] == 3.14
+        assert config["numbers"]["negative"] == -10
         assert config["booleans"]["true_val"] is True
         assert config["booleans"]["false_val"] is False
         assert config["strings"]["simple"] == "hello"
@@ -242,3 +341,407 @@ quoted = 'world'
             assert "cta_api_key" in config["secrets"]
             assert "chidata_app_token" in config["secrets"]
             assert "chidata_app_secret" in config["secrets"]
+
+    def test_load_config_openweathermap_in_secrets(
+        self, temp_config_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Arrange
+        monkeypatch.setenv("OPENWEATHERMAP_API_KEY", "owm_key_123")
+        monkeypatch.delenv("CTA_API_KEY", raising=False)
+        monkeypatch.delenv("CHIDATA_APP_TOK", raising=False)
+        monkeypatch.delenv("CHIDATA_APP_SECRET", raising=False)
+        with patch("cta_eta.data_collection.config.load_dotenv"):
+            # Act
+            config = _load_config_from_path(temp_config_file)
+
+            # Assert
+            assert config["secrets"]["openweathermap_api_key"] == "owm_key_123"
+
+    def test_load_config_strips_whitespace_from_env(
+        self, temp_config_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Arrange
+        monkeypatch.setenv("CTA_API_KEY", "  key_with_spaces  ")
+        monkeypatch.delenv("CHIDATA_APP_TOK", raising=False)
+        monkeypatch.delenv("CHIDATA_APP_SECRET", raising=False)
+        with patch("cta_eta.data_collection.config.load_dotenv"):
+            # Act
+            config = _load_config_from_path(temp_config_file)
+
+            # Assert
+            assert config["secrets"]["cta_api_key"] == "key_with_spaces"
+
+
+class TestValidateConfig:
+    """Test cases for validate_config (credentials by feature)."""
+
+    def test_validate_config_no_features_enabled(self) -> None:
+        # Arrange
+        config = {
+            "secrets": {},
+            "features": {
+                "train_positions": False,
+                "weather_collection": False,
+                "station_data": False,
+            },
+        }
+
+        # Act & Assert
+        validate_config(config, required_features=None)
+
+    def test_validate_config_train_positions_requires_cta_key(self) -> None:
+        # Arrange
+        config = {"secrets": {"cta_api_key": ""}, "features": {}}
+
+        # Act & Assert
+        with pytest.raises(
+            ValueError, match="CTA_API_KEY \\(required for train_positions\\)"
+        ):
+            validate_config(config, required_features=["train_positions"])
+
+    def test_validate_config_train_positions_ok(self) -> None:
+        # Arrange
+        config = {"secrets": {"cta_api_key": "key123"}, "features": {}}
+
+        # Act & Assert
+        validate_config(config, required_features=["train_positions"])
+
+    def test_validate_config_weather_collection_missing_nws_app_name(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Arrange
+        monkeypatch.delenv("NWS_APP_NAME", raising=False)
+        monkeypatch.delenv("NWS_EMAIL", raising=False)
+        config = {"secrets": {}, "features": {}}
+
+        # Act & Assert
+        with pytest.raises(
+            ValueError, match="NWS_APP_NAME \\(required for weather_collection\\)"
+        ):
+            validate_config(config, required_features=["weather_collection"])
+
+    def test_validate_config_weather_collection_missing_nws_email(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Arrange
+        monkeypatch.setenv("NWS_APP_NAME", "app")
+        monkeypatch.delenv("NWS_EMAIL", raising=False)
+        config = {"secrets": {}, "features": {}}
+
+        # Act & Assert
+        with pytest.raises(
+            ValueError, match="NWS_EMAIL \\(required for weather_collection\\)"
+        ):
+            validate_config(config, required_features=["weather_collection"])
+
+    def test_validate_config_weather_collection_ok(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Arrange
+        monkeypatch.setenv("NWS_APP_NAME", "app")
+        monkeypatch.setenv("NWS_EMAIL", "e@x.com")
+        config = {"secrets": {}, "features": {}}
+
+        # Act & Assert
+        validate_config(config, required_features=["weather_collection"])
+
+    def test_validate_config_station_data_missing_tokens(self) -> None:
+        # Arrange
+        config = {
+            "secrets": {"chidata_app_token": "", "chidata_app_secret": ""},
+            "features": {},
+        }
+
+        # Act & Assert
+        with pytest.raises(ValueError, match="CHIDATA_APP_TOK"):
+            validate_config(config, required_features=["station_data"])
+
+    def test_validate_config_station_data_ok(self) -> None:
+        # Arrange
+        config = {
+            "secrets": {"chidata_app_token": "t", "chidata_app_secret": "s"},
+            "features": {},
+        }
+
+        # Act & Assert
+        validate_config(config, required_features=["station_data"])
+
+    def test_validate_config_required_features_from_enabled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Arrange: required_features=None, weather_collection enabled, NWS missing
+        monkeypatch.delenv("NWS_APP_NAME", raising=False)
+        monkeypatch.delenv("NWS_EMAIL", raising=False)
+        config = {
+            "secrets": {},
+            "features": {
+                "weather_collection": True,
+                "train_positions": False,
+                "station_data": False,
+            },
+        }
+
+        # Act & Assert
+        with pytest.raises(ValueError, match="NWS_APP_NAME"):
+            validate_config(config, required_features=None)
+
+    def test_validate_config_required_features_from_enabled_train_positions(
+        self,
+    ) -> None:
+        # Arrange: required_features=None, train_positions enabled, cta_api_key missing
+        config = {
+            "secrets": {"cta_api_key": ""},
+            "features": {
+                "train_positions": True,
+                "weather_collection": False,
+                "station_data": False,
+            },
+        }
+
+        # Act & Assert
+        with pytest.raises(ValueError, match="CTA_API_KEY"):
+            validate_config(config, required_features=None)
+
+    def test_validate_config_required_features_from_enabled_station_data(self) -> None:
+        # Arrange: required_features=None, station_data enabled, chidata missing
+        config = {
+            "secrets": {"chidata_app_token": "", "chidata_app_secret": ""},
+            "features": {
+                "train_positions": False,
+                "weather_collection": False,
+                "station_data": True,
+            },
+        }
+
+        # Act & Assert
+        with pytest.raises(ValueError, match="CHIDATA_APP_TOK"):
+            validate_config(config, required_features=None)
+
+    def test_validate_config_multiple_missing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Arrange
+        monkeypatch.delenv("NWS_APP_NAME", raising=False)
+        monkeypatch.delenv("NWS_EMAIL", raising=False)
+        config = {
+            "secrets": {
+                "cta_api_key": "",
+                "chidata_app_token": "",
+                "chidata_app_secret": "",
+            },
+            "features": {},
+        }
+
+        # Act & Assert
+        with pytest.raises(ValueError, match="CTA_API_KEY") as exc_info:
+            validate_config(
+                config,
+                required_features=[
+                    "train_positions",
+                    "weather_collection",
+                    "station_data",
+                ],
+            )
+        msg = str(exc_info.value)
+        assert "NWS_APP_NAME" in msg
+        assert "NWS_EMAIL" in msg
+        assert "CHIDATA_APP_TOK" in msg
+        assert "CHIDATA_APP_SECRET" in msg
+        assert "Set these environment variables in your .env file" in msg
+
+    def test_validate_config_config_missing_secrets_and_features(self) -> None:
+        # Arrange: no "secrets" or "features" keys
+        config: dict[str, dict[str, str | int | float | bool]] = {}
+
+        # Act & Assert: required_features=None → derived from features.get(...)=False → []
+        validate_config(config, required_features=None)
+
+
+class TestGetConfigSection:
+    """Test cases for get_config_section."""
+
+    def test_get_config_section_uses_load_config_when_config_none(self) -> None:
+        # Arrange
+        with patch("cta_eta.data_collection.config.load_config") as mock_load:
+            mock_load.return_value = {"retry": {"max_retry_attempts": 5}}
+
+            # Act
+            result = get_config_section("retry", config=None)
+
+            # Assert
+            mock_load.assert_called_once()
+            assert result == {"max_retry_attempts": 5}
+
+    def test_get_config_section_with_config_section_exists_dict(self) -> None:
+        # Arrange
+        config = {"x": {"a": 1, "b": 2}}
+
+        # Act
+        result = get_config_section("x", config=config)
+
+        # Assert
+        assert result == {"a": 1, "b": 2}
+
+    def test_get_config_section_section_missing_raises(self) -> None:
+        # Arrange
+        config = {"other": {"k": "v"}}
+
+        # Act & Assert
+        with pytest.raises(
+            ValueError,
+            match=r"Configuration path 'missing': section 'missing' is missing\.",
+        ):
+            get_config_section("missing", config=config)
+
+    def test_get_config_section_section_not_dict_raises(self) -> None:
+        # Arrange
+        config = {"x": "not a dict"}
+
+        # Act & Assert
+        with pytest.raises(
+            TypeError,
+            match=r"Configuration path 'x': section 'x' must be a dict, got str\.",
+        ):
+            get_config_section("x", config=config)
+
+    def test_get_config_section_subsection_two_levels(self) -> None:
+        # Arrange
+        config = {"rate_limits": {"nws": {"calls_per_minute": 10}}}
+
+        # Act
+        result = get_config_section("rate_limits.nws", config=config)
+
+        # Assert
+        assert result == {"calls_per_minute": 10}
+
+    def test_get_config_section_subsection_three_levels(self) -> None:
+        # Arrange
+        config = {"a": {"b": {"c": {"k": 1}}}}
+
+        # Act
+        result = get_config_section("a.b.c", config=config)
+
+        # Assert
+        assert result == {"k": 1}
+
+    def test_get_config_section_subsection_parent_missing_raises(self) -> None:
+        # Arrange
+        config: dict[str, dict[str, str | int | float | bool]] = {"other": {}}
+
+        # Act & Assert
+        with pytest.raises(
+            ValueError,
+            match=r"Configuration path 'missing\.child': section 'missing' is missing\.",
+        ):
+            get_config_section("missing.child", config=config)
+
+    def test_get_config_section_subsection_parent_not_dict_raises(self) -> None:
+        # Arrange
+        config = {"a": "string"}
+
+        # Act & Assert
+        with pytest.raises(
+            TypeError,
+            match=r"Configuration path 'a\.b': section 'a' must be a dict, got str\.",
+        ):
+            get_config_section("a.b", config=config)
+
+    def test_get_config_section_subsection_child_missing_raises(self) -> None:
+        # Arrange
+        config = {"a": {"x": 1}}
+
+        # Act & Assert
+        with pytest.raises(
+            ValueError,
+            match=r"Configuration path 'a\.b': section 'b' is missing\.",
+        ):
+            get_config_section("a.b", config=config)
+
+    def test_get_config_section_subsection_child_not_dict_raises(self) -> None:
+        # Arrange
+        config = {"a": {"b": "string"}}
+
+        # Act & Assert
+        with pytest.raises(
+            TypeError,
+            match=r"Configuration path 'a\.b': section 'b' must be a dict, got str\.",
+        ):
+            get_config_section("a.b", config=config)
+
+    def test_get_config_section_subsection_leading_dot_missing_raises(
+        self,
+    ) -> None:
+        # Arrange: ".a" has no period at index > 0, treated as leaf key ".a"
+        config = {"other": {}}
+
+        # Act & Assert
+        with pytest.raises(
+            ValueError,
+            match=r"Configuration path '\.a': section '\.a' is missing\.",
+        ):
+            get_config_section(".a", config=config)
+
+    def test_get_config_section_subsection_trailing_dot_missing_raises(
+        self,
+    ) -> None:
+        # Arrange: "a." recurses to segment "" in the dict at "a"
+        config = {"a": {"x": 1}}
+
+        # Act & Assert
+        with pytest.raises(
+            ValueError,
+            match=r"Configuration path 'a\.': section '' is missing\.",
+        ):
+            get_config_section("a.", config=config)
+
+    def test_get_config_section_subsection_calls_load_config_when_config_none(
+        self,
+    ) -> None:
+        # Arrange
+        with patch("cta_eta.data_collection.config.load_config") as mock_load:
+            mock_load.return_value = {"a": {"b": {"v": 1}}}
+
+            # Act
+            result = get_config_section("a.b", config=None)
+
+            # Assert
+            mock_load.assert_called_once()
+            assert result == {"v": 1}
+
+    def test_get_config_section_subsection_middle_not_dict_raises(
+        self,
+    ) -> None:
+        # Arrange
+        config = {"a": {"b": "not a dict"}}
+
+        # Act & Assert
+        with pytest.raises(
+            TypeError,
+            match=r"Configuration path 'a\.b\.c': section 'b' must be a dict, got str\.",
+        ):
+            get_config_section("a.b.c", config=config)
+
+    def test_get_config_section_section_empty_string_missing_raises(
+        self,
+    ) -> None:
+        # Arrange
+        config = {"a": 1}
+
+        # Act & Assert
+        with pytest.raises(
+            ValueError,
+            match=r"Configuration path '': section '' is missing\.",
+        ):
+            get_config_section("", config=config)
+
+    def test_get_config_section_section_empty_string_exists_returns_section(
+        self,
+    ) -> None:
+        # Arrange
+        config = {"": {"x": 1}}
+
+        # Act
+        result = get_config_section("", config=config)
+
+        # Assert
+        assert result == {"x": 1}

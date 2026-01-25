@@ -1,15 +1,19 @@
 """National Weather Service (NWS) API client for hourly weather forecasts.
 
-This module provides stateless functions to fetch hourly weather forecasts from the
-National Weather Service API at weather.gov. NWS has no rate limit but requires
-a User-Agent header per their API policy.
+This module provides stateless async functions to fetch hourly weather forecasts from the
+National Weather Service API at weather.gov.
+
+API Documentation: https://www.weather.gov/documentation/services-web-api
+Rate Limit: No official rate limit, but requires proper User-Agent header per API policy.
 
 Per NWS API policy, all requests must include:
 User-Agent: (<app name>, <email address>)
 
-All functions accept an httpx.Client parameter for dependency injection and proper
+All functions accept an httpx.AsyncClient parameter for dependency injection and proper
 connection pooling management by the caller.
 """
+
+from __future__ import annotations
 
 import os
 import re
@@ -19,12 +23,22 @@ import httpx
 import stamina
 
 ### OWN MODULES
+from cta_eta.data_collection.config import get_config_section, load_config
 from cta_eta.data_collection.logging import get_logger, log_api_call
+from cta_eta.data_collection.utils import (
+    convert_celsius_to_fahrenheit,
+    safe_get_nested,
+    validate_lat_lon,
+)
 
 logger = get_logger(__name__)
 
 # NWS API endpoints
 NWS_POINTS_URL: Final[str] = "https://api.weather.gov/points"
+
+config = load_config()
+retry_config = get_config_section("retry", config=config)
+MAX_RETRY_ATTEMPTS: Final[int] = int(retry_config.get("max_retry_attempts", 10))
 
 
 def _get_auth_header() -> dict[str, str]:
@@ -45,10 +59,10 @@ def _get_auth_header() -> dict[str, str]:
     return {"User-Agent": f"({app_name}, {email})"}
 
 
-@stamina.retry(on=httpx.HTTPStatusError, attempts=10)
+@stamina.retry(on=httpx.HTTPStatusError, attempts=MAX_RETRY_ATTEMPTS)
 @log_api_call(logger)
-def get_nws_forecast_url(
-    client: httpx.Client, latitude: float, longitude: float
+async def get_nws_forecast_url(
+    client: httpx.AsyncClient, latitude: float, longitude: float
 ) -> str:
     """Get the forecastHourly URL for a given location from NWS.
 
@@ -64,17 +78,31 @@ def get_nws_forecast_url(
         httpx.HTTPStatusError: If API request fails after retries
 
     """
-    response = client.get(
-        f"{NWS_POINTS_URL}/{latitude},{longitude}", headers=_get_auth_header()
+    validate_lat_lon(latitude, longitude)
+    response = await client.get(
+        f"{NWS_POINTS_URL}/{latitude},{longitude}",
+        headers=_get_auth_header(),
+        # NWS may redirect overly-precise lat/lon to a canonical points URL.
+        # Without following redirects, we'd try to parse the 301 response as JSON.
+        follow_redirects=True,
     )
     response.raise_for_status()
     data = response.json()
-    return data["properties"]["forecastHourly"]
+    try:
+        return str(
+            safe_get_nested(data, "properties", "forecastHourly", api_name="NWS")
+        )
+    except ValueError:
+        msg = "Failed to parse NWS forecast URL response."
+        logger.exception(msg)
+        raise
 
 
-@stamina.retry(on=httpx.HTTPStatusError, attempts=10)
+@stamina.retry(on=httpx.HTTPStatusError, attempts=MAX_RETRY_ATTEMPTS)
 @log_api_call(logger)
-def discover_nws_grid(client: httpx.Client, latitude: float, longitude: float) -> str:
+async def discover_nws_grid(
+    client: httpx.AsyncClient, latitude: float, longitude: float
+) -> str:
     """Discover NWS grid identifier from points API.
 
     Calls NWS points API to get forecast URL, then extracts gridpoint
@@ -94,7 +122,7 @@ def discover_nws_grid(client: httpx.Client, latitude: float, longitude: float) -
 
     """
     # Get forecast URL from NWS points API
-    forecast_url = get_nws_forecast_url(client, latitude, longitude)
+    forecast_url = await get_nws_forecast_url(client, latitude, longitude)
 
     # Extract gridpoint from URL: /gridpoints/LOT/85,67/forecast/hourly
     match = re.search(r"/gridpoints/([A-Z]+)/(\d+),(\d+)/", forecast_url)
@@ -109,11 +137,104 @@ def discover_nws_grid(client: httpx.Client, latitude: float, longitude: float) -
     return f"{office}/{grid_x},{grid_y}"
 
 
-@stamina.retry(on=httpx.HTTPStatusError, attempts=10)
+def _parse_hourly_forecast_response(  # noqa: C901, PLR0912, PLR0915
+    data: dict[str, object],
+) -> dict[str, str | float | None]:
+    """Extract normalized hourly forecast from NWS API response.
+
+    Caller is responsible for catching KeyError, TypeError, ValueError and
+    logging or re-raising with context.
+    """
+    # Extract first period (current/next hour)
+    properties = safe_get_nested(data, "properties", api_name="NWS")
+    if not isinstance(properties, dict):
+        msg = "NWS API response parsing error: 'properties' is not a dict"
+        raise TypeError(msg)
+
+    periods = properties.get("periods")  # ty:ignore[invalid-argument-type]
+    if not periods or not isinstance(periods, list) or len(periods) == 0:
+        msg = "NWS API response missing or empty 'periods' array"
+        raise ValueError(msg)
+
+    period = periods[0]
+    if not isinstance(period, dict):
+        msg = "NWS API response parsing error: period is not a dict"
+        raise TypeError(msg)
+
+    # Parse temperature (convert to Fahrenheit if needed)
+    temperature = period.get("temperature")
+    if temperature is None:
+        msg = "NWS API response missing 'temperature' field in period"
+        raise ValueError(msg)
+    if not isinstance(temperature, (int, float)):
+        msg = f"NWS API response 'temperature' is not numeric: {type(temperature).__name__}"
+        raise TypeError(msg)
+
+    temp_unit = period.get("temperatureUnit", "")
+    if temp_unit == "wmoUnit:degC":
+        temperature = convert_celsius_to_fahrenheit(float(temperature))
+    else:
+        temperature = float(temperature)
+
+    # Parse dewpoint (convert to Fahrenheit if needed)
+    dewpoint_obj = period.get("dewpoint")
+    if not isinstance(dewpoint_obj, dict):
+        msg = "NWS API response missing or invalid 'dewpoint' field in period"
+        raise TypeError(msg)
+
+    dewpoint = dewpoint_obj.get("value")
+    if dewpoint is None:
+        msg = "NWS API response missing 'dewpoint.value' field"
+        raise ValueError(msg)
+    if not isinstance(dewpoint, (int, float)):
+        msg = f"NWS API response 'dewpoint.value' is not numeric: {type(dewpoint).__name__}"
+        raise TypeError(msg)
+
+    dewpoint_unit = dewpoint_obj.get("unitCode", "")
+    if dewpoint_unit == "wmoUnit:degC":
+        dewpoint = convert_celsius_to_fahrenheit(float(dewpoint))
+    else:
+        dewpoint = float(dewpoint)
+
+    # Parse wind speed (extract numeric value from string like "20 mph")
+    wind_speed_str = period.get("windSpeed", "")
+    if not isinstance(wind_speed_str, str):
+        wind_speed_str = str(wind_speed_str) if wind_speed_str is not None else ""
+    wind_speed_match = re.match(r"(\d+)", wind_speed_str)
+    wind_speed_mph = float(wind_speed_match.group(1)) if wind_speed_match else None
+
+    # Build normalized response with safe access for optional fields
+    prob_precip_obj = period.get("probabilityOfPrecipitation")
+    prob_precip_value = (
+        prob_precip_obj.get("value") if isinstance(prob_precip_obj, dict) else None
+    )
+
+    humidity_obj = period.get("relativeHumidity")
+    humidity_value = (
+        humidity_obj.get("value") if isinstance(humidity_obj, dict) else None
+    )
+
+    output = {
+        "start_time": period.get("startTime"),
+        "end_time": period.get("endTime"),
+        "temperature_f": temperature,
+        "prob_precip_pct": float(prob_precip_value)
+        if prob_precip_value is not None
+        else None,
+        "dewpoint_f": dewpoint,
+        "humidity_pct": float(humidity_value) if humidity_value is not None else None,
+        "wind_speed_mph": wind_speed_mph,
+        "wind_direction": period.get("windDirection"),
+        "forecast_desc": period.get("shortForecast"),
+    }
+    return output
+
+
+@stamina.retry(on=httpx.HTTPStatusError, attempts=MAX_RETRY_ATTEMPTS)
 @log_api_call(logger)
-def get_nws_hourly_forecast(
-    client: httpx.Client, grid_id: str
-) -> dict[str, str | float]:
+async def get_nws_hourly_forecast(
+    client: httpx.AsyncClient, grid_id: str
+) -> dict[str, str | int | float | None]:
     """Get current hourly weather forecast from NWS for a known grid.
 
     Fetches the first hourly forecast period from NWS, which represents the
@@ -143,39 +264,13 @@ def get_nws_hourly_forecast(
     forecast_url = f"https://api.weather.gov/gridpoints/{grid_id}/forecast/hourly"
 
     # Fetch hourly forecast data
-    response = client.get(forecast_url, headers=_get_auth_header())
+    response = await client.get(forecast_url, headers=_get_auth_header())
     response.raise_for_status()
     data = response.json()
 
-    # Extract first period (current/next hour)
-    period = data["properties"]["periods"][0]
-
-    # Parse temperature (convert to Fahrenheit if needed)
-    temperature = period["temperature"]
-    temp_unit = period["temperatureUnit"]
-    if temp_unit == "wmoUnit:degC":
-        temperature = temperature * 9 / 5 + 32
-
-    # Parse dewpoint (convert to Fahrenheit if needed)
-    dewpoint = period["dewpoint"]["value"]
-    dewpoint_unit = period["dewpoint"]["unitCode"]
-    if dewpoint_unit == "wmoUnit:degC":
-        dewpoint = dewpoint * 9 / 5 + 32
-
-    # Parse wind speed (extract numeric value from string like "20 mph")
-    wind_speed_str = period["windSpeed"]
-    wind_speed_match = re.match(r"(\d+)", wind_speed_str)
-    wind_speed = float(wind_speed_match.group(1)) if wind_speed_match else 0.0
-
-    # Build normalized response
-    return {
-        "start_time": period["startTime"],
-        "end_time": period["endTime"],
-        "temperature_f": temperature,
-        "prob_precip_pct": period["probabilityOfPrecipitation"]["value"] or 0.0,
-        "dewpoint_f": dewpoint,
-        "humidity_pct": period["relativeHumidity"]["value"] or 0.0,
-        "wind_speed_mph": wind_speed,
-        "wind_direction": period["windDirection"],
-        "forecast_desc": period["shortForecast"],
-    }
+    try:
+        return _parse_hourly_forecast_response(data)
+    except (KeyError, TypeError, ValueError) as e:
+        msg = "Failed to parse NWS hourly forecast response, unexpected response structure."
+        logger.exception(msg)
+        raise ValueError(msg) from e

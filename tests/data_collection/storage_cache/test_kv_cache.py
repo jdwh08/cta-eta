@@ -65,7 +65,7 @@ class TestPersistentKVCache:
             nonlocal call_count
             call_count += 1
             # set(): updated_at then saved_at
-            if call_count <= 2:  # noqa: PLR2004
+            if call_count <= 2:
                 return 100.0
             # subsequent calls (e.g., get/items/prune) should not expire
             return 101.0
@@ -86,9 +86,9 @@ class TestPersistentKVCache:
 
         payload = json.loads(cache_file.read_text())
         assert payload["schema_version"] == 1
-        assert payload["saved_at"] == 100.0  # noqa: PLR2004
+        assert payload["saved_at"] == 100.0
         assert payload["data"]["station_123"]["value"] == {"grid": "A1"}
-        assert payload["data"]["station_123"]["updated_at"] == 100.0  # noqa: PLR2004
+        assert payload["data"]["station_123"]["updated_at"] == 100.0
 
     def test_get_with_expired_entry_returns_none(
         self, mocker: pytest.MockFixture, tmp_path: Path

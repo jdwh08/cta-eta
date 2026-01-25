@@ -2,14 +2,22 @@
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING
 
 import httpx
 import pytest
 
 if TYPE_CHECKING:
-    from typing import Any
     from collections.abc import Callable
+    from typing import Any
+
+os.environ["CTA_API_KEY"] = "test"
+os.environ["NWS_APP_NAME"] = "test"
+os.environ["NWS_EMAIL"] = "test@example.com"
+os.environ["OPENWEATHERMAP_API_KEY"] = "test"
+os.environ["CHIDATA_APP_TOK"] = "test"
+os.environ["CHIDATA_APP_SECRET"] = "test"  # noqa: S105
 
 
 @pytest.fixture

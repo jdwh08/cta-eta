@@ -19,12 +19,17 @@ Usage example:
     daemon.start()  # Runs until SIGTERM/SIGINT received
 """
 
+from __future__ import annotations
+
 import json
-import logging
 import signal
 from abc import ABC, abstractmethod
 from pathlib import Path
-from types import FrameType
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import logging
+    from types import FrameType
 
 
 class BaseDaemon(ABC):

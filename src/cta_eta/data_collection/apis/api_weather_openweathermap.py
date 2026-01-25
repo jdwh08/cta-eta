@@ -3,18 +3,21 @@
 This module provides stateless functions to fetch weather data from OpenWeatherMap's
 2.5 APIs as a fallback source when primary weather APIs (NWS, Open-Meteo) fail.
 
+API Documentation: https://openweathermap.org/api
+Rate Limits (free tier):
+- Current Weather 2.5: 60 calls/minute, 1M calls/month
+- 3hr 5-Day Forecast 2.5: 60 calls/minute, 1M calls/month
+- One Call 3.0: 1,000 calls/day
+
 Uses Current Weather 2.5 API and 5-Day Forecast 2.5 API which have more generous
 rate limits compared to One Call 3.0 API. This module should still be used sparingly
 as a fallback when primary weather sources are unavailable.
 
-All functions accept an httpx.Client parameter for dependency injection and proper
+All functions accept an httpx.AsyncClient parameter for dependency injection and proper
 connection pooling management by the caller.
-
-Rate limits to be considered:
-- Current Weather 2.5: 60 calls/minute, 1M calls/month (free tier; I have more but ehhh)
-- 5-Day Forecast 2.5: 60 calls/minute, 1M calls/month (free tier; I have more but ehhh)
-- One Call 3.0: 1k/day limit
 """
+
+from __future__ import annotations
 
 import os
 from typing import Final
@@ -23,9 +26,15 @@ import httpx
 import stamina
 
 ### OWN MODULES
+from cta_eta.data_collection.config import get_config_section, load_config
 from cta_eta.data_collection.logging import get_logger, log_api_call
+from cta_eta.data_collection.utils import safe_get_nested, validate_lat_lon
 
 logger = get_logger(__name__)
+
+config = load_config()
+retry_config = get_config_section("retry", config=config)
+MAX_RETRY_ATTEMPTS: Final[int] = int(retry_config.get("max_retry_attempts", 10))
 
 
 # OpenWeatherMap 2.5 API endpoints
@@ -50,10 +59,40 @@ def _get_api_key() -> str:
     return api_key
 
 
-@stamina.retry(on=httpx.HTTPStatusError, attempts=1)
+def _parse_discover_grid_response(data: dict[str, object]) -> str:
+    """Extract grid ID (lat,lon) from OpenWeatherMap Current Weather response.
+
+    Caller is responsible for catching KeyError, TypeError, ValueError and
+    logging or re-raising with context.
+    """
+    coord = safe_get_nested(data, "coord", api_name="OpenWeatherMap")
+    if not isinstance(coord, dict):
+        msg = "OpenWeatherMap API response 'coord' is not a dict"
+        raise TypeError(msg)
+
+    actual_lat = coord.get("lat")  # ty:ignore[invalid-argument-type]
+    actual_lon = coord.get("lon")  # ty:ignore[invalid-argument-type]
+
+    if actual_lat is None or actual_lon is None:
+        msg = "OpenWeatherMap API response missing 'coord.lat' or 'coord.lon'"
+        raise TypeError(msg)
+
+    if not isinstance(actual_lat, (int, float)) or not isinstance(
+        actual_lon, (int, float)
+    ):
+        msg = (
+            "OpenWeatherMap API response 'coord.lat' or 'coord.lon' is not numeric. "
+            f"Got types: {type(actual_lat).__name__}, {type(actual_lon).__name__}"
+        )
+        raise TypeError(msg)
+
+    return f"{actual_lat},{actual_lon}"
+
+
+@stamina.retry(on=httpx.HTTPStatusError, attempts=MAX_RETRY_ATTEMPTS)
 @log_api_call(logger)
-def discover_openweathermap_grid(
-    client: httpx.Client, latitude: float, longitude: float
+async def discover_openweathermap_grid(
+    client: httpx.AsyncClient, latitude: float, longitude: float
 ) -> str:
     """Discover OpenWeatherMap grid identifier from API response.
 
@@ -63,21 +102,22 @@ def discover_openweathermap_grid(
 
     Args:
         client: HTTP client for API requests
-        latitude: Coordinate latitude
-        longitude: Coordinate longitude
+        latitude: Coordinate latitude (must be between -90 and 90)
+        longitude: Coordinate longitude (must be between -180 and 180)
 
     Returns:
         OpenWeatherMap grid identifier (e.g., "41.88,-87.63")
 
     Raises:
         httpx.HTTPStatusError: If API request fails
-        ValueError: If API key not configured
+        ValueError: If API key not configured or coordinates out of range
 
     """
+    validate_lat_lon(latitude, longitude)
     api_key = _get_api_key()
 
     # Make minimal request to OpenWeatherMap Current Weather API
-    response = client.get(
+    response = await client.get(
         CURRENT_WEATHER_URL,
         params={
             "lat": latitude,
@@ -89,18 +129,102 @@ def discover_openweathermap_grid(
     response.raise_for_status()
     data = response.json()
 
-    # Extract actual coordinates used by API
-    actual_lat = data["coord"]["lat"]
-    actual_lon = data["coord"]["lon"]
+    try:
+        return _parse_discover_grid_response(data)
+    except (KeyError, TypeError, ValueError):
+        logger.exception("Failed to parse OpenWeatherMap grid discovery response")
+        raise
 
-    return f"{actual_lat},{actual_lon}"
+
+def _parse_current_weather_response(
+    data: dict[str, object],
+) -> dict[str, str | int | float | None]:
+    """Extract normalized current weather from OpenWeatherMap Current Weather response.
+
+    Caller is responsible for catching KeyError, TypeError, IndexError, ValueError
+    and logging or re-raising with context.
+    """
+    coord = safe_get_nested(data, "coord", api_name="OpenWeatherMap")
+    main = safe_get_nested(data, "main", api_name="OpenWeatherMap")
+    wind = safe_get_nested(data, "wind", api_name="OpenWeatherMap")
+    weather_array = safe_get_nested(data, "weather", api_name="OpenWeatherMap")
+
+    if not isinstance(coord, dict):
+        msg = "OpenWeatherMap API response 'coord' is not a dict"
+        raise TypeError(msg)
+    if not isinstance(main, dict):
+        msg = "OpenWeatherMap API response 'main' is not a dict"
+        raise TypeError(msg)
+    if not isinstance(wind, dict):
+        msg = "OpenWeatherMap API response 'wind' is not a dict"
+        raise TypeError(msg)
+    if not isinstance(weather_array, list) or len(weather_array) == 0:
+        msg = "OpenWeatherMap API response 'weather' is missing or empty"
+        raise TypeError(msg)
+
+    weather = weather_array[0]
+    if not isinstance(weather, dict):
+        msg = "OpenWeatherMap API response 'weather[0]' is not a dict"
+        raise TypeError(msg)
+
+    latitude = coord.get("lat")  # ty:ignore[invalid-argument-type]
+    longitude = coord.get("lon")  # ty:ignore[invalid-argument-type]
+    if latitude is None or longitude is None:
+        msg = "OpenWeatherMap API response missing 'coord.lat' or 'coord.lon'"
+        raise ValueError(msg)
+    if not isinstance(latitude, (int, float)) or not isinstance(
+        longitude, (int, float)
+    ):
+        msg = (
+            "OpenWeatherMap API response 'coord.lat' or 'coord.lon' is not numeric. "
+            f"Got types: {type(latitude).__name__}, {type(longitude).__name__}"
+        )
+        raise TypeError(msg)
+
+    timestamp = data.get("dt")
+    if timestamp is None:
+        msg = "OpenWeatherMap API response missing 'dt' field"
+        raise ValueError(msg)
+
+    visibility_m = data.get("visibility")
+    visibility_mi = (
+        float(visibility_m) / 1609.34
+        if visibility_m is not None and isinstance(visibility_m, (int, float))
+        else None
+    )
+
+    clouds = data.get("clouds")
+    cloud_cover_pct = (
+        int(clouds["all"])  # ty:ignore[invalid-argument-type]
+        if isinstance(clouds, dict) and clouds.get("all") is not None  # ty:ignore[invalid-argument-type]
+        else None
+    )
+
+    return {
+        "latitude": float(latitude),
+        "longitude": float(longitude),
+        "timestamp": int(timestamp) if isinstance(timestamp, (int, float)) else None,
+        "temperature_f": float(v) if (v := main.get("temp")) is not None else None,  # ty:ignore[invalid-argument-type]
+        "feels_like_f": float(v) if (v := main.get("feels_like")) is not None else None,  # ty:ignore[invalid-argument-type]
+        "temp_min_f": float(v) if (v := main.get("temp_min")) is not None else None,  # ty:ignore[invalid-argument-type]
+        "temp_max_f": float(v) if (v := main.get("temp_max")) is not None else None,  # ty:ignore[invalid-argument-type]
+        "pressure_hpa": float(v) if (v := main.get("pressure")) is not None else None,  # ty:ignore[invalid-argument-type]
+        "humidity_pct": int(v) if (v := main.get("humidity")) is not None else None,  # ty:ignore[invalid-argument-type]
+        "visibility_mi": visibility_mi,
+        "wind_speed_mph": float(v) if (v := wind.get("speed")) is not None else None,  # ty:ignore[invalid-argument-type]
+        "wind_direction_deg": int(v) if (v := wind.get("deg")) is not None else None,  # ty:ignore[invalid-argument-type]
+        "wind_gust_mph": float(v) if (v := wind.get("gust")) is not None else None,  # ty:ignore[invalid-argument-type]
+        "cloud_cover_pct": cloud_cover_pct,
+        "weather_main": weather.get("main") or None,  # ty:ignore[invalid-argument-type]
+        "weather_desc": weather.get("description") or None,  # ty:ignore[invalid-argument-type]
+    }
 
 
-@stamina.retry(on=httpx.HTTPStatusError, attempts=3)
+@stamina.retry(on=httpx.HTTPStatusError, attempts=MAX_RETRY_ATTEMPTS)
 @log_api_call(logger)
-def get_openweathermap_current(
-    client: httpx.Client, grid_id: str
-) -> dict[str, str | float]:
+async def get_openweathermap_current(
+    client: httpx.AsyncClient, grid_id: str
+) -> dict[str, str | int | float | None]:
     """Get current weather data from OpenWeatherMap Current Weather 2.5 API.
 
     Fetches current weather conditions for a known grid location. This API has
@@ -124,7 +248,7 @@ def get_openweathermap_current(
         - visibility_mi: Visibility in miles
         - wind_speed_mph: Wind speed in miles per hour
         - wind_direction_deg: Wind direction in degrees
-        - wind_gust_mph: Wind gust speed in mph (0.0 if not available)
+        - wind_gust_mph: Wind gust speed in mph (None if not available)
         - cloud_cover_pct: Cloud coverage percentage (0-100)
         - weather_main: Main weather condition (e.g., "Clouds", "Rain")
         - weather_desc: Detailed weather description
@@ -137,13 +261,24 @@ def get_openweathermap_current(
     api_key = _get_api_key()
 
     # Parse grid identifier to get coordinates
+    if grid_id.count(",") != 1:
+        msg = f"Invalid grid ID: {grid_id}"
+        raise ValueError(msg)
     grid_lat, grid_lon = grid_id.split(",")
+    try:
+        lat = float(grid_lat)
+        lon = float(grid_lon)
+    except ValueError as e:
+        msg = f"Invalid grid ID: {grid_id}"
+        raise ValueError(msg) from e
 
-    response = client.get(
+    validate_lat_lon(lat, lon)
+
+    response = await client.get(
         CURRENT_WEATHER_URL,
         params={
-            "lat": float(grid_lat),
-            "lon": float(grid_lon),
+            "lat": lat,
+            "lon": lon,
             "appid": api_key,
             "units": "imperial",  # Fahrenheit, mph
         },
@@ -151,46 +286,129 @@ def get_openweathermap_current(
     response.raise_for_status()
     data = response.json()
 
-    # Extract current weather data
-    main = data["main"]
-    wind = data["wind"]
-    weather = data["weather"][0]
+    try:
+        return _parse_current_weather_response(data)
+    except (KeyError, TypeError, IndexError, ValueError) as e:
+        logger.exception("Failed to parse OpenWeatherMap current weather response")
+        msg = f"OpenWeatherMap API response structure unexpected: {e}"
+        raise ValueError(msg) from e
 
-    # Convert wind speed from meters/sec to mph (API returns m/s despite units=imperial)
-    # Actually, with units=imperial, wind speed is already in mph
-    # But visibility is in meters regardless of units parameter
-    visibility_mi = data.get("visibility", 0) / 1609.34  # meters to miles
+
+def _coords_from_city_dict(city: dict[str, object]) -> tuple[float, float]:
+    """Extract validated (lat, lon) from OpenWeatherMap 'city' object. Raises TypeError on invalid structure."""
+    coord = city.get("coord")
+    if not isinstance(coord, dict):
+        msg = "OpenWeatherMap API response 'city.coord' is not a dict"
+        raise TypeError(msg)
+    lat = coord.get("lat")  # ty:ignore[invalid-argument-type]
+    lon = coord.get("lon")  # ty:ignore[invalid-argument-type]
+    if lat is None or lon is None:
+        msg = "OpenWeatherMap API response missing 'city.coord.lat' or 'city.coord.lon'"
+        raise TypeError(msg)
+    if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+        msg = (
+            "OpenWeatherMap API response 'city.coord.lat' or 'city.coord.lon' is not numeric. "
+            f"Got types: {type(lat).__name__}, {type(lon).__name__}"
+        )
+        raise TypeError(msg)
+    return float(lat), float(lon)
+
+
+def _parse_forecast_response(
+    data: dict[str, object],
+) -> dict[str, str | int | float | None]:
+    """Extract normalized forecast from OpenWeatherMap 5-Day Forecast response.
+
+    Caller is responsible for catching KeyError, TypeError, IndexError, ValueError
+    and logging or re-raising with context.
+    """
+    forecast_list = safe_get_nested(data, "list", api_name="OpenWeatherMap")
+    city = safe_get_nested(data, "city", api_name="OpenWeatherMap")
+
+    if not isinstance(forecast_list, list) or len(forecast_list) == 0:
+        msg = "OpenWeatherMap API response 'list' is missing or empty"
+        raise ValueError(msg)
+
+    forecast = forecast_list[0]
+    if not isinstance(forecast, dict):
+        msg = "OpenWeatherMap API response 'list[0]' is not a dict"
+        raise TypeError(msg)
+
+    main = forecast.get("main")  # ty:ignore[invalid-argument-type]
+    wind = forecast.get("wind")  # ty:ignore[invalid-argument-type]
+    weather_array = forecast.get("weather")  # ty:ignore[invalid-argument-type]
+
+    if not isinstance(main, dict):
+        msg = "OpenWeatherMap API response 'list[0].main' is not a dict"
+        raise TypeError(msg)
+    if not isinstance(wind, dict):
+        msg = "OpenWeatherMap API response 'list[0].wind' is not a dict"
+        raise TypeError(msg)
+    if not isinstance(weather_array, list) or len(weather_array) == 0:
+        msg = "OpenWeatherMap API response 'list[0].weather' is missing or empty"
+        raise TypeError(msg)
+
+    weather = weather_array[0]
+    if not isinstance(weather, dict):
+        msg = "OpenWeatherMap API response 'list[0].weather[0]' is not a dict"
+        raise TypeError(msg)
+
+    if not isinstance(city, dict):
+        msg = "OpenWeatherMap API response 'city' is not a dict"
+        raise TypeError(msg)
+
+    # NOTE(jdwh08): technically we never validated city keys are strings, but ehhh
+    latitude, longitude = _coords_from_city_dict(city)
+
+    visibility_m = forecast.get("visibility")  # ty:ignore[invalid-argument-type]
+    visibility_mi = (
+        float(visibility_m) / 1609.34
+        if visibility_m is not None and isinstance(visibility_m, (int, float))
+        else None
+    )
+
+    clouds_f = forecast.get("clouds")  # ty:ignore[invalid-argument-type]
+    cloud_cover_pct = (
+        int(clouds_f["all"])
+        if isinstance(clouds_f, dict) and clouds_f.get("all") is not None
+        else None
+    )
+
+    pop = forecast.get("pop")  # ty:ignore[invalid-argument-type]
+    prob_precip_pct = (
+        float(pop) * 100 if pop is not None and isinstance(pop, (int, float)) else None
+    )
 
     return {
-        "latitude": data["coord"]["lat"],
-        "longitude": data["coord"]["lon"],
-        "timestamp": data["dt"],
-        "temperature_f": main["temp"],
-        "feels_like_f": main["feels_like"],
-        "temp_min_f": main["temp_min"],
-        "temp_max_f": main["temp_max"],
-        "pressure_hpa": main["pressure"],
-        "humidity_pct": main["humidity"],
+        "latitude": float(latitude),
+        "longitude": float(longitude),
+        "timestamp": int(v) if (v := forecast.get("dt")) is not None else None,  # ty:ignore[invalid-argument-type]
+        "dt_txt": forecast.get("dt_txt") or None,  # ty:ignore[invalid-argument-type]
+        "temperature_f": float(v) if (v := main.get("temp")) is not None else None,
+        "feels_like_f": float(v) if (v := main.get("feels_like")) is not None else None,
+        "temp_min_f": float(v) if (v := main.get("temp_min")) is not None else None,
+        "temp_max_f": float(v) if (v := main.get("temp_max")) is not None else None,
+        "pressure_hpa": float(v) if (v := main.get("pressure")) is not None else None,
+        "humidity_pct": int(v) if (v := main.get("humidity")) is not None else None,
         "visibility_mi": visibility_mi,
-        "wind_speed_mph": wind["speed"],
-        "wind_direction_deg": wind.get("deg", 0),
-        "wind_gust_mph": wind.get("gust", 0.0),
-        "cloud_cover_pct": data.get("clouds", {}).get("all", 0),
-        "weather_main": weather["main"],
-        "weather_desc": weather["description"],
+        "wind_speed_mph": float(v) if (v := wind.get("speed")) is not None else None,
+        "wind_direction_deg": int(v) if (v := wind.get("deg")) is not None else None,
+        "wind_gust_mph": float(v) if (v := wind.get("gust")) is not None else None,
+        "cloud_cover_pct": cloud_cover_pct,
+        "prob_precip_pct": prob_precip_pct,
+        "weather_main": weather.get("main") or None,
+        "weather_desc": weather.get("description") or None,
     }
 
 
-@stamina.retry(on=httpx.HTTPStatusError, attempts=3)
+@stamina.retry(on=httpx.HTTPStatusError, attempts=MAX_RETRY_ATTEMPTS)
 @log_api_call(logger)
-def get_openweathermap_forecast_hourly(
-    client: httpx.Client, grid_id: str
-) -> dict[str, str | float]:
-    """Get hourly forecast from OpenWeatherMap 5-Day Forecast 2.5 API.
+async def get_openweathermap_forecast_hourly(
+    client: httpx.AsyncClient, grid_id: str
+) -> dict[str, str | int | float | None]:
+    """Get hourly forecast from OpenWeatherMap Hourly Forecast2.5 API.
 
-    Fetches the next hour's forecast data from the 5-day/3-hour forecast API.
-    The API returns forecasts in 3-hour intervals, so we take the first period
-    which represents the next 3-hour window.
+    Fetches the next hour's forecast data from the API.
 
     Args:
         client: HTTP client for API requests
@@ -225,13 +443,24 @@ def get_openweathermap_forecast_hourly(
     api_key = _get_api_key()
 
     # Parse grid identifier to get coordinates
+    if grid_id.count(",") != 1:
+        msg = f"Invalid grid ID: {grid_id}"
+        raise ValueError(msg)
     grid_lat, grid_lon = grid_id.split(",")
+    try:
+        lat = float(grid_lat)
+        lon = float(grid_lon)
+    except ValueError as e:
+        msg = f"Invalid grid ID: {grid_id}"
+        raise ValueError(msg) from e
 
-    response = client.get(
+    validate_lat_lon(lat, lon)
+
+    response = await client.get(
         FORECAST_URL,
         params={
-            "lat": float(grid_lat),
-            "lon": float(grid_lon),
+            "lat": lat,
+            "lon": lon,
             "appid": api_key,
             "units": "imperial",  # Fahrenheit, mph
             "cnt": 1,  # Only get first forecast period to minimize data transfer
@@ -240,35 +469,9 @@ def get_openweathermap_forecast_hourly(
     response.raise_for_status()
     data = response.json()
 
-    # Extract first forecast period (next 3-hour window)
-    forecast = data["list"][0]
-    main = forecast["main"]
-    wind = forecast["wind"]
-    weather = forecast["weather"][0]
-
-    # Convert visibility from meters to miles
-    visibility_mi = forecast.get("visibility", 0) / 1609.34
-
-    # Extract city coordinates from response
-    city = data["city"]
-
-    return {
-        "latitude": city["coord"]["lat"],
-        "longitude": city["coord"]["lon"],
-        "timestamp": forecast["dt"],
-        "dt_txt": forecast["dt_txt"],
-        "temperature_f": main["temp"],
-        "feels_like_f": main["feels_like"],
-        "temp_min_f": main["temp_min"],
-        "temp_max_f": main["temp_max"],
-        "pressure_hpa": main["pressure"],
-        "humidity_pct": main["humidity"],
-        "visibility_mi": visibility_mi,
-        "wind_speed_mph": wind["speed"],
-        "wind_direction_deg": wind.get("deg", 0),
-        "wind_gust_mph": wind.get("gust", 0.0),
-        "cloud_cover_pct": forecast.get("clouds", {}).get("all", 0),
-        "prob_precip_pct": forecast.get("pop", 0.0) * 100,  # Convert 0-1 to 0-100
-        "weather_main": weather["main"],
-        "weather_desc": weather["description"],
-    }
+    try:
+        return _parse_forecast_response(data)
+    except (KeyError, TypeError, IndexError, ValueError) as e:
+        logger.exception("Failed to parse OpenWeatherMap forecast response")
+        msg = f"OpenWeatherMap API response structure unexpected: {e}"
+        raise ValueError(msg) from e
