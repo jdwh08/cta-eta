@@ -15,10 +15,12 @@ The daemon:
 from __future__ import annotations
 
 import asyncio
+import functools
 import time
 from datetime import datetime
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING, Any, override
 
+import aiometer
 import httpx
 
 from cta_eta.data_collection.apis.api_train_position import (
@@ -214,11 +216,28 @@ class TrainPositionDaemon(AsyncBaseDaemon):
                     # Record poll timestamp BEFORE API call for precise timing
                     poll_timestamp = time.time()
 
-                    # Fetch train positions from CTA API
-                    async with self.diagnostics.span(
-                        "cta.get_train_positions", cycle_id=cycle_id
-                    ):
-                        raw_response = await get_train_positions(client)
+                    # Fetch train positions from CTA API with aiometer rate limiting
+                    async def _fetch_train_positions() -> dict[str, Any]:
+                        async with self.diagnostics.span("cta.get_train_positions", cycle_id=cycle_id):
+                            return await get_train_positions(client)
+
+                    # Record diagnostic event before aiometer call
+                    self.diagnostics.record_event(
+                        "aiometer_run",
+                        operation="cta.get_train_positions",
+                        item_count=1,
+                        max_per_second=self.cta_max_per_second,
+                        max_at_once=self.cta_max_at_once,
+                    )
+
+                    # Wrap in aiometer for rate limiting
+                    jobs = [functools.partial(_fetch_train_positions)]
+                    results = await aiometer.run_all(
+                        jobs,
+                        max_at_once=self.cta_max_at_once,
+                        max_per_second=self.cta_max_per_second,
+                    )
+                    raw_response = results[0]  # Single result
 
                     # Normalize nested route/train structure to flat records
                     records = normalize_train_positions(
