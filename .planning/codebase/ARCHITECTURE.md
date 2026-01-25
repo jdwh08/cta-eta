@@ -91,8 +91,8 @@
    - Result: ~145 CTA stations deduplicated to ~50 unique weather grid points
 
 3. Parallel Multi-Source Weather Fetch
-   - NWS: `aiometer.run_on_each(get_nws_hourly_forecast, 2.0 req/sec, max 10 concurrent)`
-   - Open-Meteo: `aiometer.run_on_each(get_open_meteo_current, 0.1 req/sec, max 3 concurrent)`
+   - NWS: `aiometer.run_all(jobs, max_at_once=10, max_per_second=2.0)` with `get_nws_hourly_forecast`
+   - Open-Meteo: `aiometer.run_all(jobs, max_at_once, max_per_second)` with `get_open_meteo_current`
    - Both sources fetched via `await asyncio.gather()` for parallel execution
 
 4. Fallback for Failures (optional)
@@ -150,10 +150,10 @@
   ```
 - Examples: All functions in `apis/*.py`
 
-**Rate Limiter:**
+**Rate Limiting:**
 - Purpose: Enforce API rate limits with async concurrency control
-- Examples: `aiometer.run_on_each()` with max_per_second and max_at_once
-- Pattern: Semaphore + token bucket for distributed rate limiting
+- Examples: `aiometer.run_all()` for batched fetches, `aiometer.amap()` for discovery
+- Pattern: max_per_second and max_at_once for provider-specific limits
 
 ## Entry Points
 

@@ -20,7 +20,7 @@
 
 **Types:**
 - PascalCase for classes: `CachedData`, `BaseDaemon`, `WeatherDaemon`, `AsyncBaseDaemon`
-- Private classes use underscore prefix: `_AsyncRateLimiter`, `_DiscoveryStateMarker`
+- Private classes use underscore prefix: `_StationGridMapping`
 - Generic type parameters in brackets: `class CachedData[T]:`
 - Modern Python 3.13+ generic syntax (no `Generic[T]` inheritance)
 
