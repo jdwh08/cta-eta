@@ -30,9 +30,19 @@ def mock_logger() -> MagicMock:
 
 
 @pytest.fixture
-def sample_config() -> dict[str, dict[str, str | int | float | bool]]:
+def sample_config() -> dict[
+    str, dict[str, str | int | float | bool | dict[str, str | int | float]]
+]:
     """Minimal config for WeatherDaemon initialization (deps are mocked)."""
-    return {"collection": {"weather_interval_minutes": 15}}
+    return {
+        "collection": {"weather_interval_minutes": 15},
+        "diagnostics": {"summary_interval_seconds": 10},
+        "rate_limits": {
+            "nws": {"max_per_second": 10, "max_at_once": 1},
+            "open_meteo": {"max_per_second": 10, "max_at_once": 1},
+            "openweathermap": {"max_per_second": 10, "max_at_once": 1},
+        },
+    }
 
 
 @pytest.fixture
@@ -85,7 +95,7 @@ def weather_daemon(
         autospec=True,
     )
 
-    daemon = WeatherDaemon(sample_config, mock_logger)
+    daemon = WeatherDaemon(mock_logger, sample_config)
     return (daemon, stations_cache, nws_cache, om_cache, storage)
 
 
@@ -167,14 +177,6 @@ class TestWeatherDaemonGetUniqueGridPoints:
         """On cache miss, discovers grids and updates caches."""
         # Arrange
         daemon, stations_cache, nws_cache, om_cache, _ = weather_daemon
-        mocker.patch(
-            "cta_eta.data_collection.orchestration.weather_daemon._DEFAULT_OPEN_METEO_MAX_PER_SECOND",
-            new=1000.0,
-        )
-        mocker.patch(
-            "cta_eta.data_collection.orchestration.weather_daemon._DEFAULT_OPEN_METEO_MAX_AT_ONCE",
-            new=1,
-        )
         stations_cache.get.return_value = [
             {"id": "s1", "latitude": "41.1", "longitude": "-87.1"}
         ]
@@ -242,14 +244,6 @@ class TestWeatherDaemonGetUniqueGridPoints:
         """If Open-Meteo discovery fails for a station, that station is skipped."""
         # Arrange
         daemon, stations_cache, nws_cache, om_cache, _ = weather_daemon
-        mocker.patch(
-            "cta_eta.data_collection.orchestration.weather_daemon._DEFAULT_OPEN_METEO_MAX_PER_SECOND",
-            new=1000.0,
-        )
-        mocker.patch(
-            "cta_eta.data_collection.orchestration.weather_daemon._DEFAULT_OPEN_METEO_MAX_AT_ONCE",
-            new=1,
-        )
         stations_cache.get.return_value = [
             {"id": "s1", "latitude": "41.0", "longitude": "-87.0"}
         ]
@@ -667,14 +661,6 @@ class TestWeatherDaemonDiscoveryTimeouts:
         """Discovery handles overall batch timeout via time.monotonic check and returns partial dict."""
         # Arrange
         daemon, _stations_cache, _nws_cache, _, _storage = weather_daemon
-        mocker.patch(
-            "cta_eta.data_collection.orchestration.weather_daemon._DEFAULT_OPEN_METEO_MAX_PER_SECOND",
-            new=1000.0,
-        )
-        mocker.patch(
-            "cta_eta.data_collection.orchestration.weather_daemon._DEFAULT_OPEN_METEO_MAX_AT_ONCE",
-            new=1,
-        )
         mocker.patch(
             "cta_eta.data_collection.orchestration.weather_grid_discovery._OVERALL_BATCH_TIMEOUT_S",
             new=0.02,

@@ -137,7 +137,7 @@ async def discover_nws_grid(
     return f"{office}/{grid_x},{grid_y}"
 
 
-def _parse_hourly_forecast_response(
+def _parse_hourly_forecast_response(  # noqa: C901, PLR0912, PLR0915
     data: dict[str, object],
 ) -> dict[str, str | float | None]:
     """Extract normalized hourly forecast from NWS API response.
@@ -230,7 +230,6 @@ def _parse_hourly_forecast_response(
     return output
 
 
-# TODO(jdwh08): make stamina obey settings from config.toml
 @stamina.retry(on=httpx.HTTPStatusError, attempts=MAX_RETRY_ATTEMPTS)
 @log_api_call(logger)
 async def get_nws_hourly_forecast(

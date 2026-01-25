@@ -26,7 +26,6 @@ from typing import TYPE_CHECKING, Any, override
 import aiometer
 import httpx
 
-# Own modules
 from cta_eta.data_collection.apis.api_cta_stations import get_stations_cache
 from cta_eta.data_collection.apis.api_weather_nws import (
     discover_nws_grid,
@@ -36,7 +35,9 @@ from cta_eta.data_collection.apis.api_weather_open_meteo import get_open_meteo_c
 from cta_eta.data_collection.apis.api_weather_openweathermap import (
     get_openweathermap_current,
 )
-from cta_eta.data_collection.config import validate_config
+
+# Own modules
+from cta_eta.data_collection.config import get_config_section, validate_config
 from cta_eta.data_collection.logging import log_context
 from cta_eta.data_collection.merging.weather_merger import merge_weather_sources
 from cta_eta.data_collection.orchestration.daemon_async import AsyncBaseDaemon
@@ -45,7 +46,7 @@ from cta_eta.data_collection.orchestration.daemon_utils import (
     classify_error,
 )
 from cta_eta.data_collection.orchestration.weather_grid_discovery import (
-    WeatherGridDiscoverer,
+    OpenMeteoWeatherGridDiscoverer,
 )
 from cta_eta.data_collection.storage_cache.storage import create_parquet_writer
 from cta_eta.data_collection.storage_cache.weather_grid_cache import (
@@ -62,12 +63,6 @@ if TYPE_CHECKING:
         NWSGridCache,
         OpenMeteoGridCache,
     )
-
-# Default rate limits (fallback if config missing)
-# Open-Meteo API: https://open-meteo.com/en/docs
-# Free tier: 10,000 calls/day
-_DEFAULT_OPEN_METEO_MAX_PER_SECOND: float = 0.1  # 6/minute
-_DEFAULT_OPEN_METEO_MAX_AT_ONCE: int = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,8 +111,8 @@ class WeatherDaemon(AsyncBaseDaemon):
 
     def __init__(
         self,
-        config: dict[str, dict[str, str | int | float | bool]],
         logger: logging.Logger,
+        config: dict[str, dict[str, str | int | float | bool]] | None = None,
     ) -> None:
         """Initialize weather daemon with caches and configuration.
 
@@ -126,10 +121,15 @@ class WeatherDaemon(AsyncBaseDaemon):
             logger: Logger instance for structured logging
 
         """
+        if config is None:
+            config = load_config()
         super().__init__(config, logger)
 
         # Validate configuration for required credentials
-        validate_config(config, required_features=["weather_collection"])
+        validate_config(
+            config,
+            required_features=["weather_collection", "weather_collection_fallback"],
+        )
 
         # Load stations cache for deduplication
         self.stations_cache = get_stations_cache(config)
@@ -149,14 +149,30 @@ class WeatherDaemon(AsyncBaseDaemon):
         self.weather_interval = weather_interval_minutes * 60
 
         # Load rate limits from config with fallback defaults
+
+        # NWS API: https://api.weather.gov/
+        nws_rate_limit_config = get_config_section("rate_limits.nws")
+        self.nws_max_per_second = float(nws_rate_limit_config.get("max_per_second"))
+        self.nws_max_at_once = int(nws_rate_limit_config.get("max_at_once"))
+
         # Open-Meteo API: https://open-meteo.com/en/docs
-        rate_limits_config = config.get("rate_limits", {})
-        open_meteo_config = rate_limits_config.get("open_meteo", {})
+        open_meteo_rate_limit_config = get_config_section("rate_limits.open_meteo")
         self.open_meteo_max_per_second = float(
-            open_meteo_config.get("max_per_second", _DEFAULT_OPEN_METEO_MAX_PER_SECOND)
+            open_meteo_rate_limit_config.get("max_per_second")
         )
         self.open_meteo_max_at_once = int(
-            open_meteo_config.get("max_at_once", _DEFAULT_OPEN_METEO_MAX_AT_ONCE)
+            open_meteo_rate_limit_config.get("max_at_once")
+        )
+
+        # OpenWeatherMap API: https://openweathermap.org/api/one-call-3
+        openweathermap_rate_limit_config = get_config_section(
+            "rate_limits.openweathermap"
+        )
+        self.openweathermap_max_per_second = float(
+            openweathermap_rate_limit_config.get("max_per_second")
+        )
+        self.openweathermap_max_at_once = int(
+            openweathermap_rate_limit_config.get("max_at_once")
         )
 
         # Initialize state tracking
@@ -164,12 +180,10 @@ class WeatherDaemon(AsyncBaseDaemon):
         self.records_stored_last_cycle = 0
 
         # Initialize grid discoverer
-        self._grid_discoverer = WeatherGridDiscoverer(
+        self._grid_discoverer = OpenMeteoWeatherGridDiscoverer(
             logger=logger,
             diagnostics=self.diagnostics,
             om_grid_cache=self.om_grid_cache,
-            open_meteo_max_per_second=self.open_meteo_max_per_second,
-            open_meteo_max_at_once=self.open_meteo_max_at_once,
             write_discovery_state_marker=self._write_discovery_state_marker,
             daemon_class=self.__class__.__name__,
         )
@@ -232,6 +246,7 @@ class WeatherDaemon(AsyncBaseDaemon):
                                     "extra_fields": {
                                         "error_type": type(e).__name__,
                                         "error_category": category.value,
+                                        "error_message": str(e),
                                     }
                                 },
                             )
@@ -339,7 +354,7 @@ class WeatherDaemon(AsyncBaseDaemon):
                         nws_by_grid_task, om_by_grid_task
                     )
 
-                    # Ensure we have dicts (not None) - aiometer fixes ensure this
+                    # Ensure we have dicts (not None)
                     if not isinstance(nws_by_grid, dict):
                         nws_by_grid = {}
                     if not isinstance(om_by_grid, dict):
@@ -491,11 +506,15 @@ class WeatherDaemon(AsyncBaseDaemon):
             "aiometer_run",
             operation="nws.get_hourly_forecast",
             item_count=len(grid_ids),
-            max_per_second=2.0,
-            max_at_once=10,
+            max_per_second=self.nws_max_per_second,
+            max_at_once=self.nws_max_at_once,
         )
         jobs = [functools.partial(_fetch_one, g) for g in grid_ids]
-        results = await aiometer.run_all(jobs, max_at_once=10, max_per_second=2.0)
+        results = await aiometer.run_all(
+            jobs,
+            max_at_once=self.nws_max_at_once,
+            max_per_second=self.nws_max_per_second,
+        )
         return {g: v for g, v in results if v is not None}
 
     async def _fetch_open_meteo_by_grid(
@@ -567,7 +586,11 @@ class WeatherDaemon(AsyncBaseDaemon):
                 return (grid_id, data)
 
         jobs = [functools.partial(_fetch_one, g) for g in grid_ids]
-        results = await aiometer.run_all(jobs, max_at_once=5, max_per_second=1.0)
+        results = await aiometer.run_all(
+            jobs,
+            max_at_once=self.openweathermap_max_at_once,
+            max_per_second=self.openweathermap_max_per_second,
+        )
         return {g: v for g, v in results if v is not None}
 
     async def _get_station_grid_mappings(
@@ -586,7 +609,7 @@ class WeatherDaemon(AsyncBaseDaemon):
 
         2. **Open-Meteo Grid Resolution**: Checks cache for Open-Meteo grid ID. On cache
            miss, adds station to discovery batch. Batch discovery is performed
-           concurrently with rate limiting (see WeatherGridDiscoverer).
+           concurrently with rate limiting (see OpenMeteoWeatherGridDiscoverer).
 
         3. **Cache Persistence**: All discovered grid identifiers are immediately
            persisted to cache files to survive daemon restarts.
@@ -724,7 +747,7 @@ class WeatherDaemon(AsyncBaseDaemon):
     ) -> dict[str, str]:
         """Discover Open-Meteo grid identifiers for multiple stations.
 
-        Delegates to WeatherGridDiscoverer for the actual discovery logic.
+        Delegates to OpenMeteoWeatherGridDiscoverer for the actual discovery logic.
 
         Args:
             client: HTTP client for API requests
@@ -779,5 +802,5 @@ if __name__ == "__main__":
     logger.setLevel(logging.INFO)
     logger.propagate = False
 
-    daemon = WeatherDaemon(config, logger)
+    daemon = WeatherDaemon(logger, config)
     daemon.start()

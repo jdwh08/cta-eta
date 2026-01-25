@@ -2,6 +2,15 @@
 # Operational settings (version-controlled)
 # Secrets stored in .env (git-ignored)
 
+[features]
+# Feature flags to enable/disable parts of the pipeline
+# Only credentials for enabled features will be validated at startup
+train_positions = false  # Requires CTA_API_KEY
+weather_collection = true  # Requires NWS_APP_NAME and NWS_EMAIL
+weather_collection_fallback = true  # Requires OPENWEATHERMAP_API_KEY
+station_data = true  # Requires CHIDATA_APP_TOK and CHIDATA_APP_SECRET
+
+
 [collection]
 # Train position polling interval in seconds
 # CTA Train Tracker API updates ~every 10-15 seconds
@@ -11,10 +20,23 @@ train_interval_seconds = 15
 # Weather changes slowly, hourly updates sufficient
 weather_interval_minutes = 30
 
-[retry]
-# Maximum retry attempts for transient API failures
-# Using stamina decorator with exponential backoff w/ Jitter
-max_retry_attempts = 10
+
+[cache]
+# Cache directory for operational state (separate from collected data)
+directory = ".cache"
+
+# TTL for CTA stations list in seconds (7 days)
+# Stations rarely change, refresh weekly
+stations_ttl = 604800
+
+# TTL for track geometry in seconds (30 days)
+# Track layout is very stable, refresh monthly
+track_geometry_ttl = 2592000
+
+# TTL for station-to-weather grid mapping in seconds (7 days)
+# Maps ~300 CTA stations to ~50 weather grid points
+weather_mapping_ttl = 604800
+
 
 [storage]
 # Storage backend selection
@@ -45,7 +67,47 @@ partition_by = "daily"
 compression = "snappy"
 
 # Maximum file size in MB before rotation
-max_file_size_mb = 100
+max_file_size_mb = 128
+
+
+[retry]
+# Maximum retry attempts for transient API failures
+# Using stamina decorator with exponential backoff w/ Jitter
+max_retry_attempts = 10
+
+
+[rate_limits]
+# API rate limit configuration
+# These limits are enforced to stay within API provider quotas
+
+[rate_limits.cta]
+# Chicago Transit Authority API: https://www.transitchicago.com/developers/ttdocs/
+# 50,000 calls per day.
+# Current usage: all 8 lines in tt-positions is one call (?)
+# 4 polls/min * 60 min/hr * 24hr/day = 5,760 calls/day (12% utilization)
+max_per_second = 0.1  # 6/min to be save, ~8,640/day
+max_at_once = 3
+
+[rate_limits.nws]
+# National Weather Service API: https://api.weather.gov/
+# There are no tiers. NWS only suggests "reasonable" usage
+max_per_second = 5
+max_at_once = 5
+
+[rate_limits.open_meteo]
+# Open-Meteo API: https://open-meteo.com/en/docs
+# Free tier: 10,000 calls/day
+# Current usage: ~50 grid points × 48 polls/day = 2,400 calls/day (24% utilization)
+max_per_second = 0.1  # 6/minute, ~8,640/day (well under 10K limit)
+max_at_once = 3  # Maximum concurrent requests
+
+[rate_limits.openweathermap]
+# OpenWeatherMap API: https://openweathermap.org/api
+# Free tier: 60 calls/min, 1MM calls/month
+# Current tier: 3000 calls/min, 100MM calls/month
+max_per_second = 60
+max_at_once = 60
+
 
 [logging]
 # Logging level: DEBUG, INFO, WARNING, ERROR, CRITICAL
@@ -61,44 +123,9 @@ log_path = "logs/cta_eta.log"
 # Enable console output in addition to file logging
 console_output = true
 
-[cache]
-# Cache directory for operational state (separate from collected data)
-directory = ".cache"
-
-# TTL for CTA stations list in seconds (7 days)
-# Stations rarely change, refresh weekly
-stations_ttl = 604800
-
-# TTL for track geometry in seconds (30 days)
-# Track layout is very stable, refresh monthly
-track_geometry_ttl = 2592000
-
-# TTL for station-to-weather grid mapping in seconds (7 days)
-# Maps ~300 CTA stations to ~50 weather grid points
-weather_mapping_ttl = 604800
-
-# TODO(jdwh08): Add weather_fallback option, add rate_limits for each API
-[features]
-# Feature flags to enable/disable parts of the pipeline
-# Only credentials for enabled features will be validated at startup
-train_positions = false  # Requires CTA_API_KEY
-weather_collection = true  # Requires NWS_APP_NAME and NWS_EMAIL
-station_data = false  # Requires CHIDATA_APP_TOK and CHIDATA_APP_SECRET
-# Note: openweathermap_fallback is optional and doesn't require validation
-
-[rate_limits]
-# API rate limit configuration
-# These limits are enforced to stay within API provider quotas
-
-[rate_limits.open_meteo]
-# Open-Meteo API: https://open-meteo.com/en/docs
-# Free tier: 10,000 calls/day
-# Current usage: ~50 grid points × 48 polls/day = 2,400 calls/day (24% utilization)
-max_per_second = 0.1  # 6/minute, ~8,640/day (well under 10K limit)
-max_at_once = 3  # Maximum concurrent requests
 
 [diagnostics]
-# Off by default. When enabled, daemons emit structured span timing + error telemetry,
+# When enabled, daemons emit structured span timing + error telemetry,
 # periodically log a compact summary, and (optionally) write JSONL events for offline analysis.
 enabled = true
 
@@ -106,10 +133,10 @@ enabled = true
 summary_interval_seconds = 30
 
 # Bounded in-memory ring buffer of recent diagnostic events.
-max_recent_events = 250
+max_recent_events = 64
 
 # Optional JSONL sink for events; if empty, events are not written to disk.
 # If set and enabled, the file is rotated by size.
-# event_log_path = ".daemon_state/WeatherDaemon.events.jsonl"
-# event_log_max_bytes = 5242880
-# event_log_backups = 3
+event_log_path = ".daemon_state/WeatherDaemon.events.jsonl"
+event_log_max_bytes = 5242880
+event_log_backups = 3

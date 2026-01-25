@@ -8,8 +8,6 @@ Precedence for overlapping fields: NWS > Open-Meteo > OpenWeatherMap
 
 from __future__ import annotations
 
-import math
-
 import numpy as np
 
 
@@ -77,7 +75,9 @@ def merge_weather_sources(
     }
 
     # Filter to only non-None sources
-    available_sources = {k: v for k, v in sources_data.items() if v is not None}
+    available_sources: dict[str, dict[str, object] | None] = {
+        k: v for k, v in sources_data.items() if v is not None
+    }
 
     # Return None if no sources available
     if not available_sources:
@@ -86,10 +86,6 @@ def merge_weather_sources(
     # If only one source, return it directly (no merge needed)
     if len(available_sources) == 1:
         source_dict = next(iter(available_sources.values()))
-        if not isinstance(source_dict, dict):
-            msg = "Source data is not a dictionary!"
-            raise ValueError(msg)
-
         # Convert to Python native types
         output = {
             key: _convert_to_python_type(value)
@@ -113,20 +109,14 @@ def merge_weather_sources(
         value = None
         # Try each source in order of precedence
         for source_name in precedence_order:
-            if source_name not in available_sources:
-                continue
             source_dict = available_sources.get(source_name)
-            if not isinstance(source_dict, dict):
-                continue
-            if key not in source_dict:
-                continue
-
-            candidate = source_dict[key]
-            if candidate is None or (
-                isinstance(candidate, (float, np.floating)) and (math.isnan(candidate))
+            if (
+                source_dict is None
+                or not isinstance(source_dict, dict)
+                or key not in source_dict
             ):
                 continue
-            value = candidate
+            value = source_dict[key]
             break
 
         result_dict[key] = _convert_to_python_type(value)

@@ -41,6 +41,7 @@ def sample_config() -> dict[str, dict[str, str | int | float | bool]]:
     return {
         "collection": {"train_interval_seconds": 15},
         "retry": {"max_retry_attempts": 10},
+        "diagnostics": {"summary_interval_seconds": 10},
     }
 
 

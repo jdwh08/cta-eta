@@ -15,7 +15,9 @@ from cta_eta.data_collection.config import (
     _sanitize_config_for_logging,
     get_config_section,
     load_config,
-    validate_config,
+)
+from cta_eta.data_collection.config import (
+    validate_config_secrets as validate_config,
 )
 
 if TYPE_CHECKING:
@@ -580,45 +582,166 @@ class TestGetConfigSection:
         # Assert
         assert result == {"a": 1, "b": 2}
 
-    def test_get_config_section_section_missing_returns_default(self) -> None:
+    def test_get_config_section_section_missing_raises(self) -> None:
         # Arrange
         config = {"other": {"k": "v"}}
-        default = {"fallback": 1}
 
-        # Act
-        result = get_config_section("missing", config=config, default=default)
+        # Act & Assert
+        with pytest.raises(
+            ValueError,
+            match=r"Configuration path 'missing': section 'missing' is missing\.",
+        ):
+            get_config_section("missing", config=config)
 
-        # Assert
-        assert result == {"fallback": 1}
-
-    def test_get_config_section_section_not_dict_returns_default(self) -> None:
+    def test_get_config_section_section_not_dict_raises(self) -> None:
         # Arrange
         config = {"x": "not a dict"}
-        default = {"d": 1}
+
+        # Act & Assert
+        with pytest.raises(
+            TypeError,
+            match=r"Configuration path 'x': section 'x' must be a dict, got str\.",
+        ):
+            get_config_section("x", config=config)
+
+    def test_get_config_section_subsection_two_levels(self) -> None:
+        # Arrange
+        config = {"rate_limits": {"nws": {"calls_per_minute": 10}}}
 
         # Act
-        result = get_config_section("x", config=config, default=default)
+        result = get_config_section("rate_limits.nws", config=config)
 
         # Assert
-        assert result == {"d": 1}
+        assert result == {"calls_per_minute": 10}
 
-    def test_get_config_section_default_none_becomes_empty_dict(self) -> None:
+    def test_get_config_section_subsection_three_levels(self) -> None:
         # Arrange
+        config = {"a": {"b": {"c": {"k": 1}}}}
+
+        # Act
+        result = get_config_section("a.b.c", config=config)
+
+        # Assert
+        assert result == {"k": 1}
+
+    def test_get_config_section_subsection_parent_missing_raises(self) -> None:
+        # Arrange
+        config: dict[str, dict[str, str | int | float | bool]] = {"other": {}}
+
+        # Act & Assert
+        with pytest.raises(
+            ValueError,
+            match=r"Configuration path 'missing\.child': section 'missing' is missing\.",
+        ):
+            get_config_section("missing.child", config=config)
+
+    def test_get_config_section_subsection_parent_not_dict_raises(self) -> None:
+        # Arrange
+        config = {"a": "string"}
+
+        # Act & Assert
+        with pytest.raises(
+            TypeError,
+            match=r"Configuration path 'a\.b': section 'a' must be a dict, got str\.",
+        ):
+            get_config_section("a.b", config=config)
+
+    def test_get_config_section_subsection_child_missing_raises(self) -> None:
+        # Arrange
+        config = {"a": {"x": 1}}
+
+        # Act & Assert
+        with pytest.raises(
+            ValueError,
+            match=r"Configuration path 'a\.b': section 'b' is missing\.",
+        ):
+            get_config_section("a.b", config=config)
+
+    def test_get_config_section_subsection_child_not_dict_raises(self) -> None:
+        # Arrange
+        config = {"a": {"b": "string"}}
+
+        # Act & Assert
+        with pytest.raises(
+            TypeError,
+            match=r"Configuration path 'a\.b': section 'b' must be a dict, got str\.",
+        ):
+            get_config_section("a.b", config=config)
+
+    def test_get_config_section_subsection_leading_dot_missing_raises(
+        self,
+    ) -> None:
+        # Arrange: ".a" has no period at index > 0, treated as leaf key ".a"
         config = {"other": {}}
 
-        # Act
-        result = get_config_section("missing", config=config, default=None)
+        # Act & Assert
+        with pytest.raises(
+            ValueError,
+            match=r"Configuration path '\.a': section '\.a' is missing\.",
+        ):
+            get_config_section(".a", config=config)
 
-        # Assert
-        assert result == {}
+    def test_get_config_section_subsection_trailing_dot_missing_raises(
+        self,
+    ) -> None:
+        # Arrange: "a." recurses to segment "" in the dict at "a"
+        config = {"a": {"x": 1}}
 
-    def test_get_config_section_custom_default(self) -> None:
+        # Act & Assert
+        with pytest.raises(
+            ValueError,
+            match=r"Configuration path 'a\.': section '' is missing\.",
+        ):
+            get_config_section("a.", config=config)
+
+    def test_get_config_section_subsection_calls_load_config_when_config_none(
+        self,
+    ) -> None:
         # Arrange
-        config = {"a": {}}
-        default = {"k": 42}
+        with patch("cta_eta.data_collection.config.load_config") as mock_load:
+            mock_load.return_value = {"a": {"b": {"v": 1}}}
+
+            # Act
+            result = get_config_section("a.b", config=None)
+
+            # Assert
+            mock_load.assert_called_once()
+            assert result == {"v": 1}
+
+    def test_get_config_section_subsection_middle_not_dict_raises(
+        self,
+    ) -> None:
+        # Arrange
+        config = {"a": {"b": "not a dict"}}
+
+        # Act & Assert
+        with pytest.raises(
+            TypeError,
+            match=r"Configuration path 'a\.b\.c': section 'b' must be a dict, got str\.",
+        ):
+            get_config_section("a.b.c", config=config)
+
+    def test_get_config_section_section_empty_string_missing_raises(
+        self,
+    ) -> None:
+        # Arrange
+        config = {"a": 1}
+
+        # Act & Assert
+        with pytest.raises(
+            ValueError,
+            match=r"Configuration path '': section '' is missing\.",
+        ):
+            get_config_section("", config=config)
+
+    def test_get_config_section_section_empty_string_exists_returns_section(
+        self,
+    ) -> None:
+        # Arrange
+        config = {"": {"x": 1}}
 
         # Act
-        result = get_config_section("absent", config=config, default=default)
+        result = get_config_section("", config=config)
 
         # Assert
-        assert result == {"k": 42}
+        assert result == {"x": 1}

@@ -80,14 +80,10 @@ class AsyncBaseDaemon(ABC):
         self._diagnostics_task = None
         self._diagnostics_interval_s = 0.0
 
-        raw_diag = config.get("diagnostics")
-        diag_cfg = (
-            DaemonDiagnosticsConfig.from_config(
-                raw_diag if isinstance(raw_diag, dict) else None,
-                daemon_name=self.__class__.__name__,
-            )
-            if raw_diag is not None
-            else DaemonDiagnosticsConfig()
+        diag_cfg = DaemonDiagnosticsConfig.from_config(
+            None,
+            daemon_name=self.__class__.__name__,
+            config=self.config,
         )
         self._diagnostics_interval_s = diag_cfg.summary_interval_seconds
         self.diagnostics = DaemonDiagnostics(

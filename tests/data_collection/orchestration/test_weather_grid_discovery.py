@@ -1,4 +1,4 @@
-"""Unit tests for WeatherGridDiscoverer."""
+"""Unit tests for OpenMeteoWeatherGridDiscoverer."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import httpx
 import pytest
 
 from cta_eta.data_collection.orchestration.weather_grid_discovery import (
-    WeatherGridDiscoverer,
+    OpenMeteoWeatherGridDiscoverer,
 )
 
 if TYPE_CHECKING:
@@ -31,8 +31,10 @@ def _make_diagnostics_mock() -> MagicMock:
 
 
 @pytest.fixture
-def discoverer(tmp_path: Path) -> tuple[WeatherGridDiscoverer, MagicMock, MagicMock]:
-    """Create a WeatherGridDiscoverer with mocked dependencies."""
+def discoverer(
+    tmp_path: Path,
+) -> tuple[OpenMeteoWeatherGridDiscoverer, MagicMock, MagicMock]:
+    """Create a OpenMeteoWeatherGridDiscoverer with mocked dependencies."""
     marker_path = tmp_path / "marker.json"
 
     def write(d: dict) -> None:
@@ -41,24 +43,22 @@ def discoverer(tmp_path: Path) -> tuple[WeatherGridDiscoverer, MagicMock, MagicM
     logger = MagicMock()
     diagnostics = _make_diagnostics_mock()
     om_cache = MagicMock()
-    discoverer = WeatherGridDiscoverer(
+    discoverer = OpenMeteoWeatherGridDiscoverer(
         logger=logger,
         diagnostics=diagnostics,
         om_grid_cache=om_cache,
-        open_meteo_max_per_second=1000.0,
-        open_meteo_max_at_once=1,
         write_discovery_state_marker=write,
         daemon_class="TestDiscoverer",
     )
     return (discoverer, om_cache, logger)
 
 
-class TestWeatherGridDiscovererPersistsOnCancellation:
+class TestOpenMeteoWeatherGridDiscovererPersistsOnCancellation:
     """Tests for incremental persistence when discovery is cancelled."""
 
     def test_persists_partial_results_on_cancellation(
         self,
-        discoverer: tuple[WeatherGridDiscoverer, MagicMock, MagicMock],
+        discoverer: tuple[OpenMeteoWeatherGridDiscoverer, MagicMock, MagicMock],
         tmp_path: Path,
         mocker: MockerFixture,
     ) -> None:
@@ -106,12 +106,12 @@ class TestWeatherGridDiscovererPersistsOnCancellation:
         assert payload["succeeded"] == 1
 
 
-class TestWeatherGridDiscovererTimeouts:
+class TestOpenMeteoWeatherGridDiscovererTimeouts:
     """Tests for per-station and batch timeout handling."""
 
     def test_handles_per_station_timeout(
         self,
-        discoverer: tuple[WeatherGridDiscoverer, MagicMock, MagicMock],
+        discoverer: tuple[OpenMeteoWeatherGridDiscoverer, MagicMock, MagicMock],
         mocker: MockerFixture,
     ) -> None:
         """Stations that exceed per-station timeout are logged and not cached."""

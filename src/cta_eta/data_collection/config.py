@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import tomllib
 from pathlib import Path
-from typing import Final
+from typing import Final, cast
 
 from dotenv import load_dotenv
 
@@ -96,12 +96,46 @@ def _load_config_from_path(
     return config
 
 
-# TODO(jdwh08): break up config validation into smaller functions, one for each feature
-def validate_config(
+def get_required_credentials(
+    config: dict[str, dict[str, str | int | float | bool]],
+    required_features: list[str] | None = None,
+) -> list[str]:
+    """Get the required credentials for the enabled features.
+
+    Args:
+        config: Configuration dictionary from load_config()
+        required_features: List of feature names to get required credentials for. If None,
+            gets required credentials for all enabled features.
+
+    Returns:
+        List of required credentials
+
+    """
+    if required_features is None:
+        required_features = [
+            feature
+            for feature in config.get("features", {})
+            if config.get("features", {}).get(feature, False)
+        ]
+    required_credentials: list[str] = []
+    if "station_data" in required_features:
+        required_credentials.append("chidata_app_token")
+        required_credentials.append("chidata_app_secret")
+    if "train_positions" in required_features:
+        required_credentials.append("cta_api_key")
+    if "weather_collection" in required_features:
+        required_credentials.append("nws_app_name")
+        required_credentials.append("nws_email")
+    if "weather_collection_fallback" in required_features:
+        required_credentials.append("openweathermap_api_key")
+    return required_credentials
+
+
+def validate_config_secrets(
     config: dict[str, dict[str, str | int | float | bool]],
     required_features: list[str] | None = None,
 ) -> None:
-    """Validate configuration for required credentials based on enabled features.
+    """Validate configuration for required credential secrets based on enabled features.
 
     Checks that all required credentials are present for enabled features.
     Raises ValueError with clear error messages if validation fails.
@@ -120,38 +154,30 @@ def validate_config(
 
     """
     secrets = config.get("secrets", {})
-    features = config.get("features", {})
 
     # Determine which features to validate
-    if required_features is None:
-        # Validate based on enabled features in config
-        required_features = []
-        if features.get("train_positions", False):
-            required_features.append("train_positions")
-        if features.get("weather_collection", False):
-            required_features.append("weather_collection")
-        if features.get("station_data", False):
-            required_features.append("station_data")
-        # OpenWeatherMap is optional fallback, don't require it
+    required_credentials = set(get_required_credentials(config, required_features))
+    missing_credentials: set[str] = set()
 
-    missing_credentials: list[str] = []
+    if "cta_api_key" in required_credentials and not secrets.get("cta_api_key"):
+        missing_credentials.add("CTA_API_KEY (required for train_positions)")
 
-    if "train_positions" in required_features and not secrets.get("cta_api_key"):
-        missing_credentials.append("CTA_API_KEY (required for train_positions)")
-
-    if "weather_collection" in required_features:
+    if "nws_app_name" in required_credentials or "nws_email" in required_credentials:
         nws_app_name = os.getenv("NWS_APP_NAME")
         nws_email = os.getenv("NWS_EMAIL")
         if not nws_app_name:
-            missing_credentials.append("NWS_APP_NAME (required for weather_collection)")
+            missing_credentials.add("NWS_APP_NAME (required for weather_collection)")
         if not nws_email:
-            missing_credentials.append("NWS_EMAIL (required for weather_collection)")
+            missing_credentials.add("NWS_EMAIL (required for weather_collection)")
 
-    if "station_data" in required_features:
+    if (
+        "chidata_app_token" in required_credentials
+        or "chidata_app_secret" in required_credentials
+    ):
         if not secrets.get("chidata_app_token"):
-            missing_credentials.append("CHIDATA_APP_TOK (required for station_data)")
+            missing_credentials.add("CHIDATA_APP_TOK (required for station_data)")
         if not secrets.get("chidata_app_secret"):
-            missing_credentials.append("CHIDATA_APP_SECRET (required for station_data)")
+            missing_credentials.add("CHIDATA_APP_SECRET (required for station_data)")
 
     if missing_credentials:
         msg = (
@@ -160,6 +186,153 @@ def validate_config(
             + "\n\nSet these environment variables in your .env file."
         )
         raise ValueError(msg)
+
+
+def _validate_config_file_settings_station_data(
+    config: dict[str, dict[str, str | int | float | bool]],
+) -> None:
+    """Validate configuration for required file settings for station data.
+
+    Checks that all required file settings are present for station data.
+    Raises ValueError with clear error messages if validation fails.
+    """
+    cache_config = config.get("cache", {})
+    if not isinstance(cache_config, dict):
+        msg = f"Configuration path 'cache': section 'cache' must be a dictionary, got {type(cache_config).__name__}."
+        raise TypeError(msg)
+    if "stations_ttl" not in cache_config or not isinstance(
+        cache_config["stations_ttl"], int
+    ):
+        msg = "Configuration path 'cache': section 'cache' must contain 'stations_ttl' key with an integer value."
+        raise ValueError(msg)
+    if "track_geometry_ttl" not in cache_config or not isinstance(
+        cache_config["track_geometry_ttl"], int
+    ):
+        msg = "Configuration path 'cache': section 'cache' must contain 'track_geometry_ttl' key with an integer value."
+        raise ValueError(msg)
+    if "weather_mapping_ttl" not in cache_config or not isinstance(
+        cache_config["weather_mapping_ttl"], int
+    ):
+        msg = "Configuration path 'cache': section 'cache' must contain 'weather_mapping_ttl' key with an integer value."
+        raise ValueError(msg)
+
+
+def _validate_config_file_settings_train_positions(
+    config: dict[str, dict[str, str | int | float | bool]],
+) -> None:
+    """Validate configuration for required file settings for train positions."""
+    collection_config = config.get("collection", {})
+    if not isinstance(collection_config, dict):
+        msg = f"Configuration path 'collection': section 'collection' must be a dictionary, got {type(collection_config).__name__}."
+        raise TypeError(msg)
+    if "train_interval_seconds" not in collection_config or not isinstance(
+        collection_config["train_interval_seconds"], int
+    ):
+        msg = "Configuration path 'collection': section 'collection' must contain 'train_interval_seconds' key with an integer value."
+        raise ValueError(msg)
+    if "rate_limits" not in collection_config or not isinstance(
+        collection_config["rate_limits"], dict
+    ):
+        msg = "Configuration path 'collection': section 'collection' must contain 'rate_limits' key with a dictionary value."
+        raise ValueError(msg)
+    if "cta" not in collection_config["rate_limits"] or not isinstance(
+        collection_config["rate_limits"]["cta"], dict
+    ):
+        msg = "Configuration path 'collection': section 'collection' must contain 'rate_limits.cta' key with a dictionary value."
+        raise ValueError(msg)
+    if "max_per_second" not in collection_config["rate_limits"][
+        "cta"
+    ] or not isinstance(
+        collection_config["rate_limits"]["cta"]["max_per_second"], float
+    ):
+        msg = "Configuration path 'collection': section 'collection' must contain 'rate_limits.cta.max_per_second' key with a float value."
+        raise ValueError(msg)
+    if "max_at_once" not in collection_config["rate_limits"]["cta"] or not isinstance(
+        collection_config["rate_limits"]["cta"]["max_at_once"], int
+    ):
+        msg = "Configuration path 'collection': section 'collection' must contain 'rate_limits.cta.max_at_once' key with an integer value."
+        raise ValueError(msg)
+
+
+def _validate_config_file_settings_weather_collection(
+    config: dict[str, dict[str, str | int | float | bool]],
+) -> None:
+    """Validate configuration for required file settings for weather collection."""
+    rate_limits_config = config.get("rate_limits", {})
+    if not isinstance(rate_limits_config, dict):
+        msg = f"Configuration path 'rate_limits': section 'rate_limits' must be a dictionary, got {type(rate_limits_config).__name__}."
+        raise TypeError(msg)
+    if "nws" not in rate_limits_config or not isinstance(
+        rate_limits_config["nws"], dict
+    ):
+        msg = "Configuration path 'rate_limits': section 'rate_limits' must contain 'nws' key with a dictionary value."
+        raise ValueError(msg)
+    if "max_per_second" not in rate_limits_config["nws"] or not isinstance(
+        rate_limits_config["nws"]["max_per_second"], float | int
+    ):
+        msg = "Configuration path 'rate_limits': section 'rate_limits' must contain 'nws.max_per_second' key with a float value."
+        raise ValueError(msg)
+    if "max_at_once" not in rate_limits_config["nws"] or not isinstance(
+        rate_limits_config["nws"]["max_at_once"], int
+    ):
+        msg = "Configuration path 'rate_limits': section 'rate_limits' must contain 'nws.max_at_once' key with an integer value."
+        raise ValueError(msg)
+
+
+def _validate_config_file_settings_weather_collection_fallback(
+    config: dict[str, dict[str, str | int | float | bool]],
+) -> None:
+    """Validate configuration for required file settings for weather collection fallback."""
+    rate_limits_config = config.get("rate_limits", {})
+    if not isinstance(rate_limits_config, dict):
+        msg = f"Configuration path 'rate_limits': section 'rate_limits' must be a dictionary, got {type(rate_limits_config).__name__}."
+        raise TypeError(msg)
+    if "openweathermap" not in rate_limits_config or not isinstance(
+        rate_limits_config["openweathermap"], dict
+    ):
+        msg = "Configuration path 'rate_limits': section 'rate_limits' must contain 'openweathermap' key with a dictionary value."
+        raise ValueError(msg)
+    if "max_per_second" not in rate_limits_config["openweathermap"] or not isinstance(
+        rate_limits_config["openweathermap"]["max_per_second"], float | int
+    ):
+        msg = "Configuration path 'rate_limits': section 'rate_limits' must contain 'openweathermap.max_per_second' key with a float value."
+        raise ValueError(msg)
+    if "max_at_once" not in rate_limits_config["openweathermap"] or not isinstance(
+        rate_limits_config["openweathermap"]["max_at_once"], int
+    ):
+        msg = "Configuration path 'rate_limits': section 'rate_limits' must contain 'openweathermap.max_at_once' key with an integer value."
+        raise ValueError(msg)
+
+
+def validate_config_file_settings(
+    config: dict[str, dict[str, str | int | float | bool]],
+    required_features: list[str] | None = None,
+) -> None:
+    """Validate configuration for required file settings based on enabled features.
+
+    Checks that all required file settings are present for enabled features.
+    Raises ValueError with clear error messages if validation fails.
+
+    Args:
+        config: Configuration dictionary from load_config()
+        required_features: List of feature names to validate. If None, validates all
+            features that are enabled in config["features"].
+
+    """
+    if required_features is None:
+        required_features = [
+            feature
+            for feature in config.get("features", {})
+            if config.get("features", {}).get(feature, False)
+        ]
+    if "station_data" in required_features:
+        _validate_config_file_settings_station_data(config)
+    if "train_positions" in required_features:
+        _validate_config_file_settings_train_positions(config)
+    if "weather_collection" in required_features:
+        _validate_config_file_settings_weather_collection(config)
+    if "weather_collection_fallback" in required_features:
+        _validate_config_file_settings_weather_collection_fallback(config)
 
 
 def load_config() -> dict[str, dict[str, str | int | float | bool]]:
@@ -180,30 +353,81 @@ def load_config() -> dict[str, dict[str, str | int | float | bool]]:
     return _load_config_from_path(config_path)
 
 
+def validate_config(
+    config: dict[str, dict[str, str | int | float | bool]],
+    required_features: list[str] | None = None,
+) -> None:
+    """Validate configuration for required credentials and file settings based on enabled features."""
+    validate_config_secrets(config, required_features)
+    validate_config_file_settings(config, required_features)
+
+
 def get_config_section(
     section: str,
     *,
     config: dict[str, dict[str, str | int | float | bool]] | None = None,
-    default: dict[str, str | int | float | bool] | None = None,
+    _full_path: str | None = None,
 ) -> dict[str, str | int | float | bool]:
-    """Safely get a configuration section with fallback defaults.
+    """Get a configuration section. Fails fast if the path is missing or invalid.
 
     Args:
-        section: Section name to retrieve
-        config: Configuration dictionary. If None, uses load_config() to load the config.
-        default: Default value if section is missing (defaults to empty dict)
+        section: Section name to retrieve. Use a period for sub-sections
+            (e.g. "rate_limits.nws" for the "nws" section inside "rate_limits").
+        config: Configuration dictionary. If None, uses load_config().
+        _full_path: Internal: used for error messages when recursing. Do not pass.
 
     Returns:
-        Configuration section dictionary
+        Configuration section dictionary (always a dict of str keys to primitives).
+
+    Raises:
+        ValueError: If a segment in the path is missing. Includes the full path
+            and the failing segment.
+        TypeError: If a segment in the path is not a dict (cannot be traversed).
+            Includes the full path, the segment, and the actual type.
+
+    Examples:
+        >>> get_config_section("rate_limits")
+        {'cta': {...}, 'nws': {...}, ...}
+        >>> get_config_section("rate_limits.nws")
+        {'max_per_second': 5, 'max_at_once': 5}
 
     """
     if config is None:
         config = load_config()
 
-    if default is None:
-        default = {}
-    return (
-        config.get(section, default)
-        if isinstance(config.get(section), dict)
-        else default
-    )
+    full_path = section if _full_path is None else _full_path
+
+    subsection_split = section.find(".")
+    if subsection_split > 0:
+        cur_subsection = section[:subsection_split]
+        next_subsection = section[subsection_split + 1 :]
+        if cur_subsection not in config:
+            msg = (
+                f"Configuration path '{full_path}': section '{cur_subsection}' "
+                "is missing."
+            )
+            raise ValueError(msg)
+        val = config[cur_subsection]
+        if not isinstance(val, dict):
+            msg = (
+                f"Configuration path '{full_path}': section '{cur_subsection}' "
+                f"must be a dict, got {type(val).__name__}."
+            )
+            raise TypeError(msg)
+        return get_config_section(
+            next_subsection,
+            config=cast("dict[str, dict[str, str | int | float | bool]]", val),
+            _full_path=full_path,
+        )
+
+    if section not in config:
+        msg = f"Configuration path '{full_path}': section '{section}' is missing."
+        raise ValueError(msg)
+    val = config[section]
+    if not isinstance(val, dict):
+        msg = (
+            f"Configuration path '{full_path}': section '{section}' "
+            f"must be a dict, got {type(val).__name__}."
+        )
+        raise TypeError(msg)
+    return val

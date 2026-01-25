@@ -14,8 +14,6 @@ import pytest
 from cta_eta.data_collection.orchestration.diagnostics import (
     DaemonDiagnostics,
     DaemonDiagnosticsConfig,
-    _percentile,
-    _rotate_if_needed,
 )
 
 if TYPE_CHECKING:
@@ -128,14 +126,30 @@ class TestDaemonDiagnosticsConfig:
         assert config.event_log_backups == 3
 
     def test_from_config_with_none(self) -> None:
-        """from_config returns default config when raw is None."""
-        # Arrange & Act
-        config = DaemonDiagnosticsConfig.from_config(None, daemon_name="TestDaemon")
+        """from_config returns default config when raw is None and config has no diagnostics."""
+        config = DaemonDiagnosticsConfig.from_config(
+            None, daemon_name="TestDaemon", config=None
+        )
+        # NOTE(jdwh08): these fields come from the config.toml file
+        assert config.enabled is True
+        assert config.summary_interval_seconds == 30.0
+        assert config.max_recent_events == 64
 
-        # Assert
-        assert config.enabled is False
-        assert config.summary_interval_seconds == 300.0
-        assert config.max_recent_events == 250
+    def test_from_config_resolves_from_config_section(self) -> None:
+        """from_config(None, config=...) uses the [diagnostics] section from the given config."""
+        full_config = {
+            "diagnostics": {
+                "enabled": True,
+                "summary_interval_seconds": 45,
+                "max_recent_events": 64,
+            }
+        }
+        config = DaemonDiagnosticsConfig.from_config(
+            None, daemon_name="TestDaemon", config=full_config
+        )
+        assert config.enabled is True
+        assert config.summary_interval_seconds == 45
+        assert config.max_recent_events == 64
 
     def test_from_config_with_empty_dict(self) -> None:
         """from_config returns default config when raw is empty."""
@@ -415,8 +429,9 @@ class TestDaemonDiagnosticsSpan:
     """Tests for DaemonDiagnostics.span() async context manager."""
 
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures("cleanup_test_files")
     async def test_span_records_successful_operation(
-        self, diagnostics: DaemonDiagnostics, cleanup_test_files: None
+        self, diagnostics: DaemonDiagnostics
     ) -> None:
         """Span records successful operation with timing."""
         # Arrange
@@ -433,8 +448,9 @@ class TestDaemonDiagnosticsSpan:
         assert diagnostics._durations_ms[span_name][0] > 0
 
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures("cleanup_test_files")
     async def test_span_records_failed_operation(
-        self, diagnostics: DaemonDiagnostics, cleanup_test_files: None
+        self, diagnostics: DaemonDiagnostics
     ) -> None:
         """Span records failed operation and re-raises exception."""
         # Arrange
@@ -468,9 +484,8 @@ class TestDaemonDiagnosticsSpan:
         assert len(disabled_diagnostics._durations_ms[span_name]) == 0
 
     @pytest.mark.asyncio
-    async def test_span_captures_fields(
-        self, diagnostics: DaemonDiagnostics, cleanup_test_files: None
-    ) -> None:
+    @pytest.mark.usefixtures("cleanup_test_files")
+    async def test_span_captures_fields(self, diagnostics: DaemonDiagnostics) -> None:
         """Span captures additional fields in event."""
         # Arrange
         span_name = "test_span"
@@ -492,9 +507,8 @@ class TestDaemonDiagnosticsSpan:
 class TestDaemonDiagnosticsRecordSpan:
     """Tests for DaemonDiagnostics.record_span()."""
 
-    def test_record_span_increments_count(
-        self, diagnostics: DaemonDiagnostics, cleanup_test_files: None
-    ) -> None:
+    @pytest.mark.usefixtures("cleanup_test_files")
+    def test_record_span_increments_count(self, diagnostics: DaemonDiagnostics) -> None:
         """record_span increments span count."""
         # Arrange
         span_name = "test_span"
@@ -506,8 +520,9 @@ class TestDaemonDiagnosticsRecordSpan:
         assert diagnostics._span_counts[span_name] == 1
         assert diagnostics._span_errors[span_name] == 0
 
+    @pytest.mark.usefixtures("cleanup_test_files")
     def test_record_span_increments_error_count(
-        self, diagnostics: DaemonDiagnostics, cleanup_test_files: None
+        self, diagnostics: DaemonDiagnostics
     ) -> None:
         """record_span increments error count when ok=False."""
         # Arrange
@@ -520,9 +535,8 @@ class TestDaemonDiagnosticsRecordSpan:
         assert diagnostics._span_counts[span_name] == 1
         assert diagnostics._span_errors[span_name] == 1
 
-    def test_record_span_stores_duration(
-        self, diagnostics: DaemonDiagnostics, cleanup_test_files: None
-    ) -> None:
+    @pytest.mark.usefixtures("cleanup_test_files")
+    def test_record_span_stores_duration(self, diagnostics: DaemonDiagnostics) -> None:
         """record_span stores duration in deque."""
         # Arrange
         span_name = "test_span"
@@ -534,9 +548,8 @@ class TestDaemonDiagnosticsRecordSpan:
         assert len(diagnostics._durations_ms[span_name]) == 1
         assert diagnostics._durations_ms[span_name][0] == 25.7
 
-    def test_record_span_creates_event(
-        self, diagnostics: DaemonDiagnostics, cleanup_test_files: None
-    ) -> None:
+    @pytest.mark.usefixtures("cleanup_test_files")
+    def test_record_span_creates_event(self, diagnostics: DaemonDiagnostics) -> None:
         """record_span creates event in recent_events."""
         # Arrange
         span_name = "test_span"
@@ -567,8 +580,9 @@ class TestDaemonDiagnosticsRecordSpan:
         assert disabled_diagnostics._span_counts[span_name] == 0
         assert len(disabled_diagnostics._recent_events) == 0
 
+    @pytest.mark.usefixtures("cleanup_test_files")
     def test_record_span_rounds_elapsed_ms(
-        self, diagnostics: DaemonDiagnostics, cleanup_test_files: None
+        self, diagnostics: DaemonDiagnostics
     ) -> None:
         """record_span rounds elapsed_ms to 2 decimal places."""
         # Arrange
@@ -585,8 +599,9 @@ class TestDaemonDiagnosticsRecordSpan:
 class TestDaemonDiagnosticsRecordError:
     """Tests for DaemonDiagnostics.record_error()."""
 
+    @pytest.mark.usefixtures("cleanup_test_files")
     def test_record_error_increments_error_type(
-        self, diagnostics: DaemonDiagnostics, cleanup_test_files: None
+        self, diagnostics: DaemonDiagnostics
     ) -> None:
         """record_error increments error type counter."""
         # Arrange
@@ -599,9 +614,8 @@ class TestDaemonDiagnosticsRecordError:
         # Assert
         assert diagnostics._error_types["ValueError"] == 1
 
-    def test_record_error_creates_event(
-        self, diagnostics: DaemonDiagnostics, cleanup_test_files: None
-    ) -> None:
+    @pytest.mark.usefixtures("cleanup_test_files")
+    def test_record_error_creates_event(self, diagnostics: DaemonDiagnostics) -> None:
         """record_error creates error event."""
         # Arrange
         error_name = "test_error"
@@ -619,8 +633,9 @@ class TestDaemonDiagnosticsRecordError:
         assert event["error_message"] == "test message"
         assert event["station_id"] == "s1"
 
+    @pytest.mark.usefixtures("cleanup_test_files")
     def test_record_error_with_httpx_status_error(
-        self, diagnostics: DaemonDiagnostics, cleanup_test_files: None
+        self, diagnostics: DaemonDiagnostics
     ) -> None:
         """record_error enriches httpx.HTTPStatusError with HTTP fields."""
         # Arrange
@@ -643,8 +658,9 @@ class TestDaemonDiagnosticsRecordError:
         assert event["http_url"] == "https://api.example.com/endpoint"
         assert event["http_method"] == "GET"
 
+    @pytest.mark.usefixtures("cleanup_test_files")
     def test_record_error_with_httpx_request_error(
-        self, diagnostics: DaemonDiagnostics, cleanup_test_files: None
+        self, diagnostics: DaemonDiagnostics
     ) -> None:
         """record_error enriches httpx.RequestError with HTTP fields."""
         # Arrange
@@ -678,11 +694,11 @@ class TestDaemonDiagnosticsRecordError:
         assert len(disabled_diagnostics._error_types) == 0
         assert len(disabled_diagnostics._recent_events) == 0
 
+    @pytest.mark.usefixtures("cleanup_test_files")
     def test_record_error_handles_httpx_enrichment_failure(
         self,
         diagnostics: DaemonDiagnostics,
         mocker: MockerFixture,
-        cleanup_test_files: None,
     ) -> None:
         """record_error handles failures during httpx enrichment gracefully."""
         # Arrange
@@ -715,9 +731,8 @@ class TestDaemonDiagnosticsRecordError:
 class TestDaemonDiagnosticsRecordEvent:
     """Tests for DaemonDiagnostics.record_event()."""
 
-    def test_record_event_creates_event(
-        self, diagnostics: DaemonDiagnostics, cleanup_test_files: None
-    ) -> None:
+    @pytest.mark.usefixtures("cleanup_test_files")
+    def test_record_event_creates_event(self, diagnostics: DaemonDiagnostics) -> None:
         """record_event creates custom event."""
         # Arrange
         event_kind = "custom_event"
@@ -749,11 +764,11 @@ class TestDaemonDiagnosticsRecordEvent:
 class TestDaemonDiagnosticsMaybeLogSummary:
     """Tests for DaemonDiagnostics.maybe_log_summary()."""
 
+    @pytest.mark.usefixtures("cleanup_test_files")
     def test_maybe_log_summary_logs_when_forced(
         self,
         diagnostics: DaemonDiagnostics,
         mock_logger: MagicMock,
-        cleanup_test_files: None,
     ) -> None:
         """maybe_log_summary logs when force=True."""
         # Arrange
@@ -770,12 +785,12 @@ class TestDaemonDiagnosticsMaybeLogSummary:
         assert extra_fields["daemon_class"] == "TestDaemon"
         assert "span_counts" in extra_fields
 
+    @pytest.mark.usefixtures("cleanup_test_files")
     def test_maybe_log_summary_respects_interval(
         self,
         diagnostics: DaemonDiagnostics,
         mock_logger: MagicMock,
         mocker: MockerFixture,
-        cleanup_test_files: None,
     ) -> None:
         """maybe_log_summary respects summary_interval_seconds."""
         # Arrange
@@ -810,11 +825,11 @@ class TestDaemonDiagnosticsMaybeLogSummary:
         # Assert
         assert mock_logger.info.call_count == 1
 
+    @pytest.mark.usefixtures("cleanup_test_files")
     def test_maybe_log_summary_includes_duration_percentiles(
         self,
         diagnostics: DaemonDiagnostics,
         mock_logger: MagicMock,
-        cleanup_test_files: None,
     ) -> None:
         """maybe_log_summary includes duration percentiles."""
         # Arrange
@@ -845,11 +860,11 @@ class TestDaemonDiagnosticsMaybeLogSummary:
         # Assert
         mock_logger.info.assert_not_called()
 
+    @pytest.mark.usefixtures("cleanup_test_files")
     def test_maybe_log_summary_includes_all_counters(
         self,
         diagnostics: DaemonDiagnostics,
         mock_logger: MagicMock,
-        cleanup_test_files: None,
     ) -> None:
         """maybe_log_summary includes all counter types."""
         # Arrange
@@ -874,8 +889,9 @@ class TestDaemonDiagnosticsMaybeLogSummary:
 class TestDaemonDiagnosticsSnapshot:
     """Tests for DaemonDiagnostics.snapshot()."""
 
+    @pytest.mark.usefixtures("cleanup_test_files")
     def test_snapshot_returns_complete_state(
-        self, diagnostics: DaemonDiagnostics, cleanup_test_files: None
+        self, diagnostics: DaemonDiagnostics
     ) -> None:
         """Snapshot returns complete diagnostic state."""
         # Arrange
@@ -1028,8 +1044,9 @@ class TestDaemonDiagnosticsWriteEventJsonl:
 class TestDaemonDiagnosticsRecentEventsBounded:
     """Tests for bounded memory in recent events."""
 
+    @pytest.mark.usefixtures("cleanup_test_files")
     def test_recent_events_bounded_by_maxlen(
-        self, diagnostics: DaemonDiagnostics, cleanup_test_files: None
+        self, diagnostics: DaemonDiagnostics
     ) -> None:
         """recent_events deque is bounded by max_recent_events."""
         # Arrange
@@ -1044,274 +1061,3 @@ class TestDaemonDiagnosticsRecentEventsBounded:
         # Should have the last max_events events
         first_event = diagnostics._recent_events[0]
         assert first_event["index"] == 10  # First 10 were dropped
-
-
-class TestPercentile:
-    """Tests for _percentile helper function."""
-
-    def test_percentile_empty_list(self) -> None:
-        """_percentile returns 0.0 for empty list."""
-        # Arrange
-        samples: list[float] = []
-
-        # Act
-        result = _percentile(samples, 50)
-
-        # Assert
-        assert result == 0.0
-
-    def test_percentile_single_value(self) -> None:
-        """_percentile returns the value for single-element list."""
-        # Arrange
-        samples = [42.0]
-
-        # Act
-        result = _percentile(samples, 50)
-
-        # Assert
-        assert result == 42.0
-
-    def test_percentile_p50(self) -> None:
-        """_percentile calculates 50th percentile correctly."""
-        # Arrange
-        samples = [10.0, 20.0, 30.0, 40.0, 50.0]
-
-        # Act
-        result = _percentile(samples, 50)
-
-        # Assert
-        assert result == 30.0
-
-    def test_percentile_p95(self) -> None:
-        """_percentile calculates 95th percentile correctly."""
-        # Arrange
-        samples = [i * 10.0 for i in range(1, 21)]  # 10, 20, ..., 200
-
-        # Act
-        result = _percentile(samples, 95)
-
-        # Assert - uses interpolation, so 95th percentile of 20 values is 190.5
-        assert result == 190.5
-
-    def test_percentile_p0(self) -> None:
-        """_percentile returns first value for 0th percentile."""
-        # Arrange
-        samples = [10.0, 20.0, 30.0]
-
-        # Act
-        result = _percentile(samples, 0)
-
-        # Assert
-        assert result == 10.0
-
-    def test_percentile_p100(self) -> None:
-        """_percentile returns last value for 100th percentile."""
-        # Arrange
-        samples = [10.0, 20.0, 30.0]
-
-        # Act
-        result = _percentile(samples, 100)
-
-        # Assert
-        assert result == 30.0
-
-    def test_percentile_negative_percentile(self) -> None:
-        """_percentile handles negative percentile as 0."""
-        # Arrange
-        samples = [10.0, 20.0, 30.0]
-
-        # Act
-        result = _percentile(samples, -10)
-
-        # Assert
-        assert result == 10.0
-
-    def test_percentile_over_100_percentile(self) -> None:
-        """_percentile handles percentile > 100 as 100."""
-        # Arrange
-        samples = [10.0, 20.0, 30.0]
-
-        # Act
-        result = _percentile(samples, 150)
-
-        # Assert
-        assert result == 30.0
-
-    def test_percentile_rounds_result(self) -> None:
-        """_percentile rounds result to 2 decimal places."""
-        # Arrange
-        samples = [1.111, 2.222, 3.333]
-
-        # Act
-        result = _percentile(samples, 50)
-
-        # Assert
-        assert result == 2.22
-
-
-class TestRotateIfNeeded:
-    """Tests for _rotate_if_needed helper function."""
-
-    @pytest.mark.usefixtures("cleanup_state_files")
-    def test_rotate_if_needed_no_rotation_when_small(self, tmp_path: Path) -> None:
-        """_rotate_if_needed does not rotate when file is small."""
-        # Arrange
-        log_path = tmp_path / "test.jsonl"
-        log_path.write_text("small content")
-        max_bytes = 1024
-
-        # Act
-        _rotate_if_needed(log_path, max_bytes=max_bytes, backups=3)
-
-        # Assert
-        assert log_path.exists()
-        assert not (tmp_path / "test.jsonl.1").exists()
-
-    @pytest.mark.usefixtures("cleanup_state_files")
-    def test_rotate_if_needed_rotates_when_large(self, tmp_path: Path) -> None:
-        """_rotate_if_needed rotates file when it exceeds max_bytes."""
-        # Arrange
-        log_path = tmp_path / "test.jsonl"
-        large_content = "x" * 2048
-        log_path.write_text(large_content)
-        max_bytes = 1024
-
-        # Act
-        _rotate_if_needed(log_path, max_bytes=max_bytes, backups=2)
-
-        # Assert
-        assert (tmp_path / "test.jsonl.1").exists()
-        assert (tmp_path / "test.jsonl.1").read_text() == large_content
-
-    @pytest.mark.usefixtures("cleanup_state_files")
-    def test_rotate_if_needed_rotates_existing_backups(self, tmp_path: Path) -> None:
-        """_rotate_if_needed rotates existing backup files."""
-        # Arrange
-        log_path = tmp_path / "test.jsonl"
-        log_path.write_text("x" * 2048)
-        (tmp_path / "test.jsonl.1").write_text("backup1")
-        (tmp_path / "test.jsonl.2").write_text("backup2")
-        max_bytes = 1024
-
-        # Act
-        _rotate_if_needed(log_path, max_bytes=max_bytes, backups=2)
-
-        # Assert
-        assert (tmp_path / "test.jsonl.1").read_text() == "x" * 2048
-        assert (tmp_path / "test.jsonl.2").read_text() == "backup1"
-        # backup2 should be dropped (only 2 backups)
-
-    @pytest.mark.usefixtures("cleanup_state_files")
-    def test_rotate_if_needed_drops_oldest_backup(self, tmp_path: Path) -> None:
-        """_rotate_if_needed rotates files when at limit."""
-        # Arrange
-        log_path = tmp_path / "test.jsonl"
-        log_path.write_text("x" * 2048)
-        (tmp_path / "test.jsonl.1").write_text("backup1")
-        (tmp_path / "test.jsonl.2").write_text("backup2")
-        (tmp_path / "test.jsonl.3").write_text("backup3")
-        max_bytes = 1024
-
-        # Act
-        _rotate_if_needed(log_path, max_bytes=max_bytes, backups=2)
-
-        # Assert
-        # Rotation: .3 is unlinked, then .2 -> .3, .1 -> .2, main -> .1
-        # So .3 will exist with backup2 content (was recreated from .2)
-        assert (tmp_path / "test.jsonl.3").read_text() == "backup2"
-        assert (tmp_path / "test.jsonl.2").read_text() == "backup1"
-        assert (tmp_path / "test.jsonl.1").read_text() == "x" * 2048
-
-    @pytest.mark.usefixtures("cleanup_state_files")
-    def test_rotate_if_needed_noop_when_backups_zero(self, tmp_path: Path) -> None:
-        """_rotate_if_needed does nothing when backups=0."""
-        # Arrange
-        log_path = tmp_path / "test.jsonl"
-        log_path.write_text("x" * 2048)
-        max_bytes = 1024
-
-        # Act
-        _rotate_if_needed(log_path, max_bytes=max_bytes, backups=0)
-
-        # Assert
-        assert log_path.exists()
-        assert not (tmp_path / "test.jsonl.1").exists()
-
-    @pytest.mark.usefixtures("cleanup_state_files")
-    def test_rotate_if_needed_handles_missing_file(self, tmp_path: Path) -> None:
-        """_rotate_if_needed handles missing file gracefully."""
-        # Arrange
-        log_path = tmp_path / "nonexistent.jsonl"
-        max_bytes = 1024
-
-        # Act - should not raise
-        _rotate_if_needed(log_path, max_bytes=max_bytes, backups=3)
-
-        # Assert
-        assert not log_path.exists()
-
-    @pytest.mark.usefixtures("cleanup_state_files")
-    def test_rotate_if_needed_handles_stat_error(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """_rotate_if_needed handles stat errors gracefully."""
-        # Arrange
-        log_path = tmp_path / "test.jsonl"
-        original_content = "content"
-        log_path.write_text(original_content)
-        # Monkeypatch Path.stat to raise OSError for this specific path
-        original_stat = Path.stat
-        target_path_str = str(log_path)
-        call_count = [0]
-
-        def failing_stat(self: Path, *args: object, **kwargs: object) -> object:
-            # Only fail on the first call (inside _rotate_if_needed)
-            if str(self) == target_path_str and call_count[0] == 0:
-                call_count[0] += 1
-                msg = "stat failed"
-                raise OSError(msg)
-            return original_stat(self, *args, **kwargs)
-
-        monkeypatch.setattr(Path, "stat", failing_stat)
-        max_bytes = 1024
-
-        # Act - should not raise (OSError is caught and function returns early)
-        _rotate_if_needed(log_path, max_bytes=max_bytes, backups=3)
-
-        # Assert - file content should be unchanged (function returned early)
-        assert log_path.read_text() == original_content
-
-    @pytest.mark.usefixtures("cleanup_state_files")
-    def test_rotate_if_needed_handles_replace_error(
-        self, tmp_path: Path, mocker: MockerFixture
-    ) -> None:
-        """_rotate_if_needed handles replace errors gracefully."""
-        # Arrange
-        log_path = tmp_path / "test.jsonl"
-        log_path.write_text("x" * 2048)
-        # Patch Path.replace at the module level to fail for the main file
-        call_count = 0
-        original_replace = Path.replace
-
-        def failing_replace(
-            self: Path, target: Path, *args: object, **kwargs: object
-        ) -> None:
-            nonlocal call_count
-            call_count += 1
-            # Fail on the final replace (main -> .1), which happens after the loop
-            if self == log_path and call_count == 1:
-                msg = "replace failed"
-                raise OSError(msg)
-            return original_replace(self, target, *args, **kwargs)
-
-        mocker.patch(
-            "cta_eta.data_collection.orchestration.diagnostics.Path.replace",
-            failing_replace,
-        )
-        max_bytes = 1024
-
-        # Act - should not raise (OSError is suppressed)
-        _rotate_if_needed(log_path, max_bytes=max_bytes, backups=3)
-
-        # Assert - original file should still exist (replace failed)
-        assert log_path.exists()

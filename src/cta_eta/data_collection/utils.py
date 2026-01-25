@@ -4,7 +4,11 @@
 
 from __future__ import annotations
 
-from typing import Final
+from contextlib import suppress
+from typing import TYPE_CHECKING, Final
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 MIN_LAT: Final[float] = -90.0
 MAX_LAT: Final[float] = 90.0
@@ -92,3 +96,66 @@ def convert_celsius_to_fahrenheit(celsius: float) -> float:
 
     """
     return celsius * 9 / 5 + 32
+
+
+def percentile(sorted_samples: list[float], pct: int) -> float:
+    """Calculate a percentile of a list of samples.
+
+    Args:
+        sorted_samples: The list of samples to calculate the percentile of.
+        pct: The percentile to calculate.
+
+    Returns:
+        The percentile of the list of samples.
+
+    """
+    if not sorted_samples:
+        return 0.0
+    if pct <= 0:
+        return round(sorted_samples[0], 2)
+    if pct >= 100:  # noqa: PLR2004
+        return round(sorted_samples[-1], 2)
+    k = (len(sorted_samples) - 1) * (pct / 100.0)
+    f = int(k)
+    c = min(f + 1, len(sorted_samples) - 1)
+    if f == c:
+        return round(sorted_samples[f], 2)
+    d0 = sorted_samples[f] * (c - k)
+    d1 = sorted_samples[c] * (k - f)
+    return round(d0 + d1, 2)
+
+
+def rotate_file_if_needed(path: Path, *, max_bytes: int, backups: int) -> None:
+    """Rotate a file if it exceeds a maximum size.
+
+    Args:
+        path: The path to the file to rotate.
+        max_bytes: The maximum size of the file in bytes.
+        backups: The number of backups to keep.
+
+    """
+    if backups <= 0:
+        return
+    try:
+        st = path.stat()
+    except FileNotFoundError:
+        return
+    except OSError:
+        return
+
+    if st.st_size < max_bytes:
+        return
+
+    # Rotate: file -> .1, .1 -> .2, ... oldest dropped.
+    for idx in range(backups, 0, -1):
+        src = path.with_suffix(path.suffix + f".{idx}")
+        dst = path.with_suffix(path.suffix + f".{idx + 1}")
+        if idx == backups:
+            with suppress(FileNotFoundError):
+                dst.unlink()
+        if src.exists():
+            with suppress(OSError):
+                src.replace(dst)
+
+    with suppress(OSError):
+        path.replace(path.with_suffix(path.suffix + ".1"))

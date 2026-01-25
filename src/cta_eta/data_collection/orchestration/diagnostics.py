@@ -24,6 +24,11 @@ from typing import TYPE_CHECKING, Final
 
 import httpx
 
+### OWN MODULES
+from cta_eta.data_collection.config import get_config_section
+from cta_eta.data_collection.logging import get_logger
+from cta_eta.data_collection.utils import percentile, rotate_file_if_needed
+
 if TYPE_CHECKING:
     import logging
     from collections.abc import AsyncIterator, Mapping
@@ -32,6 +37,8 @@ _DEFAULT_SUMMARY_INTERVAL_S: Final[float] = 300.0  # 5 minutes
 _DEFAULT_MAX_RECENT_EVENTS: Final[int] = 250
 _DEFAULT_EVENT_LOG_MAX_BYTES: Final[int] = 5 * 1024 * 1024  # 5 MiB
 _DEFAULT_EVENT_LOG_BACKUPS: Final[int] = 3
+
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,37 +56,52 @@ class DaemonDiagnosticsConfig:
 
     @classmethod
     def from_config(
-        cls, raw: Mapping[str, object] | None, *, daemon_name: str
+        cls,
+        cfg: Mapping[str, object] | None,
+        *,
+        daemon_name: str,
+        config: dict[str, dict[str, str | int | float | bool]] | None = None,
     ) -> DaemonDiagnosticsConfig:
-        """Create a DaemonDiagnosticsConfig from a raw configuration."""
-        if not raw:
+        """Create a DaemonDiagnosticsConfig from a raw configuration or the global config.
+
+        When `cfg` is None, the `[diagnostics]` section is taken from `config` if
+        provided, or from `config.toml` via `get_config_section` when `config` is None.
+        Pass `config={}` in tests to avoid loading from disk while still using this path.
+        """
+        if cfg is None:
+            cfg = get_config_section("diagnostics", config=config)
+        if not cfg:
             return cls()
 
         def _get_bool(key: str, default: bool) -> bool:
-            value = raw.get(key, default)
+            value = cfg.get(key, default)
             return bool(value)
 
         def _get_float(key: str, default: float) -> float:
-            value = raw.get(key, default)
+            value = cfg.get(key, default)
             try:
                 return float(value)  # type: ignore[arg-type]
             except ValueError:
                 return default
 
         def _get_int(key: str, default: int) -> int:
-            value = raw.get(key, default)
+            value = cfg.get(key, default)
             try:
                 return int(value)  # type: ignore[arg-type]
             except ValueError:
                 return default
 
-        event_log_path = raw.get("event_log_path")
+        event_log_path = cfg.get("event_log_path")
         if event_log_path is None:
             # Sensible default location when diagnostics are enabled.
+            logger.warning(
+                "No event_log_path provided, using default",
+                extra={"extra_fields": {"daemon_name": daemon_name}},
+            )
             event_log_path = f".daemon_state/{daemon_name}.events.jsonl"
 
         return cls(
-            enabled=_get_bool("enabled", False),
+            enabled=bool(cfg.get("enabled", False)),
             summary_interval_seconds=max(
                 1.0, _get_float("summary_interval_seconds", _DEFAULT_SUMMARY_INTERVAL_S)
             ),
@@ -229,8 +251,8 @@ class DaemonDiagnostics:
             if not samples:
                 continue
             sorted_samples = sorted(samples)
-            p50 = _percentile(sorted_samples, 50)
-            p95 = _percentile(sorted_samples, 95)
+            p50 = percentile(sorted_samples, 50)
+            p95 = percentile(sorted_samples, 95)
             duration_summary[span_name] = {"p50_ms": p50, "p95_ms": p95}
 
         self._logger.info(
@@ -271,13 +293,19 @@ class DaemonDiagnostics:
         self._write_event_jsonl_best_effort(event)
 
     def _write_event_jsonl_best_effort(self, event: Mapping[str, object]) -> None:
+        """Try to write an event to a JSONL file.
+
+        Args:
+            event: The event to write.
+
+        """
         path_str = self._config.event_log_path
         if not self.enabled or not path_str:
             return
         path = Path(path_str)
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            _rotate_if_needed(
+            rotate_file_if_needed(
                 path,
                 max_bytes=self._config.event_log_max_bytes,
                 backups=self._config.event_log_backups,
@@ -291,50 +319,3 @@ class DaemonDiagnostics:
                     "Diagnostics event write failed",
                     extra={"extra_fields": {"daemon_class": self._daemon}},
                 )
-
-
-def _percentile(sorted_samples: list[float], pct: int) -> float:
-    """Calculate a percentile of a list of samples."""
-    if not sorted_samples:
-        return 0.0
-    if pct <= 0:
-        return round(sorted_samples[0], 2)
-    if pct >= 100:  # noqa: PLR2004
-        return round(sorted_samples[-1], 2)
-    k = (len(sorted_samples) - 1) * (pct / 100.0)
-    f = int(k)
-    c = min(f + 1, len(sorted_samples) - 1)
-    if f == c:
-        return round(sorted_samples[f], 2)
-    d0 = sorted_samples[f] * (c - k)
-    d1 = sorted_samples[c] * (k - f)
-    return round(d0 + d1, 2)
-
-
-def _rotate_if_needed(path: Path, *, max_bytes: int, backups: int) -> None:
-    """Rotate a file if it exceeds a maximum size."""
-    if backups <= 0:
-        return
-    try:
-        st = path.stat()
-    except FileNotFoundError:
-        return
-    except OSError:
-        return
-
-    if st.st_size < max_bytes:
-        return
-
-    # Rotate: file -> .1, .1 -> .2, ... oldest dropped.
-    for idx in range(backups, 0, -1):
-        src = path.with_suffix(path.suffix + f".{idx}")
-        dst = path.with_suffix(path.suffix + f".{idx + 1}")
-        if idx == backups:
-            with suppress(FileNotFoundError):
-                dst.unlink()
-        if src.exists():
-            with suppress(OSError):
-                src.replace(dst)
-
-    with suppress(OSError):
-        path.replace(path.with_suffix(path.suffix + ".1"))

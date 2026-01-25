@@ -82,10 +82,6 @@ def _parse_discover_grid_response(data: dict[str, object]) -> str:
 @stamina.retry(
     on=_RETRY_ON,
     attempts=_DISCOVERY_ATTEMPTS,
-    timeout=20.0,
-    wait_initial=0.2,
-    wait_max=2.0,
-    wait_jitter=0.5,
 )
 @log_api_call(logger)
 async def discover_open_meteo_grid(
@@ -198,14 +194,9 @@ def _parse_current_weather_response(
     return output
 
 
-# TODO(jdwh08): make stamina obey settings from config.toml
 @stamina.retry(
     on=_RETRY_ON,
     attempts=_CURRENT_ATTEMPTS,
-    timeout=45.0,
-    wait_initial=0.2,
-    wait_max=5.0,
-    wait_jitter=1.0,
 )
 @log_api_call(logger)
 async def get_open_meteo_current(

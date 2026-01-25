@@ -8,9 +8,6 @@ from typing import TYPE_CHECKING
 
 import aiometer
 
-from cta_eta.data_collection.apis.api_weather_open_meteo import discover_open_meteo_grid
-from cta_eta.data_collection.orchestration.daemon_utils import DiscoveryStateMarker
-
 if TYPE_CHECKING:
     import logging
     from collections.abc import Callable
@@ -22,12 +19,20 @@ if TYPE_CHECKING:
         OpenMeteoGridCache,
     )
 
-# NOTE: constants so that we can patch them in tests
+### OWN MODULES
+from cta_eta.data_collection.apis.api_weather_open_meteo import discover_open_meteo_grid
+from cta_eta.data_collection.config import get_config_section
+from cta_eta.data_collection.orchestration.daemon_utils import DiscoveryStateMarker
+
+# SETTINGS
+# NOTE(jdwh08): constants so that we can patch them in tests
 _PER_STATION_DISCOVERY_TIMEOUT_S: float = 30.0
 _OVERALL_BATCH_TIMEOUT_S: float = 600.0
+_DEFAULT_OPEN_METEO_MAX_PER_SECOND: float = 0.1
+_DEFAULT_OPEN_METEO_MAX_AT_ONCE: int = 3
 
 
-class WeatherGridDiscoverer:
+class OpenMeteoWeatherGridDiscoverer:
     """Handles grid discovery for weather APIs with rate limiting and timeout management.
 
     This class encapsulates the complex logic for discovering weather grid identifiers
@@ -50,8 +55,6 @@ class WeatherGridDiscoverer:
         logger: logging.Logger,
         diagnostics: DaemonDiagnostics,
         om_grid_cache: OpenMeteoGridCache,
-        open_meteo_max_per_second: float,
-        open_meteo_max_at_once: int,
         write_discovery_state_marker: Callable[[dict[str, object]], None],
         daemon_class: str,
     ) -> None:
@@ -70,10 +73,27 @@ class WeatherGridDiscoverer:
         self.logger = logger
         self.diagnostics = diagnostics
         self.om_grid_cache = om_grid_cache
-        self.open_meteo_max_per_second = open_meteo_max_per_second
-        self.open_meteo_max_at_once = open_meteo_max_at_once
         self._write_discovery_state_marker = write_discovery_state_marker
         self._daemon_class = daemon_class
+
+        # Get rate limits from config.toml / config.py
+        open_meteo_rate_limit_config = get_config_section("rate_limits").get(
+            "open_meteo", {}
+        )
+        if not isinstance(open_meteo_rate_limit_config, dict):
+            # NOTE(jdwh08): should not happen.
+            msg = "Open-Meteo rate limit configuration is not a dictionary"
+            raise TypeError(msg)
+        self.open_meteo_max_per_second = float(
+            open_meteo_rate_limit_config.get(
+                "max_per_second", _DEFAULT_OPEN_METEO_MAX_PER_SECOND
+            )
+        )
+        self.open_meteo_max_at_once = int(
+            open_meteo_rate_limit_config.get(
+                "max_at_once", _DEFAULT_OPEN_METEO_MAX_AT_ONCE
+            )
+        )
 
     async def _discover_one(
         self,
