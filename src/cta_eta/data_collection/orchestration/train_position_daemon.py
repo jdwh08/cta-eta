@@ -15,9 +15,9 @@ The daemon:
 from __future__ import annotations
 
 import asyncio
+import datetime
 import functools
 import time
-from datetime import datetime
 from typing import TYPE_CHECKING, Any, override
 
 import aiometer
@@ -242,7 +242,7 @@ class TrainPositionDaemon(AsyncBaseDaemon):
                     # Normalize nested route/train structure to flat records
                     records = normalize_train_positions(
                         raw_response,
-                        datetime.fromtimestamp(poll_timestamp, tz=datetime.UTC),
+                        datetime.datetime.fromtimestamp(poll_timestamp, tz=datetime.UTC),
                     )
 
                     self.logger.info(
