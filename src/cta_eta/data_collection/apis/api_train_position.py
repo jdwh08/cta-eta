@@ -154,7 +154,10 @@ def normalize_train_positions(
 
     for route in routes:
         route_name = route.get("@name")
-        trains = route.get("train", [])
+        trains_raw = route.get("train", [])
+
+        # Normalize trains to always be a list (XML-to-JSON conversion returns dict for single train)
+        trains = trains_raw if isinstance(trains_raw, list) else [trains_raw]
 
         for train in trains:
             v_lat = train.get("lat")
