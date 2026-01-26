@@ -339,12 +339,18 @@ class ParquetWriter:
 
         return partition_date.isoformat()
 
-    def write(self, data: list[dict[str, Any]], dataset_name: str = "default") -> None:
-        """Write records to Parquet with timezone-aware partitioning.
+    def write(
+        self,
+        data: list[dict[str, Any]],
+        dataset_name: str = "default",
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Write records to Parquet with timezone-aware partitioning and optional metadata.
 
         Args:
             data: List of records as dictionaries
             dataset_name: Name of dataset for organizing files (default "default")
+            metadata: Optional metadata dict to attach to Parquet file (stored in schema metadata)
 
         Raises:
             ValueError: If data is empty
@@ -381,6 +387,22 @@ class ParquetWriter:
         # Convert data to PyArrow Table
         table = pa.Table.from_pylist(data)
 
+        # Attach metadata to schema if provided
+        if metadata is not None:
+            # Convert metadata dict to bytes for storage in Parquet metadata
+            # PyArrow expects metadata values to be bytes
+            import json
+
+            metadata_bytes = {
+                key: json.dumps(value).encode("utf-8") for key, value in metadata.items()
+            }
+            # Get existing schema metadata or create new
+            existing_metadata = table.schema.metadata or {}
+            # Merge with new metadata
+            combined_metadata = {**existing_metadata, **metadata_bytes}
+            # Create new schema with metadata
+            table = table.replace_schema_metadata(combined_metadata)
+
         # Write table to bytes using BytesIO
         buffer = io.BytesIO()
         pq.write_table(table, buffer, compression=self.compression)
@@ -390,22 +412,26 @@ class ParquetWriter:
         self.storage_backend.put(partition_path, parquet_bytes)
 
     def append_batch(
-        self, records: list[dict[str, Any]], dataset_name: str = "default"
+        self,
+        records: list[dict[str, Any]],
+        dataset_name: str = "default",
+        metadata: dict[str, Any] | None = None,
     ) -> None:
-        """Append a batch of records to Parquet storage.
+        """Append a batch of records to Parquet storage with optional metadata.
 
         Convenience method that wraps write() with a clearer name for batch appending.
 
         Args:
             records: List of records as dictionaries
             dataset_name: Name of dataset for organizing files (default "default")
+            metadata: Optional metadata dict to attach to Parquet file
 
         Raises:
             ValueError: If records is empty
             OSError: If write operation fails
 
         """
-        self.write(records, dataset_name=dataset_name)
+        self.write(records, dataset_name=dataset_name, metadata=metadata)
 
 
 def create_storage_backend(config: dict[str, dict[str, Any]]) -> StorageBackend:

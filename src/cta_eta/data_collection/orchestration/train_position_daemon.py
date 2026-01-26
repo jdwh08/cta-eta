@@ -35,6 +35,7 @@ from cta_eta.data_collection.orchestration.daemon_utils import (
     ErrorCategory,
     classify_error,
 )
+from cta_eta.data_collection.orchestration.gap_detection import detect_gap
 from cta_eta.data_collection.storage_cache.storage import create_parquet_writer
 
 if TYPE_CHECKING:
@@ -77,6 +78,7 @@ class TrainPositionDaemon(AsyncBaseDaemon):
     cta_max_at_once: int
     probe_102_attempts: int
     probe_102_intervals: list[int]
+    pending_gap_metadata: dict[str, bool | float | str | int | None] | None
 
     def __init__(
         self,
@@ -121,6 +123,7 @@ class TrainPositionDaemon(AsyncBaseDaemon):
         self.last_poll_timestamp = 0.0
         self.total_records_collected = 0
         self.current_poll_count = 0
+        self.pending_gap_metadata = None
 
     @override
     async def run(self) -> None:
@@ -184,6 +187,7 @@ class TrainPositionDaemon(AsyncBaseDaemon):
                             success = await self._retry_with_extended_backoff(client, e)
                             if not success:
                                 # Retry exhausted, log gap and resume schedule
+                                # Gap metadata will be detected on next successful cycle
                                 self.logger.warning(
                                     "Transient error retry exhausted. Accepting gap and resuming schedule.",
                                     extra={
@@ -238,6 +242,30 @@ class TrainPositionDaemon(AsyncBaseDaemon):
                     "train_positions_cycle", cycle_id=cycle_id
                 ):
                     poll_timestamp = time.time()
+
+                    # Detect gap before fetching
+                    gap_metadata = detect_gap(
+                        last_poll_timestamp=self.last_poll_timestamp if self.last_poll_timestamp > 0 else None,
+                        current_timestamp=poll_timestamp,
+                        poll_interval=float(self.train_poll_interval),
+                        threshold_multiplier=2.0,
+                    )
+
+                    if gap_metadata["is_gap"]:
+                        self.logger.warning(
+                            f"Gap detected: {gap_metadata['gap_reason']} "
+                            f"({gap_metadata['gap_duration_seconds']:.1f}s, "
+                            f"{gap_metadata['missed_poll_cycles']} missed cycles)",
+                            extra={
+                                "extra_fields": {
+                                    "cycle_id": cycle_id,
+                                    "gap_metadata": gap_metadata,
+                                }
+                            },
+                        )
+                        # Set pending metadata to attach to next successful write
+                        self.pending_gap_metadata = gap_metadata
+
                     raw_response = await self._fetch_train_positions_from_cta(
                         client, cycle_id
                     )
@@ -313,7 +341,11 @@ class TrainPositionDaemon(AsyncBaseDaemon):
     ) -> None:
         """Store records to Parquet, update daemon state on success, log and record diagnostics."""
         try:
-            self.storage.append_batch(records, dataset_name="train_positions")
+            self.storage.append_batch(
+                records,
+                dataset_name="train_positions",
+                metadata=self.pending_gap_metadata,
+            )
         except Exception:
             self.logger.exception(
                 "Failed to store train position records",
@@ -325,6 +357,19 @@ class TrainPositionDaemon(AsyncBaseDaemon):
                 },
             )
             return
+
+        # Clear pending gap metadata after successful write
+        if self.pending_gap_metadata is not None:
+            self.logger.info(
+                "Gap metadata attached to Parquet file",
+                extra={
+                    "extra_fields": {
+                        "cycle_id": cycle_id,
+                        "gap_metadata": self.pending_gap_metadata,
+                    }
+                },
+            )
+            self.pending_gap_metadata = None
 
         self.last_poll_timestamp = poll_timestamp
         self.total_records_collected += len(records)
