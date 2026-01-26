@@ -16,9 +16,9 @@ from __future__ import annotations
 
 import asyncio
 import datetime
-import functools
 import time
 from typing import TYPE_CHECKING, Any, override
+from zoneinfo import ZoneInfo
 
 import aiometer
 import httpx
@@ -185,12 +185,8 @@ class TrainPositionDaemon(AsyncBaseDaemon):
     async def _collect_train_positions_cycle(self, client: httpx.AsyncClient) -> None:
         """Execute one complete train position collection cycle.
 
-        This method orchestrates the train position collection process:
-        1. Record poll timestamp BEFORE API call for precise timing
-        2. Fetch train positions from CTA API (all 8 lines in one call)
-        3. Normalize nested route/train structure to flat records
-        4. Store records to Parquet with dataset_name="train_positions"
-        5. Update daemon state and log summary
+        Orchestrates: record poll timestamp → fetch from CTA → normalize →
+        store and update state. Fetch and store are delegated to helpers.
 
         Args:
             client: HTTP client for CTA API requests
@@ -212,37 +208,19 @@ class TrainPositionDaemon(AsyncBaseDaemon):
             )
 
             try:
-                async with self.diagnostics.span("train_positions_cycle", cycle_id=cycle_id):
-                    # Record poll timestamp BEFORE API call for precise timing
+                async with self.diagnostics.span(
+                    "train_positions_cycle", cycle_id=cycle_id
+                ):
                     poll_timestamp = time.time()
-
-                    # Fetch train positions from CTA API with aiometer rate limiting
-                    async def _fetch_train_positions() -> dict[str, Any]:
-                        async with self.diagnostics.span("cta.get_train_positions", cycle_id=cycle_id):
-                            return await get_train_positions(client)
-
-                    # Record diagnostic event before aiometer call
-                    self.diagnostics.record_event(
-                        "aiometer_run",
-                        operation="cta.get_train_positions",
-                        item_count=1,
-                        max_per_second=self.cta_max_per_second,
-                        max_at_once=self.cta_max_at_once,
+                    raw_response = await self._fetch_train_positions_from_cta(
+                        client, cycle_id
                     )
 
-                    # Wrap in aiometer for rate limiting
-                    jobs = [functools.partial(_fetch_train_positions)]
-                    results = await aiometer.run_all(
-                        jobs,
-                        max_at_once=self.cta_max_at_once,
-                        max_per_second=self.cta_max_per_second,
-                    )
-                    raw_response = results[0]  # Single result
-
-                    # Normalize nested route/train structure to flat records
                     records = normalize_train_positions(
                         raw_response,
-                        datetime.datetime.fromtimestamp(poll_timestamp, tz=datetime.UTC),
+                        datetime.datetime.fromtimestamp(
+                            poll_timestamp, tz=ZoneInfo("America/Chicago")
+                        ),
                     )
 
                     self.logger.info(
@@ -255,48 +233,9 @@ class TrainPositionDaemon(AsyncBaseDaemon):
                         },
                     )
 
-                    # Store records to Parquet
-                    try:
-                        self.storage.append_batch(records, dataset_name="train_positions")
-                    except Exception:
-                        self.logger.exception(
-                            "Failed to store train position records",
-                            extra={
-                                "extra_fields": {
-                                    "cycle_id": cycle_id,
-                                    "records_attempted": len(records),
-                                }
-                            },
-                        )
-                        # Don't update state on storage failure
-                        # Don't re-raise - storage failure shouldn't stop daemon
-                    else:
-                        # Update state on successful storage
-                        self.last_poll_timestamp = poll_timestamp
-                        self.total_records_collected += len(records)
-                        self.current_poll_count += 1
-
-                        # Record diagnostic event
-                        self.diagnostics.record_event(
-                            "train_positions_stored",
-                            cycle_id=cycle_id,
-                            records_stored=len(records),
-                        )
-
-                        cycle_duration_ms = (time.time() - cycle_start_time) * 1000
-
-                        self.logger.info(
-                            f"Stored {len(records)} train position records to Parquet",
-                            extra={
-                                "extra_fields": {
-                                    "cycle_id": cycle_id,
-                                    "records_stored": len(records),
-                                    "cycle_duration_ms": round(cycle_duration_ms, 2),
-                                    "total_records_collected": self.total_records_collected,
-                                    "current_poll_count": self.current_poll_count,
-                                }
-                            },
-                        )
+                    self._store_train_position_records(
+                        records, cycle_id, cycle_start_time, poll_timestamp
+                    )
 
             except (asyncio.CancelledError, KeyboardInterrupt):
                 raise
@@ -312,6 +251,78 @@ class TrainPositionDaemon(AsyncBaseDaemon):
                     },
                 )
                 raise
+
+    async def _fetch_train_positions_from_cta(
+        self, client: httpx.AsyncClient, cycle_id: str
+    ) -> dict[str, Any]:
+        """Fetch raw train positions from CTA API with aiometer rate limiting."""
+
+        async def _fetch() -> dict[str, Any]:
+            async with self.diagnostics.span(
+                "cta.get_train_positions", cycle_id=cycle_id
+            ):
+                return await get_train_positions(client)
+
+        self.diagnostics.record_event(
+            "aiometer_run",
+            operation="cta.get_train_positions",
+            item_count=1,
+            max_per_second=self.cta_max_per_second,
+            max_at_once=self.cta_max_at_once,
+        )
+        jobs = [_fetch]
+        results = await aiometer.run_all(
+            jobs,
+            max_at_once=self.cta_max_at_once,
+            max_per_second=self.cta_max_per_second,
+        )
+        return results[0]
+
+    def _store_train_position_records(
+        self,
+        records: list[dict[str, Any]],
+        cycle_id: str,
+        cycle_start_time: float,
+        poll_timestamp: float,
+    ) -> None:
+        """Store records to Parquet, update daemon state on success, log and record diagnostics."""
+        try:
+            self.storage.append_batch(records, dataset_name="train_positions")
+        except Exception:
+            self.logger.exception(
+                "Failed to store train position records",
+                extra={
+                    "extra_fields": {
+                        "cycle_id": cycle_id,
+                        "records_attempted": len(records),
+                    }
+                },
+            )
+            return
+
+        self.last_poll_timestamp = poll_timestamp
+        self.total_records_collected += len(records)
+        self.current_poll_count += 1
+
+        self.diagnostics.record_event(
+            "train_positions_stored",
+            cycle_id=cycle_id,
+            records_stored=len(records),
+        )
+
+        cycle_duration_ms = (time.time() - cycle_start_time) * 1000
+        self.logger.info(
+            f"Stored {len(records)} train position records to Parquet",
+            extra={
+                "extra_fields": {
+                    "cycle_id": cycle_id,
+                    "records_stored": len(records),
+                    "cycle_duration_ms": round(cycle_duration_ms, 2),
+                    "total_records_collected": self.total_records_collected,
+                    "current_poll_count": self.current_poll_count,
+                }
+            },
+        )
 
     @override
     def _get_state(self) -> dict[str, str | int | float]:
