@@ -653,8 +653,8 @@ def test_normalize_train_positions_handles_none_train_list() -> None:
     }
 
     # Act / Assert
-    # .get() returns None, which is not iterable, so this should raise TypeError
-    with pytest.raises(TypeError):
+    # .get() returns None, which gets wrapped in [None], then AttributeError when calling .get() on None
+    with pytest.raises(AttributeError):
         api_train_position.normalize_train_positions(response, poll_timestamp)
 
 
@@ -714,3 +714,170 @@ def test_normalize_train_positions_handles_invalid_bool_strings() -> None:
     # Act / Assert
     with pytest.raises(ValueError):
         api_train_position.normalize_train_positions(response, poll_timestamp)
+
+
+class TestCTATrackerAPIError:
+    """Tests for CTATrackerAPIError exception class."""
+
+    def test_cta_tracker_api_error_with_code_and_message(self) -> None:
+        """CTATrackerAPIError stores err_cd and err_nm and formats message."""
+        # Arrange & Act
+        error = api_train_position.CTATrackerAPIError(
+            err_cd="102", err_nm="Daily limit exceeded"
+        )
+
+        # Assert
+        assert error.err_cd == "102"
+        assert error.err_nm == "Daily limit exceeded"
+        assert "102" in str(error)
+        assert "Daily limit exceeded" in str(error)
+
+    def test_cta_tracker_api_error_with_code_only(self) -> None:
+        """CTATrackerAPIError with only err_cd formats message without err_nm."""
+        # Arrange & Act
+        error = api_train_position.CTATrackerAPIError(err_cd="500")
+
+        # Assert
+        assert error.err_cd == "500"
+        assert error.err_nm is None
+        assert "500" in str(error)
+
+
+@pytest.mark.asyncio
+async def test_get_train_positions_raises_cta_error_on_err_cd_102(
+    cta_api_key_env: None,  # noqa: ARG001
+    mocker: MockerFixture,
+    httpx_json_response: Callable[[dict[str, Any], int, str], httpx.Response],
+) -> None:
+    """get_train_positions raises CTATrackerAPIError when errCd=102."""
+    # Arrange
+    client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    response_payload = {
+        "ctatt": {
+            "tmst": "2026-01-25T12:00:00",
+            "errCd": "102",
+            "errNm": "Daily limit exceeded",
+        }
+    }
+    client.get.return_value = httpx_json_response(
+        response_payload, 200, api_train_position.TRAIN_POSITION_URL
+    )
+
+    # Act / Assert
+    with pytest.raises(api_train_position.CTATrackerAPIError) as exc_info:
+        await api_train_position.get_train_positions(client)
+
+    assert exc_info.value.err_cd == "102"
+    assert exc_info.value.err_nm == "Daily limit exceeded"
+
+
+@pytest.mark.asyncio
+async def test_get_train_positions_raises_cta_error_on_err_cd_500(
+    cta_api_key_env: None,  # noqa: ARG001
+    mocker: MockerFixture,
+    httpx_json_response: Callable[[dict[str, Any], int, str], httpx.Response],
+) -> None:
+    """get_train_positions raises CTATrackerAPIError when errCd=500."""
+    # Arrange
+    client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    response_payload = {
+        "ctatt": {
+            "tmst": "2026-01-25T12:00:00",
+            "errCd": "500",
+            "errNm": "Internal server error",
+        }
+    }
+    client.get.return_value = httpx_json_response(
+        response_payload, 200, api_train_position.TRAIN_POSITION_URL
+    )
+
+    # Act / Assert
+    with pytest.raises(api_train_position.CTATrackerAPIError) as exc_info:
+        await api_train_position.get_train_positions(client)
+
+    assert exc_info.value.err_cd == "500"
+    assert exc_info.value.err_nm == "Internal server error"
+
+
+@pytest.mark.asyncio
+async def test_get_train_positions_does_not_raise_on_err_cd_zero(
+    cta_api_key_env: None,  # noqa: ARG001
+    mocker: MockerFixture,
+    httpx_json_response: Callable[[dict[str, Any], int, str], httpx.Response],
+) -> None:
+    """get_train_positions does not raise when errCd=0 (success)."""
+    # Arrange
+    client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    response_payload = {
+        "ctatt": {
+            "tmst": "2026-01-25T12:00:00",
+            "errCd": "0",
+            "errNm": None,
+            "route": [],
+        }
+    }
+    client.get.return_value = httpx_json_response(
+        response_payload, 200, api_train_position.TRAIN_POSITION_URL
+    )
+
+    # Act
+    result = await api_train_position.get_train_positions(client)
+
+    # Assert
+    assert result == response_payload
+
+
+@pytest.mark.asyncio
+async def test_get_train_positions_does_not_raise_when_err_cd_missing(
+    cta_api_key_env: None,  # noqa: ARG001
+    mocker: MockerFixture,
+    httpx_json_response: Callable[[dict[str, Any], int, str], httpx.Response],
+) -> None:
+    """get_train_positions does not raise when errCd is missing."""
+    # Arrange
+    client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    response_payload = {
+        "ctatt": {
+            "tmst": "2026-01-25T12:00:00",
+            "route": [],
+        }
+    }
+    client.get.return_value = httpx_json_response(
+        response_payload, 200, api_train_position.TRAIN_POSITION_URL
+    )
+
+    # Act
+    result = await api_train_position.get_train_positions(client)
+
+    # Assert
+    assert result == response_payload
+
+
+@pytest.mark.asyncio
+async def test_get_train_positions_handles_all_cta_error_codes(
+    cta_api_key_env: None,  # noqa: ARG001
+    mocker: MockerFixture,
+    httpx_json_response: Callable[[dict[str, Any], int, str], httpx.Response],
+) -> None:
+    """get_train_positions raises CTATrackerAPIError for all CTA error codes."""
+    # Arrange
+    client = mocker.AsyncMock(spec=httpx.AsyncClient)
+    error_codes = ["100", "101", "102", "106", "107", "500"]
+
+    for err_cd in error_codes:
+        response_payload = {
+            "ctatt": {
+                "tmst": "2026-01-25T12:00:00",
+                "errCd": err_cd,
+                "errNm": f"Error {err_cd}",
+            }
+        }
+        client.get.return_value = httpx_json_response(
+            response_payload, 200, api_train_position.TRAIN_POSITION_URL
+        )
+
+        # Act / Assert
+        with pytest.raises(api_train_position.CTATrackerAPIError) as exc_info:
+            await api_train_position.get_train_positions(client)
+
+        assert exc_info.value.err_cd == err_cd

@@ -22,10 +22,11 @@ class ErrorCategory(Enum):
     TRANSIENT = "transient"  # Temporary errors that should be retried
     CONFIGURATION = "configuration"  # Configuration errors requiring immediate exit
     RATE_LIMIT = "rate_limit"  # Rate limit errors requiring backoff
+    DAILY_QUOTA = "daily_quota"  # Daily API quota exceeded (CTA error 102)
     UNKNOWN = "unknown"  # Unknown errors, log and continue
 
 
-def classify_error(error: Exception) -> ErrorCategory:
+def classify_error(error: Exception) -> ErrorCategory:  # noqa: C901, PLR0911, PLR0912
     """Classify an exception into an error category for appropriate handling.
 
     This function distinguishes between different types of errors to enable
@@ -33,6 +34,7 @@ def classify_error(error: Exception) -> ErrorCategory:
     - TRANSIENT: Network errors, timeouts, temporary API failures (retry)
     - CONFIGURATION: Missing credentials, invalid config (exit gracefully)
     - RATE_LIMIT: HTTP 429 errors (apply backoff)
+    - DAILY_QUOTA: CTA daily API quota exceeded (error 102)
     - UNKNOWN: All other errors (log and continue)
 
     Args:
@@ -42,6 +44,27 @@ def classify_error(error: Exception) -> ErrorCategory:
         ErrorCategory enum value indicating how to handle the error
 
     """
+    # Import CTATrackerAPIError locally to avoid circular import
+    # (api_train_position imports config which may import daemon_utils indirectly)
+    try:
+        from cta_eta.data_collection.apis.api_train_position import (  # noqa: PLC0415
+            CTATrackerAPIError,
+        )
+    except ImportError:
+        CTATrackerAPIError = None  # type: ignore[assignment, misc]  # noqa: N806
+
+    # CTA-specific application-level errors from API response body
+    if CTATrackerAPIError is not None and isinstance(error, CTATrackerAPIError):
+        err_cd = error.err_cd
+        # Error 102: Daily quota exceeded - special handling with midnight sleep
+        if err_cd == "102":
+            return ErrorCategory.DAILY_QUOTA
+        # Errors 100, 101, 106, 107, 500: Configuration/API issues requiring manual intervention
+        if err_cd in ("100", "101", "106", "107", "500"):
+            return ErrorCategory.CONFIGURATION
+        # Other CTA error codes: treat as configuration errors to be safe
+        return ErrorCategory.CONFIGURATION
+
     # Configuration errors (missing credentials, invalid config)
     if isinstance(error, ValueError) and any(
         keyword in str(error).lower()
@@ -56,6 +79,24 @@ def classify_error(error: Exception) -> ErrorCategory:
         and error.response.status_code == httpx.codes.TOO_MANY_REQUESTS
     ):
         return ErrorCategory.RATE_LIMIT
+
+    # Check for CTA error codes in HTTPStatusError response body (fallback)
+    if isinstance(error, httpx.HTTPStatusError) and error.response is not None:
+        try:
+            body = error.response.json()
+            ctatt = body.get("ctatt") or {}
+            err_cd = ctatt.get("errCd")
+            if err_cd is not None and str(err_cd) != "0":
+                err_cd_str = str(err_cd)
+                if err_cd_str == "102":
+                    return ErrorCategory.DAILY_QUOTA
+                if err_cd_str in ("100", "101", "106", "107", "500"):
+                    return ErrorCategory.CONFIGURATION
+        except Exception:  # noqa: BLE001, S110
+            # If JSON parsing fails, continue with HTTP status-based classification
+            # Catching all exceptions is intentional here - we want to fall back to
+            # HTTP status-based classification if JSON parsing fails for any reason
+            pass
 
     # Transient errors (network issues, timeouts, temporary failures)
     if isinstance(error, (httpx.RequestError, httpx.TimeoutException, TimeoutError)):

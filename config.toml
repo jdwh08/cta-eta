@@ -20,6 +20,13 @@ train_interval_seconds = 15
 # Weather changes slowly, hourly updates sufficient
 weather_interval_minutes = 30
 
+# CTA error 102 (daily quota exceeded) probe settings
+# When hitting daily quota, probe with bounded attempts before sleeping until midnight
+# probe_102_attempts: number of probes to attempt (default: 2)
+# probe_102_intervals: intervals in seconds between probes (default: [300, 900] = 5min, 15min)
+probe_102_attempts = 2
+probe_102_intervals = [300, 900]  # 5 minutes, 15 minutes
+
 
 [cache]
 # Cache directory for operational state (separate from collected data)

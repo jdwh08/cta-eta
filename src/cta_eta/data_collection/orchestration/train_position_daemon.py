@@ -22,6 +22,7 @@ from zoneinfo import ZoneInfo
 
 import aiometer
 import httpx
+import stamina
 
 from cta_eta.data_collection.apis.api_train_position import (
     get_train_positions,
@@ -74,6 +75,8 @@ class TrainPositionDaemon(AsyncBaseDaemon):
     current_poll_count: int
     cta_max_per_second: float
     cta_max_at_once: int
+    probe_102_attempts: int
+    probe_102_intervals: list[int]
 
     def __init__(
         self,
@@ -105,6 +108,15 @@ class TrainPositionDaemon(AsyncBaseDaemon):
         self.cta_max_per_second = float(cta_rate_limit_config.get("max_per_second"))
         self.cta_max_at_once = int(cta_rate_limit_config.get("max_at_once"))
 
+        # Load CTA error 102 (daily quota) probe configuration
+        self.probe_102_attempts = int(collection_config.get("probe_102_attempts", 2))
+        probe_intervals_raw = collection_config.get("probe_102_intervals", [300, 900])
+        self.probe_102_intervals = (
+            [int(x) for x in probe_intervals_raw]
+            if isinstance(probe_intervals_raw, list)
+            else [300, 900]
+        )
+
         # Initialize state tracking
         self.last_poll_timestamp = 0.0
         self.total_records_collected = 0
@@ -116,6 +128,12 @@ class TrainPositionDaemon(AsyncBaseDaemon):
 
         Runs continuous collection cycles until stopped.
         Creates HTTP client once and reuses it across cycles for connection pooling.
+
+        Implements CTA-specific error handling:
+        - TRANSIENT: Extended retry (5-10 min total) with poll blocking
+        - DAILY_QUOTA: Bounded probe, then sleep until midnight Chicago
+        - CONFIGURATION: Exit gracefully
+        - RATE_LIMIT: 2x backoff with poll blocking
         """
         timeout = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)
         limits = httpx.Limits(max_connections=10, max_keepalive_connections=5)
@@ -143,6 +161,10 @@ class TrainPositionDaemon(AsyncBaseDaemon):
                             # Exit gracefully on configuration errors
                             self.running = False
                             raise
+                        case ErrorCategory.DAILY_QUOTA:
+                            # CTA error 102: daily quota exceeded
+                            await self._handle_daily_quota_error(client, e)
+                            continue  # Skip normal sleep, handled in _handle_daily_quota_error
                         case ErrorCategory.RATE_LIMIT:
                             self.logger.warning(
                                 f"Rate limit error: {e}. Applying backoff.",
@@ -154,20 +176,24 @@ class TrainPositionDaemon(AsyncBaseDaemon):
                                     }
                                 },
                             )
-                            # Apply longer backoff for rate limits
+                            # Apply longer backoff for rate limits (poll blocking)
                             await self.sleep(self.train_poll_interval * 2)
                             continue
                         case ErrorCategory.TRANSIENT:
-                            self.logger.warning(
-                                f"Transient error in collection cycle: {e}. Will retry next cycle.",
-                                extra={
-                                    "extra_fields": {
-                                        "error_type": type(e).__name__,
-                                        "error_category": category.value,
-                                        "error_message": str(e),
-                                    }
-                                },
-                            )
+                            # Extended retry with poll blocking
+                            success = await self._retry_with_extended_backoff(client, e)
+                            if not success:
+                                # Retry exhausted, log gap and resume schedule
+                                self.logger.warning(
+                                    "Transient error retry exhausted. Accepting gap and resuming schedule.",
+                                    extra={
+                                        "extra_fields": {
+                                            "error_type": type(e).__name__,
+                                            "error_category": category.value,
+                                            "error_message": str(e),
+                                        }
+                                    },
+                                )
                         case _:
                             self.logger.exception(
                                 "Train position collection cycle failed",
@@ -323,6 +349,269 @@ class TrainPositionDaemon(AsyncBaseDaemon):
                 }
             },
         )
+
+    async def _retry_with_extended_backoff(
+        self, client: httpx.AsyncClient, original_error: Exception
+    ) -> bool:
+        """Retry the collection cycle with extended backoff for transient errors.
+
+        Uses stamina retry with extended max wait (5-10 minutes total).
+        Blocks subsequent polls during retry - only returns to normal schedule
+        when retry succeeds or exhausts attempts.
+
+        Args:
+            client: HTTP client for CTA API requests
+            original_error: The original transient error
+
+        Returns:
+            True if retry succeeded, False if retry exhausted
+
+        """
+        self.logger.warning(
+            "Transient error detected. Retrying with extended backoff (5-10 min total).",
+            extra={
+                "extra_fields": {
+                    "error_type": type(original_error).__name__,
+                    "error_message": str(original_error),
+                }
+            },
+        )
+
+        # Use stamina retry with extended backoff for transient errors
+        # This blocks the poll - we won't continue to next cycle until retry completes
+        retry_attempts = [0]  # Mutable list to track attempts in closure
+
+        try:
+            async for attempt in stamina.retry_context(
+                on=Exception,
+                attempts=10,
+                wait_initial=1.0,
+                wait_max=60.0,  # Up to 60s between retries
+                wait_jitter=5.0,
+            ):
+                with attempt:
+                    retry_attempts[0] += 1
+                    self.logger.info(
+                        f"Retry attempt {retry_attempts[0]}/10 for transient error",
+                        extra={
+                            "extra_fields": {
+                                "retry_attempt": retry_attempts[0],
+                                "original_error_type": type(original_error).__name__,
+                            }
+                        },
+                    )
+                    try:
+                        await self._collect_train_positions_cycle(client)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as e:
+                        cat = classify_error(e)
+                        # Only continue retrying if it's still transient
+                        # If it becomes CONFIGURATION or DAILY_QUOTA, let it bubble up
+                        if cat != ErrorCategory.TRANSIENT:
+                            self.logger.warning(
+                                f"Error category changed from TRANSIENT to {cat.value} during retry. Stopping retry.",
+                                extra={
+                                    "extra_fields": {
+                                        "new_category": cat.value,
+                                        "error_type": type(e).__name__,
+                                    }
+                                },
+                            )
+                            raise  # Let the outer handler deal with it
+                        # Continue retry loop for transient errors
+                        raise
+                    else:
+                        # Success path - no exception raised
+                        self.logger.info(
+                            f"Retry succeeded on attempt {retry_attempts[0]}",
+                            extra={"extra_fields": {"retry_attempt": retry_attempts[0]}},
+                        )
+                        return True
+        except Exception as e:
+            # Retry exhausted - stamina raises the last exception after all attempts
+            # Check if it's still a transient error or if category changed
+            cat = classify_error(e)
+            if cat != ErrorCategory.TRANSIENT:
+                # Category changed during retry - re-raise for outer handler
+                raise
+            # Retry exhausted for transient error
+            return False
+
+        # Should not reach here, but for completeness
+        return False
+
+    async def _handle_daily_quota_error(
+        self, client: httpx.AsyncClient, error: Exception
+    ) -> None:
+        """Handle CTA daily quota exceeded (error 102) with bounded probe and midnight sleep.
+
+        Strategy:
+        1. Bounded probe: probe_102_attempts times with probe_102_intervals
+        2. If time until midnight < 15 min, skip probe and go straight to midnight sleep
+        3. Each probe: sleep interval, then one poll attempt
+        4. On success: resume normal 15s schedule
+        5. On continued 102: next probe or sleep until midnight
+        6. Sleep until midnight: compute next midnight Chicago + 5 min buffer, sleep in chunks
+
+        All sleeps are chunked and shutdown-interruptible via self.sleep().
+
+        Args:
+            client: HTTP client for CTA API requests
+            error: The original DAILY_QUOTA error
+
+        """
+        self.logger.critical(
+            "CTA daily API quota exceeded (error 102). Initiating bounded probe then midnight sleep.",
+            extra={
+                "extra_fields": {
+                    "error_type": type(error).__name__,
+                    "error_message": str(error),
+                    "probe_attempts": self.probe_102_attempts,
+                    "probe_intervals": self.probe_102_intervals,
+                }
+            },
+        )
+
+        # Compute time until next midnight Chicago
+        chicago_tz = ZoneInfo("America/Chicago")
+        now_chicago = datetime.datetime.now(chicago_tz)
+        next_midnight = (now_chicago + datetime.timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        seconds_until_midnight = (next_midnight - now_chicago).total_seconds()
+
+        # If less than 15 minutes until midnight, skip probe and go straight to midnight sleep
+        min_seconds_for_probe = 900  # 15 minutes
+        if seconds_until_midnight < min_seconds_for_probe:
+            self.logger.info(
+                f"Less than 15 minutes until midnight ({seconds_until_midnight:.0f}s). Skipping probe, sleeping until midnight.",
+                extra={
+                    "extra_fields": {
+                        "seconds_until_midnight": seconds_until_midnight,
+                        "next_midnight_chicago": next_midnight.isoformat(),
+                    }
+                },
+            )
+            await self._sleep_until_midnight(next_midnight)
+            return
+
+        # Bounded probe
+        for probe_idx in range(self.probe_102_attempts):
+            if probe_idx < len(self.probe_102_intervals):
+                interval = self.probe_102_intervals[probe_idx]
+            else:
+                # If we run out of configured intervals, use the last one
+                interval = self.probe_102_intervals[-1]
+
+            self.logger.info(
+                f"Probe {probe_idx + 1}/{self.probe_102_attempts}: sleeping {interval}s before next poll attempt",
+                extra={
+                    "extra_fields": {
+                        "probe_index": probe_idx + 1,
+                        "probe_interval_seconds": interval,
+                    }
+                },
+            )
+
+            await self.sleep(interval)
+            if not self.running:
+                return  # Daemon shutting down
+
+            # Attempt one poll
+            try:
+                self.logger.info(
+                    f"Probe {probe_idx + 1}/{self.probe_102_attempts}: attempting poll",
+                    extra={"extra_fields": {"probe_index": probe_idx + 1}},
+                )
+                await self._collect_train_positions_cycle(client)
+            except Exception as e:
+                cat = classify_error(e)
+                if cat == ErrorCategory.DAILY_QUOTA:
+                    self.logger.warning(
+                        f"Probe {probe_idx + 1} still returns 102. Continuing to next probe or midnight sleep.",
+                        extra={
+                            "extra_fields": {
+                                "probe_index": probe_idx + 1,
+                                "error_type": type(e).__name__,
+                            }
+                        },
+                    )
+                    continue  # Try next probe
+                # Different error category - let outer handler deal with it
+                self.logger.warning(
+                    f"Probe {probe_idx + 1} returned non-102 error ({cat.value}). Re-raising for outer handler.",
+                    extra={
+                        "extra_fields": {
+                            "probe_index": probe_idx + 1,
+                            "error_category": cat.value,
+                            "error_type": type(e).__name__,
+                        }
+                    },
+                )
+                raise
+            else:
+                # Success! Resume normal schedule
+                self.logger.info(
+                    f"Probe {probe_idx + 1} succeeded! Daily quota appears restored. Resuming normal schedule.",
+                    extra={"extra_fields": {"probe_index": probe_idx + 1}},
+                )
+                return
+
+        # All probes exhausted and still 102 - sleep until midnight
+        self.logger.info(
+            "All probes exhausted, still returning 102. Sleeping until midnight Chicago.",
+            extra={
+                "extra_fields": {
+                    "next_midnight_chicago": next_midnight.isoformat(),
+                }
+            },
+        )
+
+        # Recompute next midnight in case probes took significant time
+        now_chicago = datetime.datetime.now(chicago_tz)
+        next_midnight = (now_chicago + datetime.timedelta(days=1)).replace(
+            hour=0, minute=5, second=0, microsecond=0
+        )  # Midnight + 5 min buffer
+        await self._sleep_until_midnight(next_midnight)
+
+    async def _sleep_until_midnight(
+        self, target_time: datetime.datetime
+    ) -> None:
+        """Sleep until target_time in chunks to allow shutdown interruption.
+
+        Args:
+            target_time: Target datetime to sleep until (must be timezone-aware)
+
+        """
+        while self.running:
+            now = datetime.datetime.now(target_time.tzinfo)
+            remaining_seconds = (target_time - now).total_seconds()
+
+            if remaining_seconds <= 0:
+                self.logger.info(
+                    "Reached target time (midnight + 5 min). Resuming normal schedule.",
+                    extra={
+                        "extra_fields": {
+                            "target_time": target_time.isoformat(),
+                        }
+                    },
+                )
+                return
+
+            # Sleep in chunks of 60 seconds to allow shutdown checks
+            chunk_seconds = min(60.0, remaining_seconds)
+            self.logger.debug(
+                f"Sleeping {chunk_seconds:.0f}s (remaining: {remaining_seconds:.0f}s until {target_time.isoformat()})",
+                extra={
+                    "extra_fields": {
+                        "chunk_seconds": chunk_seconds,
+                        "remaining_seconds": remaining_seconds,
+                        "target_time": target_time.isoformat(),
+                    }
+                },
+            )
+            await self.sleep(chunk_seconds)
 
     @override
     def _get_state(self) -> dict[str, str | int | float]:

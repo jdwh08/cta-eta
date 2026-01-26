@@ -69,6 +69,78 @@ class TestClassifyError:
         assert classify_error(RuntimeError("x")) == ErrorCategory.UNKNOWN
         assert classify_error(ValueError("something else")) == ErrorCategory.UNKNOWN
 
+    def test_cta_tracker_api_error_102_returns_daily_quota(self) -> None:
+        """Test that CTATrackerAPIError with err_cd=102 returns ErrorCategory.DAILY_QUOTA."""
+        from cta_eta.data_collection.apis.api_train_position import CTATrackerAPIError
+
+        err = CTATrackerAPIError(err_cd="102", err_nm="Daily limit exceeded")
+        assert classify_error(err) == ErrorCategory.DAILY_QUOTA
+
+    def test_cta_tracker_api_error_configuration_codes_return_configuration(
+        self,
+    ) -> None:
+        """Test that CTATrackerAPIError with config error codes returns ErrorCategory.CONFIGURATION."""
+        from cta_eta.data_collection.apis.api_train_position import CTATrackerAPIError
+
+        for err_cd in ("100", "101", "106", "107", "500"):
+            err = CTATrackerAPIError(err_cd=err_cd, err_nm=f"Error {err_cd}")
+            assert classify_error(err) == ErrorCategory.CONFIGURATION
+
+    def test_cta_tracker_api_error_unknown_code_returns_configuration(self) -> None:
+        """Test that CTATrackerAPIError with unknown error code returns ErrorCategory.CONFIGURATION."""
+        from cta_eta.data_collection.apis.api_train_position import CTATrackerAPIError
+
+        err = CTATrackerAPIError(err_cd="999", err_nm="Unknown error")
+        assert classify_error(err) == ErrorCategory.CONFIGURATION
+
+    def test_httpx_status_error_with_102_in_body_returns_daily_quota(self) -> None:
+        """Test that HTTPStatusError with errCd=102 in response body returns ErrorCategory.DAILY_QUOTA."""
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {
+            "ctatt": {"errCd": "102", "errNm": "Daily limit exceeded"}
+        }
+        err = httpx.HTTPStatusError("200", request=MagicMock(), response=resp)
+        assert classify_error(err) == ErrorCategory.DAILY_QUOTA
+
+    def test_httpx_status_error_with_500_in_body_returns_configuration(self) -> None:
+        """Test that HTTPStatusError with errCd=500 in response body returns ErrorCategory.CONFIGURATION."""
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {
+            "ctatt": {"errCd": "500", "errNm": "Internal server error"}
+        }
+        err = httpx.HTTPStatusError("200", request=MagicMock(), response=resp)
+        assert classify_error(err) == ErrorCategory.CONFIGURATION
+
+    def test_httpx_status_error_with_err_cd_zero_uses_http_classification(
+        self,
+    ) -> None:
+        """Test that HTTPStatusError with errCd=0 uses HTTP status code classification."""
+        resp = MagicMock()
+        resp.status_code = 500
+        resp.json.return_value = {"ctatt": {"errCd": "0", "errNm": None}}
+        err = httpx.HTTPStatusError("500", request=MagicMock(), response=resp)
+        assert classify_error(err) == ErrorCategory.TRANSIENT
+
+    def test_httpx_status_error_with_no_err_cd_uses_http_classification(self) -> None:
+        """Test that HTTPStatusError without errCd uses HTTP status code classification."""
+        resp = MagicMock()
+        resp.status_code = 404
+        resp.json.return_value = {"ctatt": {"tmst": "2026-01-25T12:00:00"}}
+        err = httpx.HTTPStatusError("404", request=MagicMock(), response=resp)
+        assert classify_error(err) == ErrorCategory.CONFIGURATION
+
+    def test_httpx_status_error_with_invalid_json_uses_http_classification(
+        self,
+    ) -> None:
+        """Test that HTTPStatusError with invalid JSON uses HTTP status code classification."""
+        resp = MagicMock()
+        resp.status_code = 501
+        resp.json.side_effect = ValueError("Invalid JSON")
+        err = httpx.HTTPStatusError("501", request=MagicMock(), response=resp)
+        assert classify_error(err) == ErrorCategory.TRANSIENT
+
 
 class TestDiscoveryStateMarker:
     """Tests for DiscoveryStateMarker."""

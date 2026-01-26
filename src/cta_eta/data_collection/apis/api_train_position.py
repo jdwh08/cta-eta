@@ -57,6 +57,35 @@ from cta_eta.data_collection.utils import validate_lat_lon
 
 logger = get_logger(__name__)
 
+
+class CTATrackerAPIError(Exception):
+    """Exception raised when CTA Train Tracker API returns an error code in response body.
+
+    CTA API returns HTTP 200 with error details in the JSON body under ctatt.errCd
+    and ctatt.errNm. This exception preserves those values for daemon-level handling.
+
+    Attributes:
+        err_cd: CTA error code (e.g., "102", "500")
+        err_nm: CTA error message (optional, may be None)
+
+    """
+
+    def __init__(self, err_cd: str, err_nm: str | None = None) -> None:
+        """Initialize CTATrackerAPIError with error code and optional message.
+
+        Args:
+            err_cd: CTA error code from ctatt.errCd
+            err_nm: CTA error message from ctatt.errNm (optional)
+
+        """
+        self.err_cd = err_cd
+        self.err_nm = err_nm
+        msg = f"CTA API error {err_cd}"
+        if err_nm:
+            msg += f": {err_nm}"
+        super().__init__(msg)
+
+
 # CTA API endpoint and configuration
 TRAIN_POSITION_URL: Final[str] = (
     "http://lapi.transitchicago.com/api/1.0/ttpositions.aspx"
@@ -77,6 +106,10 @@ async def get_train_positions(client: httpx.AsyncClient) -> dict[str, Any]:
     Makes a single API call to retrieve positions for all 8 CTA train lines at once.
     Uses stamina retry decorator for resilience against transient HTTP errors.
 
+    CTA API returns HTTP 200 with error codes in JSON body. This function checks
+    ctatt.errCd and raises CTATrackerAPIError for non-zero error codes, allowing
+    the daemon to classify and handle them appropriately.
+
     Args:
         client: HTTP client for API requests
 
@@ -85,6 +118,7 @@ async def get_train_positions(client: httpx.AsyncClient) -> dict[str, Any]:
 
     Raises:
         httpx.HTTPStatusError: After max retry attempts exhausted
+        CTATrackerAPIError: When CTA returns error code in response body
         ValueError: If CTA_API_KEY environment variable not set
 
     """
@@ -102,7 +136,15 @@ async def get_train_positions(client: httpx.AsyncClient) -> dict[str, Any]:
         },
     )
     response.raise_for_status()
-    return response.json()
+    body = response.json()
+
+    # Check for CTA application-level errors in response body
+    ctatt = body.get("ctatt") or {}
+    err_cd = ctatt.get("errCd")
+    if err_cd is not None and str(err_cd) != "0":
+        raise CTATrackerAPIError(err_cd=str(err_cd), err_nm=ctatt.get("errNm"))
+
+    return body
 
 
 def normalize_train_positions(

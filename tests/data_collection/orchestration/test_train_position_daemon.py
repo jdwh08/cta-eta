@@ -554,13 +554,13 @@ class TestTrainPositionDaemonRunLoop:
         assert cycle_calls[0] is mock_http_client
 
     @pytest.mark.usefixtures("cleanup_state_files")
-    def test_run_transient_error_logs_warning_and_continues(
+    def test_run_transient_error_calls_extended_retry(
         self,
         train_daemon: tuple[TrainPositionDaemon, MagicMock],
         mock_http_client: MagicMock,
         mocker: MockerFixture,
     ) -> None:
-        """On TRANSIENT (e.g. TimeoutException), logs warning and continues to sleep."""
+        """On TRANSIENT error, calls _retry_with_extended_backoff method."""
         # Arrange
         daemon, _ = train_daemon
         daemon.running = True
@@ -568,6 +568,21 @@ class TestTrainPositionDaemonRunLoop:
             daemon,
             "_collect_train_positions_cycle",
             side_effect=httpx.TimeoutException("timeout", request=MagicMock()),
+            autospec=True,
+        )
+
+        retry_called = [False]
+
+        async def mock_retry(
+            _client: httpx.AsyncClient, _error: Exception
+        ) -> bool:
+            retry_called[0] = True
+            return False  # Simulate exhausted retry
+
+        mocker.patch.object(
+            daemon,
+            "_retry_with_extended_backoff",
+            side_effect=mock_retry,
             autospec=True,
         )
 
@@ -586,8 +601,9 @@ class TestTrainPositionDaemonRunLoop:
         asyncio.run(daemon.run())
 
         # Assert
+        assert retry_called[0]
         cast("MagicMock", daemon.logger).warning.assert_called()
-        assert "Transient" in str(daemon.logger.warning.call_args)
+        assert "retry exhausted" in str(daemon.logger.warning.call_args).lower()
 
     @pytest.mark.usefixtures("cleanup_state_files")
     def test_run_rate_limit_error_applies_backoff_and_continues(
