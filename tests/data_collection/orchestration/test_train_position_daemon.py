@@ -780,3 +780,120 @@ class TestTrainPositionDaemonRunLoop:
 
         # Assert
         assert 15 in sleep_args
+
+
+class TestTrainPositionDaemonStateApplication:
+    """Tests for _apply_state and restart gap detection."""
+
+    @pytest.mark.usefixtures("cleanup_state_files")
+    def test_apply_state_restores_daemon_state(
+        self,
+        train_daemon: tuple[TrainPositionDaemon, MagicMock],
+    ) -> None:
+        """_apply_state correctly restores last_poll_timestamp and counters from state."""
+        # Arrange
+        daemon, _ = train_daemon
+        state = {
+            "last_poll_timestamp": 1234567890.5,
+            "total_records_collected": 42,
+            "current_poll_count": 10,
+        }
+
+        # Act
+        daemon._apply_state(state)
+
+        # Assert
+        assert daemon.last_poll_timestamp == 1234567890.5
+        assert daemon.total_records_collected == 42
+        assert daemon.current_poll_count == 10
+        daemon.logger.info.assert_called()
+
+    @pytest.mark.usefixtures("cleanup_state_files")
+    def test_apply_state_handles_empty_state(
+        self,
+        train_daemon: tuple[TrainPositionDaemon, MagicMock],
+    ) -> None:
+        """_apply_state does not change anything when state is empty."""
+        # Arrange
+        daemon, _ = train_daemon
+        daemon.last_poll_timestamp = 999.0
+        daemon.total_records_collected = 5
+        daemon.current_poll_count = 2
+
+        # Act
+        daemon._apply_state({})
+
+        # Assert - values unchanged since state was empty
+        assert daemon.last_poll_timestamp == 999.0
+        assert daemon.total_records_collected == 5
+        assert daemon.current_poll_count == 2
+
+    @pytest.mark.usefixtures("cleanup_state_files")
+    def test_check_restart_gap_no_gap_on_first_run(
+        self,
+        train_daemon: tuple[TrainPositionDaemon, MagicMock],
+    ) -> None:
+        """_check_restart_gap does not report gap when last_poll_timestamp is 0."""
+        # Arrange
+        daemon, _ = train_daemon
+        daemon.last_poll_timestamp = 0.0
+
+        # Act
+        daemon._check_restart_gap()
+
+        # Assert - should log first run, no gap detected
+        daemon.logger.info.assert_any_call("First daemon run - no restart gap check needed")
+        assert daemon.pending_gap_metadata is None
+
+    @pytest.mark.usefixtures("cleanup_state_files")
+    def test_check_restart_gap_detects_downtime_gap(
+        self,
+        train_daemon: tuple[TrainPositionDaemon, MagicMock],
+        mocker: MockerFixture,
+    ) -> None:
+        """_check_restart_gap detects and logs restart gap when downtime exceeds threshold."""
+        # Arrange
+        daemon, _ = train_daemon
+        daemon.train_poll_interval = 15
+        daemon.last_poll_timestamp = 1000.0
+        current_time = 1000.0 + 60.0  # 60 seconds later, exceeds 2x15=30s threshold
+
+        mocker.patch(
+            "cta_eta.data_collection.orchestration.train_position_daemon.time.time",
+            return_value=current_time,
+        )
+
+        # Act
+        daemon._check_restart_gap()
+
+        # Assert - gap detected and flagged
+        assert daemon.pending_gap_metadata is not None
+        assert daemon.pending_gap_metadata["is_gap"] is True
+        assert daemon.pending_gap_metadata["gap_reason"] == "downtime"
+        daemon.logger.warning.assert_called()
+
+    @pytest.mark.usefixtures("cleanup_state_files")
+    def test_check_restart_gap_no_gap_within_threshold(
+        self,
+        train_daemon: tuple[TrainPositionDaemon, MagicMock],
+        mocker: MockerFixture,
+    ) -> None:
+        """_check_restart_gap does not report gap when restart is within threshold."""
+        # Arrange
+        daemon, _ = train_daemon
+        daemon.train_poll_interval = 15
+        daemon.last_poll_timestamp = 1000.0
+        current_time = 1000.0 + 20.0  # 20 seconds, within 2x15=30s threshold
+
+        mocker.patch(
+            "cta_eta.data_collection.orchestration.train_position_daemon.time.time",
+            return_value=current_time,
+        )
+
+        # Act
+        daemon._check_restart_gap()
+
+        # Assert - no gap
+        assert daemon.pending_gap_metadata is None
+        # Should log info about no gap
+        daemon.logger.info.assert_called()

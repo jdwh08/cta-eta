@@ -119,11 +119,14 @@ class TrainPositionDaemon(AsyncBaseDaemon):
             else [300, 900]
         )
 
-        # Initialize state tracking
+        # Initialize state tracking (will be overridden by _apply_state if state exists)
         self.last_poll_timestamp = 0.0
         self.total_records_collected = 0
         self.current_poll_count = 0
         self.pending_gap_metadata = None
+
+        # Check for restart gaps after state has been applied
+        self._check_restart_gap()
 
     @override
     async def run(self) -> None:
@@ -672,6 +675,75 @@ class TrainPositionDaemon(AsyncBaseDaemon):
             "current_poll_count": self.current_poll_count,
             "train_poll_interval_seconds": self.train_poll_interval,
         }
+
+    @override
+    def _apply_state(self, state: dict[str, str | int | float]) -> None:
+        """Apply loaded state to daemon instance.
+
+        Restores last_poll_timestamp, total_records_collected, and current_poll_count
+        from persisted state.
+
+        Args:
+            state: State dictionary loaded from persistent storage (empty dict if no state)
+
+        """
+        if state:
+            self.last_poll_timestamp = float(state.get("last_poll_timestamp", 0.0))
+            self.total_records_collected = int(state.get("total_records_collected", 0))
+            self.current_poll_count = int(state.get("current_poll_count", 0))
+            self.logger.info(
+                "Applied daemon state from previous run",
+                extra={
+                    "extra_fields": {
+                        "last_poll_timestamp": self.last_poll_timestamp,
+                        "total_records_collected": self.total_records_collected,
+                        "current_poll_count": self.current_poll_count,
+                    }
+                },
+            )
+
+    def _check_restart_gap(self) -> None:
+        """Check for downtime gap on daemon restart.
+
+        Uses gap_detection.detect_gap() to identify gaps between last poll
+        (from persisted state) and current restart time. If gap detected,
+        logs warning and flags gap metadata for next successful poll.
+
+        Called once during __init__ after state has been applied.
+        """
+        if self.last_poll_timestamp == 0.0:
+            # First run ever - no previous state to compare
+            self.logger.info("First daemon run - no restart gap check needed")
+            return
+
+        current_timestamp = time.time()
+        gap_metadata = detect_gap(
+            last_poll_timestamp=self.last_poll_timestamp,
+            current_timestamp=current_timestamp,
+            poll_interval=float(self.train_poll_interval),
+            threshold_multiplier=2.0,
+        )
+
+        if gap_metadata["is_gap"]:
+            self.logger.warning(
+                f"Restart gap detected: downtime of {gap_metadata['gap_duration_seconds']:.1f}s "
+                f"({gap_metadata['missed_poll_cycles']} missed cycles)",
+                extra={
+                    "extra_fields": {
+                        "gap_metadata": gap_metadata,
+                        "gap_reason": "downtime",
+                    }
+                },
+            )
+            # Flag gap metadata to attach to next successful poll
+            # Override gap_reason to "downtime" since this is a restart gap
+            gap_metadata["gap_reason"] = "downtime"
+            self.pending_gap_metadata = gap_metadata
+        else:
+            self.logger.info(
+                f"Restart gap check: no gap detected (last poll {current_timestamp - self.last_poll_timestamp:.1f}s ago, "
+                f"within threshold {self.train_poll_interval * 2.0:.1f}s)"
+            )
 
 
 if __name__ == "__main__":
