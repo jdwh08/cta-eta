@@ -8,6 +8,10 @@ import httpx
 import pytest
 
 from cta_eta.data_collection.apis import api_weather_nws
+from cta_eta.data_collection.exceptions import (
+    APIResponseError,
+    ConfigurationError,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -42,7 +46,7 @@ async def test_get_auth_header_requires_env(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.delenv("NWS_EMAIL", raising=False)
 
     # Act / Assert
-    with pytest.raises(ValueError, match="NWS_APP_NAME and NWS_EMAIL must be set"):
+    with pytest.raises(ConfigurationError, match="NWS_APP_NAME and NWS_EMAIL must be set"):
         api_weather_nws._get_auth_header()
 
 
@@ -421,7 +425,7 @@ async def test_get_nws_hourly_forecast_parse_error_properties_not_dict(
 
     # Act / Assert
     with pytest.raises(
-        ValueError, match="Failed to parse NWS hourly forecast response"
+        APIResponseError, match="NWS API response parsing error"
     ):
         await api_weather_nws.get_nws_hourly_forecast(client, grid_id)
 
@@ -444,7 +448,7 @@ async def test_get_nws_hourly_forecast_parse_error_periods_missing_or_empty(
 
     # Act / Assert
     with pytest.raises(
-        ValueError, match="Failed to parse NWS hourly forecast response"
+        APIResponseError, match="NWS API response"
     ):
         await api_weather_nws.get_nws_hourly_forecast(client, grid_id)
 
@@ -467,7 +471,7 @@ async def test_get_nws_hourly_forecast_parse_error_period_not_dict(
 
     # Act / Assert
     with pytest.raises(
-        ValueError, match="Failed to parse NWS hourly forecast response"
+        APIResponseError, match="NWS API response"
     ):
         await api_weather_nws.get_nws_hourly_forecast(client, grid_id)
 
@@ -493,7 +497,7 @@ async def test_get_nws_hourly_forecast_parse_error_temperature_none(
 
     # Act / Assert
     with pytest.raises(
-        ValueError, match="Failed to parse NWS hourly forecast response"
+        APIResponseError, match="NWS API response"
     ):
         await api_weather_nws.get_nws_hourly_forecast(client, grid_id)
 
@@ -519,7 +523,7 @@ async def test_get_nws_hourly_forecast_parse_error_temperature_not_numeric(
 
     # Act / Assert
     with pytest.raises(
-        ValueError, match="Failed to parse NWS hourly forecast response"
+        APIResponseError, match="NWS API response"
     ):
         await api_weather_nws.get_nws_hourly_forecast(client, grid_id)
 
@@ -545,7 +549,7 @@ async def test_get_nws_hourly_forecast_parse_error_dewpoint_not_dict(
 
     # Act / Assert
     with pytest.raises(
-        ValueError, match="Failed to parse NWS hourly forecast response"
+        APIResponseError, match="NWS API response"
     ):
         await api_weather_nws.get_nws_hourly_forecast(client, grid_id)
 
@@ -571,7 +575,7 @@ async def test_get_nws_hourly_forecast_parse_error_dewpoint_value_none(
 
     # Act / Assert
     with pytest.raises(
-        ValueError, match="Failed to parse NWS hourly forecast response"
+        APIResponseError, match="NWS API response"
     ):
         await api_weather_nws.get_nws_hourly_forecast(client, grid_id)
 
@@ -597,7 +601,7 @@ async def test_get_nws_hourly_forecast_parse_error_dewpoint_value_not_numeric(
 
     # Act / Assert
     with pytest.raises(
-        ValueError, match="Failed to parse NWS hourly forecast response"
+        APIResponseError, match="NWS API response"
     ):
         await api_weather_nws.get_nws_hourly_forecast(client, grid_id)
 

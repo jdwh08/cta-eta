@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from cta_eta.data_collection.apis import api_weather_open_meteo
+from cta_eta.data_collection.exceptions import APIResponseError
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -202,7 +203,7 @@ async def test_discover_open_meteo_grid_parse_error_non_numeric_lat_lon(
     )
 
     # Act / Assert
-    with pytest.raises(TypeError, match=r"latitude.*or.*longitude.*not numeric"):
+    with pytest.raises(APIResponseError, match=r"latitude.*or.*longitude.*not numeric"):
         await api_weather_open_meteo.discover_open_meteo_grid(
             open_meteo_client, 41.72, -87.62
         )
@@ -221,7 +222,7 @@ async def test_discover_open_meteo_grid_parse_error_propagates(
     )
 
     # Act / Assert
-    with pytest.raises(TypeError, match="missing required field"):
+    with pytest.raises(APIResponseError, match="missing required field"):
         await api_weather_open_meteo.discover_open_meteo_grid(
             open_meteo_client, 41.72, -87.62
         )
@@ -245,7 +246,7 @@ async def test_get_open_meteo_current_parse_error_current_not_dict(
 
     # Act / Assert
     with pytest.raises(
-        ValueError, match="Open-Meteo API response structure unexpected"
+        APIResponseError, match="Open-Meteo API response 'current' is not a dict"
     ):
         await api_weather_open_meteo.get_open_meteo_current(
             open_meteo_client, "41.88,-87.63"
@@ -270,7 +271,7 @@ async def test_get_open_meteo_current_parse_error_lat_lon_not_numeric(
 
     # Act / Assert
     with pytest.raises(
-        ValueError, match="Open-Meteo API response structure unexpected"
+        APIResponseError, match="Open-Meteo API response"
     ):
         await api_weather_open_meteo.get_open_meteo_current(
             open_meteo_client, "41.88,-87.63"
@@ -295,7 +296,7 @@ async def test_get_open_meteo_current_parse_error_missing_current_time(
 
     # Act / Assert
     with pytest.raises(
-        ValueError, match="Open-Meteo API response structure unexpected"
+        APIResponseError, match="Open-Meteo API response"
     ):
         await api_weather_open_meteo.get_open_meteo_current(
             open_meteo_client, "41.88,-87.63"

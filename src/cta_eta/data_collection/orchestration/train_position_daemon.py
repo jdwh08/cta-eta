@@ -4,6 +4,9 @@ This module provides continuous 15-second train position polling that fetches al
 train lines in a single API call, capturing ~230k snapshots/day while staying well under
 CTA's 50k/day rate limit.
 
+CTA train tracker positions documentation suggests it updates every 15-20 seconds.
+There is NO BACKFILL capability. Whatever we collect during each polling cycle is the only source of truth for that time period.
+
 The daemon:
 - Polls train positions every 15 seconds (configurable)
 - Fetches all 8 CTA lines in one API call (efficient batch)
@@ -30,7 +33,7 @@ from cta_eta.data_collection.apis.api_train_position import (
 )
 from cta_eta.data_collection.config import get_config_section, load_config
 from cta_eta.data_collection.logging import log_context
-from cta_eta.data_collection.orchestration.daemon_async import AsyncBaseDaemon
+from cta_eta.data_collection.orchestration.daemon_async import AsyncBaseDaemon, Config
 from cta_eta.data_collection.orchestration.daemon_utils import (
     ErrorCategory,
     classify_error,
@@ -79,11 +82,16 @@ class TrainPositionDaemon(AsyncBaseDaemon):
     probe_102_attempts: int
     probe_102_intervals: list[int]
     pending_gap_metadata: dict[str, bool | float | str | int | None] | None
+    storage_failure_count: int
+    storage_failure_threshold: int
+    storage_failure_backoff_seconds: int
+    storage_backoff_until: float
+    gap_reason_override: str | None
 
     def __init__(
         self,
         logger: logging.Logger,
-        config: dict[str, dict[str, str | int | float | bool]] | None = None,
+        config: Config | None = None,
     ) -> None:
         """Initialize train position daemon with storage and configuration.
 
@@ -124,6 +132,15 @@ class TrainPositionDaemon(AsyncBaseDaemon):
         self.total_records_collected = 0
         self.current_poll_count = 0
         self.pending_gap_metadata = None
+        self.storage_failure_count = 0
+        self.storage_failure_threshold = int(
+            collection_config.get("storage_failure_threshold", 3)
+        )
+        self.storage_failure_backoff_seconds = int(
+            collection_config.get("storage_failure_backoff_seconds", 120)
+        )
+        self.storage_backoff_until = 0.0
+        self.gap_reason_override = None
 
         # Check for restart gaps after state has been applied
         self._check_restart_gap()
@@ -145,75 +162,109 @@ class TrainPositionDaemon(AsyncBaseDaemon):
         limits = httpx.Limits(max_connections=10, max_keepalive_connections=5)
 
         async with httpx.AsyncClient(timeout=timeout, limits=limits) as client:
+            next_poll_at = time.monotonic()
             while self.running:
                 try:
+                    next_poll_at = await self._apply_storage_backoff(next_poll_at)
+                    if not self.running:
+                        return
+                    await self._sleep_until_next_poll(next_poll_at)
+                    if not self.running:
+                        return
                     await self._collect_train_positions_cycle(client)
                 except asyncio.CancelledError:
                     raise
-                except Exception as e:
-                    category = classify_error(e)
-                    match category:
-                        case ErrorCategory.CONFIGURATION:
-                            self.logger.exception(
-                                "Configuration error detected. Exiting daemon.",
-                                extra={
-                                    "extra_fields": {
-                                        "error_type": type(e).__name__,
-                                        "error_category": category.value,
-                                        "error_message": str(e),
-                                    }
-                                },
-                            )
-                            # Exit gracefully on configuration errors
-                            self.running = False
-                            raise
-                        case ErrorCategory.DAILY_QUOTA:
-                            # CTA error 102: daily quota exceeded
-                            await self._handle_daily_quota_error(client, e)
-                            continue  # Skip normal sleep, handled in _handle_daily_quota_error
-                        case ErrorCategory.RATE_LIMIT:
-                            self.logger.warning(
-                                f"Rate limit error: {e}. Applying backoff.",
-                                extra={
-                                    "extra_fields": {
-                                        "error_type": type(e).__name__,
-                                        "error_category": category.value,
-                                        "error_message": str(e),
-                                    }
-                                },
-                            )
-                            # Apply longer backoff for rate limits (poll blocking)
-                            await self.sleep(self.train_poll_interval * 2)
-                            continue
-                        case ErrorCategory.TRANSIENT:
-                            # Extended retry with poll blocking
-                            success = await self._retry_with_extended_backoff(client, e)
-                            if not success:
-                                # Retry exhausted, log gap and resume schedule
-                                # Gap metadata will be detected on next successful cycle
-                                self.logger.warning(
-                                    "Transient error retry exhausted. Accepting gap and resuming schedule.",
-                                    extra={
-                                        "extra_fields": {
-                                            "error_type": type(e).__name__,
-                                            "error_category": category.value,
-                                            "error_message": str(e),
-                                        }
-                                    },
-                                )
-                        case _:
-                            self.logger.exception(
-                                "Train position collection cycle failed",
-                                extra={
-                                    "extra_fields": {
-                                        "error_type": type(e).__name__,
-                                        "error_category": category.value,
-                                        "error_message": str(e),
-                                    }
-                                },
-                            )
+                except Exception as e:  # noqa: BLE001
+                    await self._handle_collection_error(client, e)
 
-                await self.sleep(self.train_poll_interval)
+                next_poll_at = max(
+                    next_poll_at + self.train_poll_interval, time.monotonic()
+                )
+
+    async def _apply_storage_backoff(self, next_poll_at: float) -> float:
+        """Apply storage backoff and adjust the next poll time."""
+        now = time.monotonic()
+        if self.storage_backoff_until <= now:
+            return next_poll_at
+
+        await self.sleep(self.storage_backoff_until - now)
+        if not self.running:
+            return next_poll_at
+
+        now = time.monotonic()
+        return max(next_poll_at, now)
+
+    async def _sleep_until_next_poll(self, next_poll_at: float) -> None:
+        """Sleep until `next_poll_at` if it is in the future."""
+        now = time.monotonic()
+        if now < next_poll_at:
+            await self.sleep(next_poll_at - now)
+
+    async def _handle_collection_error(
+        self, client: httpx.AsyncClient, error: Exception
+    ) -> None:
+        """Handle errors from a collection cycle based on error category."""
+        category = classify_error(error)
+        match category:
+            case ErrorCategory.CONFIGURATION:
+                self.logger.exception(
+                    "Configuration error detected. Exiting daemon.",
+                    extra={
+                        "extra_fields": {
+                            "error_type": type(error).__name__,
+                            "error_category": category.value,
+                            "error_message": str(error),
+                        }
+                    },
+                )
+                # Exit gracefully on configuration errors
+                self.running = False
+                raise error
+            case ErrorCategory.DAILY_QUOTA:
+                # CTA error 102: daily quota exceeded
+                await self._handle_daily_quota_error(client, error)
+            case ErrorCategory.RATE_LIMIT:
+                self.logger.warning(
+                    f"Rate limit error: {error}. Applying backoff.",
+                    extra={
+                        "extra_fields": {
+                            "error_type": type(error).__name__,
+                            "error_category": category.value,
+                            "error_message": str(error),
+                        }
+                    },
+                )
+                # Apply longer backoff for rate limits (poll blocking)
+                await self.sleep(self.train_poll_interval * 2)
+            case ErrorCategory.TRANSIENT:
+                # Extended retry with poll blocking
+                success = await self._retry_with_extended_backoff(client, error)
+                if success:
+                    return
+
+                # Retry exhausted, log gap and resume schedule
+                # Gap metadata will be detected on next successful cycle
+                self.logger.warning(
+                    "Transient error retry exhausted. Accepting gap and resuming schedule.",
+                    extra={
+                        "extra_fields": {
+                            "error_type": type(error).__name__,
+                            "error_category": category.value,
+                            "error_message": str(error),
+                        }
+                    },
+                )
+            case _:
+                self.logger.exception(
+                    "Train position collection cycle failed",
+                    extra={
+                        "extra_fields": {
+                            "error_type": type(error).__name__,
+                            "error_category": category.value,
+                            "error_message": str(error),
+                        }
+                    },
+                )
 
     async def _collect_train_positions_cycle(self, client: httpx.AsyncClient) -> None:
         """Execute one complete train position collection cycle.
@@ -229,17 +280,16 @@ class TrainPositionDaemon(AsyncBaseDaemon):
         cycle_id = (
             self.diagnostics.new_cycle_id() if self.diagnostics.enabled else "disabled"
         )
+        self.logger.info(
+            "Starting train position collection cycle",
+            extra={"extra_fields": {"cycle_id": cycle_id}},
+        )
 
         with log_context(
             daemon_class=self.__class__.__name__,
             cycle_id=cycle_id,
             diag_run_id=self.diagnostics.run_id,
         ):
-            self.logger.info(
-                "Starting train position collection cycle",
-                extra={"extra_fields": {"cycle_id": cycle_id}},
-            )
-
             try:
                 async with self.diagnostics.span(
                     "train_positions_cycle", cycle_id=cycle_id
@@ -248,13 +298,18 @@ class TrainPositionDaemon(AsyncBaseDaemon):
 
                     # Detect gap before fetching
                     gap_metadata = detect_gap(
-                        last_poll_timestamp=self.last_poll_timestamp if self.last_poll_timestamp > 0 else None,
+                        last_poll_timestamp=self.last_poll_timestamp
+                        if self.last_poll_timestamp > 0
+                        else None,
                         current_timestamp=poll_timestamp,
                         poll_interval=float(self.train_poll_interval),
                         threshold_multiplier=2.0,
                     )
 
                     if gap_metadata["is_gap"]:
+                        if self.gap_reason_override is not None:
+                            gap_metadata["gap_reason"] = self.gap_reason_override
+                            self.gap_reason_override = None
                         self.logger.warning(
                             f"Gap detected: {gap_metadata['gap_reason']} "
                             f"({gap_metadata['gap_duration_seconds']:.1f}s, "
@@ -268,6 +323,17 @@ class TrainPositionDaemon(AsyncBaseDaemon):
                         )
                         # Set pending metadata to attach to next successful write
                         self.pending_gap_metadata = gap_metadata
+                    elif self.gap_reason_override is not None:
+                        self.logger.info(
+                            "Gap reason override set but no gap detected; clearing override.",
+                            extra={
+                                "extra_fields": {
+                                    "cycle_id": cycle_id,
+                                    "gap_reason_override": self.gap_reason_override,
+                                }
+                            },
+                        )
+                        self.gap_reason_override = None
 
                     raw_response = await self._fetch_train_positions_from_cta(
                         client, cycle_id
@@ -350,6 +416,23 @@ class TrainPositionDaemon(AsyncBaseDaemon):
                 metadata=self.pending_gap_metadata,
             )
         except Exception:
+            self.storage_failure_count += 1
+            if self.storage_failure_count >= self.storage_failure_threshold:
+                backoff_until = time.monotonic() + self.storage_failure_backoff_seconds
+                self.storage_backoff_until = max(
+                    self.storage_backoff_until, backoff_until
+                )
+                self.logger.warning(
+                    "Storage failures exceeded threshold; applying backoff before next poll.",
+                    extra={
+                        "extra_fields": {
+                            "cycle_id": cycle_id,
+                            "storage_failure_count": self.storage_failure_count,
+                            "storage_failure_threshold": self.storage_failure_threshold,
+                            "storage_backoff_seconds": self.storage_failure_backoff_seconds,
+                        }
+                    },
+                )
             self.logger.exception(
                 "Failed to store train position records",
                 extra={
@@ -374,6 +457,8 @@ class TrainPositionDaemon(AsyncBaseDaemon):
             )
             self.pending_gap_metadata = None
 
+        self.storage_failure_count = 0
+        self.storage_backoff_until = 0.0
         self.last_poll_timestamp = poll_timestamp
         self.total_records_collected += len(records)
         self.current_poll_count += 1
@@ -398,25 +483,44 @@ class TrainPositionDaemon(AsyncBaseDaemon):
             },
         )
 
+    async def _attempt_collection_cycle(
+        self, client: httpx.AsyncClient, *, raise_on_transient: bool = False
+    ) -> tuple[bool, ErrorCategory | None, Exception | None]:
+        try:
+            await self._collect_train_positions_cycle(client)
+        except Exception as e:
+            cat = classify_error(e)
+            if raise_on_transient and cat == ErrorCategory.TRANSIENT:
+                raise
+            return False, cat, e
+        return True, None, None
+
     async def _retry_with_extended_backoff(
-        self, client: httpx.AsyncClient, original_error: Exception
+        self,
+        client: httpx.AsyncClient,
+        original_error: Exception,
+        *,
+        max_attempts: int = 10,
+        max_wait: float = 60.0,
     ) -> bool:
         """Retry the collection cycle with extended backoff for transient errors.
 
-        Uses stamina retry with extended max wait (5-10 minutes total).
-        Blocks subsequent polls during retry - only returns to normal schedule
+        Uses stamina retry with extended max wait.
+        Blocks subsequent polls during retry - return to normal schedule
         when retry succeeds or exhausts attempts.
 
         Args:
             client: HTTP client for CTA API requests
             original_error: The original transient error
+            max_attempts: Maximum number of retry attempts
+            max_wait: Maximum wait between retries in seconds
 
         Returns:
             True if retry succeeded, False if retry exhausted
 
         """
         self.logger.warning(
-            "Transient error detected. Retrying with extended backoff (5-10 min total).",
+            "Transient error detected. Retrying with extended backoff.",
             extra={
                 "extra_fields": {
                     "error_type": type(original_error).__name__,
@@ -428,14 +532,13 @@ class TrainPositionDaemon(AsyncBaseDaemon):
         # Use stamina retry with extended backoff for transient errors
         # This blocks the poll - we won't continue to next cycle until retry completes
         retry_attempts = [0]  # Mutable list to track attempts in closure
-
         try:
             async for attempt in stamina.retry_context(
                 on=Exception,
-                attempts=10,
-                wait_initial=1.0,
-                wait_max=60.0,  # Up to 60s between retries
-                wait_jitter=5.0,
+                attempts=max_attempts,
+                wait_initial=0.1,
+                wait_max=max_wait,  # Up to max_wait between retries
+                wait_jitter=1.0,
             ):
                 with attempt:
                     retry_attempts[0] += 1
@@ -449,31 +552,48 @@ class TrainPositionDaemon(AsyncBaseDaemon):
                         },
                     )
                     try:
+                        # NOTE(jdwh08): keep this as is to raise on transient errors for stamina
                         await self._collect_train_positions_cycle(client)
                     except asyncio.CancelledError:
                         raise
                     except Exception as e:
                         cat = classify_error(e)
                         # Only continue retrying if it's still transient
-                        # If it becomes CONFIGURATION or DAILY_QUOTA, let it bubble up
-                        if cat != ErrorCategory.TRANSIENT:
-                            self.logger.warning(
-                                f"Error category changed from TRANSIENT to {cat.value} during retry. Stopping retry.",
-                                extra={
-                                    "extra_fields": {
-                                        "new_category": cat.value,
-                                        "error_type": type(e).__name__,
-                                    }
-                                },
-                            )
-                            raise  # Let the outer handler deal with it
-                        # Continue retry loop for transient errors
-                        raise
+                        match cat:
+                            case ErrorCategory.TRANSIENT:
+                                raise
+                            case ErrorCategory.DAILY_QUOTA:
+                                self.logger.warning(
+                                    f"Error category changed from TRANSIENT to {cat.value} during retry. Stopping retry.",
+                                    extra={
+                                        "extra_fields": {
+                                            "new_category": cat.value,
+                                            "error_type": type(e).__name__,
+                                        }
+                                    },
+                                )
+                                await self._handle_daily_quota_error(client, e)
+                                return True
+                            case _:
+                                self.logger.warning(
+                                    f"Error category changed from TRANSIENT to {cat.value} during retry. Stopping retry.",
+                                    extra={
+                                        "extra_fields": {
+                                            "new_category": cat.value,
+                                            "error_type": type(e).__name__,
+                                        }
+                                    },
+                                )
+                                if cat == ErrorCategory.CONFIGURATION:
+                                    self.running = False
+                                return True
                     else:
                         # Success path - no exception raised
                         self.logger.info(
                             f"Retry succeeded on attempt {retry_attempts[0]}",
-                            extra={"extra_fields": {"retry_attempt": retry_attempts[0]}},
+                            extra={
+                                "extra_fields": {"retry_attempt": retry_attempts[0]}
+                            },
                         )
                         return True
         except Exception as e:
@@ -485,7 +605,6 @@ class TrainPositionDaemon(AsyncBaseDaemon):
                 raise
             # Retry exhausted for transient error
             return False
-
         # Should not reach here, but for completeness
         return False
 
@@ -496,11 +615,10 @@ class TrainPositionDaemon(AsyncBaseDaemon):
 
         Strategy:
         1. Bounded probe: probe_102_attempts times with probe_102_intervals
-        2. If time until midnight < 15 min, skip probe and go straight to midnight sleep
-        3. Each probe: sleep interval, then one poll attempt
-        4. On success: resume normal 15s schedule
-        5. On continued 102: next probe or sleep until midnight
-        6. Sleep until midnight: compute next midnight Chicago + 5 min buffer, sleep in chunks
+        2. Each probe: sleep interval, then one poll attempt
+        3. On success: resume normal 15s schedule
+        4. On continued 102: next probe or sleep until midnight
+        5. Sleep until midnight: compute next midnight Chicago + 5 min buffer, sleep in chunks
 
         All sleeps are chunked and shutdown-interruptible via self.sleep().
 
@@ -520,6 +638,7 @@ class TrainPositionDaemon(AsyncBaseDaemon):
                 }
             },
         )
+        self.gap_reason_override = "daily_quota"
 
         # Compute time until next midnight Chicago
         chicago_tz = ZoneInfo("America/Chicago")
@@ -527,22 +646,6 @@ class TrainPositionDaemon(AsyncBaseDaemon):
         next_midnight = (now_chicago + datetime.timedelta(days=1)).replace(
             hour=0, minute=0, second=0, microsecond=0
         )
-        seconds_until_midnight = (next_midnight - now_chicago).total_seconds()
-
-        # If less than 15 minutes until midnight, skip probe and go straight to midnight sleep
-        min_seconds_for_probe = 900  # 15 minutes
-        if seconds_until_midnight < min_seconds_for_probe:
-            self.logger.info(
-                f"Less than 15 minutes until midnight ({seconds_until_midnight:.0f}s). Skipping probe, sleeping until midnight.",
-                extra={
-                    "extra_fields": {
-                        "seconds_until_midnight": seconds_until_midnight,
-                        "next_midnight_chicago": next_midnight.isoformat(),
-                    }
-                },
-            )
-            await self._sleep_until_midnight(next_midnight)
-            return
 
         # Bounded probe
         for probe_idx in range(self.probe_102_attempts):
@@ -567,44 +670,46 @@ class TrainPositionDaemon(AsyncBaseDaemon):
                 return  # Daemon shutting down
 
             # Attempt one poll
-            try:
-                self.logger.info(
-                    f"Probe {probe_idx + 1}/{self.probe_102_attempts}: attempting poll",
-                    extra={"extra_fields": {"probe_index": probe_idx + 1}},
-                )
-                await self._collect_train_positions_cycle(client)
-            except Exception as e:
-                cat = classify_error(e)
-                if cat == ErrorCategory.DAILY_QUOTA:
-                    self.logger.warning(
-                        f"Probe {probe_idx + 1} still returns 102. Continuing to next probe or midnight sleep.",
-                        extra={
-                            "extra_fields": {
-                                "probe_index": probe_idx + 1,
-                                "error_type": type(e).__name__,
-                            }
-                        },
-                    )
-                    continue  # Try next probe
-                # Different error category - let outer handler deal with it
-                self.logger.warning(
-                    f"Probe {probe_idx + 1} returned non-102 error ({cat.value}). Re-raising for outer handler.",
-                    extra={
-                        "extra_fields": {
-                            "probe_index": probe_idx + 1,
-                            "error_category": cat.value,
-                            "error_type": type(e).__name__,
-                        }
-                    },
-                )
-                raise
-            else:
+            self.logger.info(
+                f"Probe {probe_idx + 1}/{self.probe_102_attempts}: attempting poll",
+                extra={"extra_fields": {"probe_index": probe_idx + 1}},
+            )
+            success, cat, attempt_error = await self._attempt_collection_cycle(client)
+            if success:
                 # Success! Resume normal schedule
                 self.logger.info(
                     f"Probe {probe_idx + 1} succeeded! Daily quota appears restored. Resuming normal schedule.",
                     extra={"extra_fields": {"probe_index": probe_idx + 1}},
                 )
                 return
+            if attempt_error is None:
+                continue
+            if cat is None:
+                continue
+            non_null_error = attempt_error
+            if cat == ErrorCategory.DAILY_QUOTA:
+                self.logger.warning(
+                    f"Probe {probe_idx + 1} still returns 102. Continuing to next probe or midnight sleep.",
+                    extra={
+                        "extra_fields": {
+                            "probe_index": probe_idx + 1,
+                            "error_type": type(non_null_error).__name__,
+                        }
+                    },
+                )
+                continue  # Try next probe
+            # Different error category - let outer handler deal with it
+            self.logger.warning(
+                f"Probe {probe_idx + 1} returned non-102 error ({cat.value}). Re-raising for outer handler.",
+                extra={
+                    "extra_fields": {
+                        "probe_index": probe_idx + 1,
+                        "error_category": cat.value,
+                        "error_type": type(non_null_error).__name__,
+                    }
+                },
+            )
+            raise non_null_error
 
         # All probes exhausted and still 102 - sleep until midnight
         self.logger.info(
@@ -619,13 +724,11 @@ class TrainPositionDaemon(AsyncBaseDaemon):
         # Recompute next midnight in case probes took significant time
         now_chicago = datetime.datetime.now(chicago_tz)
         next_midnight = (now_chicago + datetime.timedelta(days=1)).replace(
-            hour=0, minute=5, second=0, microsecond=0
-        )  # Midnight + 5 min buffer
+            hour=0, minute=0, second=0, microsecond=0
+        )  # Midnight
         await self._sleep_until_midnight(next_midnight)
 
-    async def _sleep_until_midnight(
-        self, target_time: datetime.datetime
-    ) -> None:
+    async def _sleep_until_midnight(self, target_time: datetime.datetime) -> None:
         """Sleep until target_time in chunks to allow shutdown interruption.
 
         Args:
@@ -638,7 +741,7 @@ class TrainPositionDaemon(AsyncBaseDaemon):
 
             if remaining_seconds <= 0:
                 self.logger.info(
-                    "Reached target time (midnight + 5 min). Resuming normal schedule.",
+                    "Reached target time (midnight). Resuming normal schedule.",
                     extra={
                         "extra_fields": {
                             "target_time": target_time.isoformat(),
@@ -687,20 +790,23 @@ class TrainPositionDaemon(AsyncBaseDaemon):
             state: State dictionary loaded from persistent storage (empty dict if no state)
 
         """
-        if state:
-            self.last_poll_timestamp = float(state.get("last_poll_timestamp", 0.0))
-            self.total_records_collected = int(state.get("total_records_collected", 0))
-            self.current_poll_count = int(state.get("current_poll_count", 0))
-            self.logger.info(
-                "Applied daemon state from previous run",
-                extra={
-                    "extra_fields": {
-                        "last_poll_timestamp": self.last_poll_timestamp,
-                        "total_records_collected": self.total_records_collected,
-                        "current_poll_count": self.current_poll_count,
-                    }
-                },
-            )
+        if not state:
+            self.logger.warning("No state to apply")
+            return
+
+        self.last_poll_timestamp = float(state.get("last_poll_timestamp", 0.0))
+        self.total_records_collected = int(state.get("total_records_collected", 0))
+        self.current_poll_count = int(state.get("current_poll_count", 0))
+        self.logger.info(
+            "Applied daemon state from previous run",
+            extra={
+                "extra_fields": {
+                    "last_poll_timestamp": self.last_poll_timestamp,
+                    "total_records_collected": self.total_records_collected,
+                    "current_poll_count": self.current_poll_count,
+                }
+            },
+        )
 
     def _check_restart_gap(self) -> None:
         """Check for downtime gap on daemon restart.

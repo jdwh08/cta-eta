@@ -52,38 +52,14 @@ import httpx
 import stamina
 
 from cta_eta.data_collection.config import load_config
+from cta_eta.data_collection.exceptions import (
+    ConfigurationError,
+    CTATrackerAPIError,
+)
 from cta_eta.data_collection.logging import get_logger, log_api_call
 from cta_eta.data_collection.utils import validate_lat_lon
 
 logger = get_logger(__name__)
-
-
-class CTATrackerAPIError(Exception):
-    """Exception raised when CTA Train Tracker API returns an error code in response body.
-
-    CTA API returns HTTP 200 with error details in the JSON body under ctatt.errCd
-    and ctatt.errNm. This exception preserves those values for daemon-level handling.
-
-    Attributes:
-        err_cd: CTA error code (e.g., "102", "500")
-        err_nm: CTA error message (optional, may be None)
-
-    """
-
-    def __init__(self, err_cd: str, err_nm: str | None = None) -> None:
-        """Initialize CTATrackerAPIError with error code and optional message.
-
-        Args:
-            err_cd: CTA error code from ctatt.errCd
-            err_nm: CTA error message from ctatt.errNm (optional)
-
-        """
-        self.err_cd = err_cd
-        self.err_nm = err_nm
-        msg = f"CTA API error {err_cd}"
-        if err_nm:
-            msg += f": {err_nm}"
-        super().__init__(msg)
 
 
 # CTA API endpoint and configuration
@@ -119,13 +95,13 @@ async def get_train_positions(client: httpx.AsyncClient) -> dict[str, Any]:
     Raises:
         httpx.HTTPStatusError: After max retry attempts exhausted
         CTATrackerAPIError: When CTA returns error code in response body
-        ValueError: If CTA_API_KEY environment variable not set
+        ConfigurationError: If CTA_API_KEY environment variable not set
 
     """
     api_key = os.getenv("CTA_API_KEY")
     if not api_key:
         msg = "CTA_API_KEY environment variable not set"
-        raise ValueError(msg)
+        raise ConfigurationError(msg)
 
     response = await client.get(
         TRAIN_POSITION_URL,

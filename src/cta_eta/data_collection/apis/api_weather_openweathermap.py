@@ -27,6 +27,10 @@ import stamina
 
 ### OWN MODULES
 from cta_eta.data_collection.config import get_config_section, load_config
+from cta_eta.data_collection.exceptions import (
+    APIResponseError,
+    ConfigurationError,
+)
 from cta_eta.data_collection.logging import get_logger, log_api_call
 from cta_eta.data_collection.utils import safe_get_nested, validate_lat_lon
 
@@ -49,13 +53,13 @@ def _get_api_key() -> str:
         API key string
 
     Raises:
-        ValueError: If OPENWEATHERMAP_API_KEY environment variable not set
+        ConfigurationError: If OPENWEATHERMAP_API_KEY environment variable not set
 
     """
     api_key = os.getenv("OPENWEATHERMAP_API_KEY")
     if not api_key:
         msg = "OPENWEATHERMAP_API_KEY environment variable not set"
-        raise ValueError(msg)
+        raise ConfigurationError(msg)
     return api_key
 
 
@@ -68,14 +72,14 @@ def _parse_discover_grid_response(data: dict[str, object]) -> str:
     coord = safe_get_nested(data, "coord", api_name="OpenWeatherMap")
     if not isinstance(coord, dict):
         msg = "OpenWeatherMap API response 'coord' is not a dict"
-        raise TypeError(msg)
+        raise APIResponseError(msg)
 
     actual_lat = coord.get("lat")  # ty:ignore[invalid-argument-type]
     actual_lon = coord.get("lon")  # ty:ignore[invalid-argument-type]
 
     if actual_lat is None or actual_lon is None:
         msg = "OpenWeatherMap API response missing 'coord.lat' or 'coord.lon'"
-        raise TypeError(msg)
+        raise APIResponseError(msg)
 
     if not isinstance(actual_lat, (int, float)) or not isinstance(
         actual_lon, (int, float)
@@ -84,7 +88,7 @@ def _parse_discover_grid_response(data: dict[str, object]) -> str:
             "OpenWeatherMap API response 'coord.lat' or 'coord.lon' is not numeric. "
             f"Got types: {type(actual_lat).__name__}, {type(actual_lon).__name__}"
         )
-        raise TypeError(msg)
+        raise APIResponseError(msg)
 
     return f"{actual_lat},{actual_lon}"
 
@@ -151,27 +155,27 @@ def _parse_current_weather_response(
 
     if not isinstance(coord, dict):
         msg = "OpenWeatherMap API response 'coord' is not a dict"
-        raise TypeError(msg)
+        raise APIResponseError(msg)
     if not isinstance(main, dict):
         msg = "OpenWeatherMap API response 'main' is not a dict"
-        raise TypeError(msg)
+        raise APIResponseError(msg)
     if not isinstance(wind, dict):
         msg = "OpenWeatherMap API response 'wind' is not a dict"
-        raise TypeError(msg)
+        raise APIResponseError(msg)
     if not isinstance(weather_array, list) or len(weather_array) == 0:
         msg = "OpenWeatherMap API response 'weather' is missing or empty"
-        raise TypeError(msg)
+        raise APIResponseError(msg)
 
     weather = weather_array[0]
     if not isinstance(weather, dict):
         msg = "OpenWeatherMap API response 'weather[0]' is not a dict"
-        raise TypeError(msg)
+        raise APIResponseError(msg)
 
     latitude = coord.get("lat")  # ty:ignore[invalid-argument-type]
     longitude = coord.get("lon")  # ty:ignore[invalid-argument-type]
     if latitude is None or longitude is None:
         msg = "OpenWeatherMap API response missing 'coord.lat' or 'coord.lon'"
-        raise ValueError(msg)
+        raise APIResponseError(msg)
     if not isinstance(latitude, (int, float)) or not isinstance(
         longitude, (int, float)
     ):
@@ -179,12 +183,12 @@ def _parse_current_weather_response(
             "OpenWeatherMap API response 'coord.lat' or 'coord.lon' is not numeric. "
             f"Got types: {type(latitude).__name__}, {type(longitude).__name__}"
         )
-        raise TypeError(msg)
+        raise APIResponseError(msg)
 
     timestamp = data.get("dt")
     if timestamp is None:
         msg = "OpenWeatherMap API response missing 'dt' field"
-        raise ValueError(msg)
+        raise APIResponseError(msg)
 
     visibility_m = data.get("visibility")
     visibility_mi = (
@@ -288,29 +292,31 @@ async def get_openweathermap_current(
 
     try:
         return _parse_current_weather_response(data)
-    except (KeyError, TypeError, IndexError, ValueError) as e:
+    except (KeyError, TypeError, IndexError, ValueError, APIResponseError) as e:
         logger.exception("Failed to parse OpenWeatherMap current weather response")
+        if isinstance(e, APIResponseError):
+            raise
         msg = f"OpenWeatherMap API response structure unexpected: {e}"
-        raise ValueError(msg) from e
+        raise APIResponseError(msg) from e
 
 
 def _coords_from_city_dict(city: dict[str, object]) -> tuple[float, float]:
-    """Extract validated (lat, lon) from OpenWeatherMap 'city' object. Raises TypeError on invalid structure."""
+    """Extract validated (lat, lon) from OpenWeatherMap 'city' object. Raises APIResponseError on invalid structure."""
     coord = city.get("coord")
     if not isinstance(coord, dict):
         msg = "OpenWeatherMap API response 'city.coord' is not a dict"
-        raise TypeError(msg)
+        raise APIResponseError(msg)
     lat = coord.get("lat")  # ty:ignore[invalid-argument-type]
     lon = coord.get("lon")  # ty:ignore[invalid-argument-type]
     if lat is None or lon is None:
         msg = "OpenWeatherMap API response missing 'city.coord.lat' or 'city.coord.lon'"
-        raise TypeError(msg)
+        raise APIResponseError(msg)
     if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
         msg = (
             "OpenWeatherMap API response 'city.coord.lat' or 'city.coord.lon' is not numeric. "
             f"Got types: {type(lat).__name__}, {type(lon).__name__}"
         )
-        raise TypeError(msg)
+        raise APIResponseError(msg)
     return float(lat), float(lon)
 
 
@@ -327,12 +333,12 @@ def _parse_forecast_response(
 
     if not isinstance(forecast_list, list) or len(forecast_list) == 0:
         msg = "OpenWeatherMap API response 'list' is missing or empty"
-        raise ValueError(msg)
+        raise APIResponseError(msg)
 
     forecast = forecast_list[0]
     if not isinstance(forecast, dict):
         msg = "OpenWeatherMap API response 'list[0]' is not a dict"
-        raise TypeError(msg)
+        raise APIResponseError(msg)
 
     main = forecast.get("main")  # ty:ignore[invalid-argument-type]
     wind = forecast.get("wind")  # ty:ignore[invalid-argument-type]
@@ -340,22 +346,22 @@ def _parse_forecast_response(
 
     if not isinstance(main, dict):
         msg = "OpenWeatherMap API response 'list[0].main' is not a dict"
-        raise TypeError(msg)
+        raise APIResponseError(msg)
     if not isinstance(wind, dict):
         msg = "OpenWeatherMap API response 'list[0].wind' is not a dict"
-        raise TypeError(msg)
+        raise APIResponseError(msg)
     if not isinstance(weather_array, list) or len(weather_array) == 0:
         msg = "OpenWeatherMap API response 'list[0].weather' is missing or empty"
-        raise TypeError(msg)
+        raise APIResponseError(msg)
 
     weather = weather_array[0]
     if not isinstance(weather, dict):
         msg = "OpenWeatherMap API response 'list[0].weather[0]' is not a dict"
-        raise TypeError(msg)
+        raise APIResponseError(msg)
 
     if not isinstance(city, dict):
         msg = "OpenWeatherMap API response 'city' is not a dict"
-        raise TypeError(msg)
+        raise APIResponseError(msg)
 
     # NOTE(jdwh08): technically we never validated city keys are strings, but ehhh
     latitude, longitude = _coords_from_city_dict(city)
@@ -471,7 +477,9 @@ async def get_openweathermap_forecast_hourly(
 
     try:
         return _parse_forecast_response(data)
-    except (KeyError, TypeError, IndexError, ValueError) as e:
+    except (KeyError, TypeError, IndexError, ValueError, APIResponseError) as e:
         logger.exception("Failed to parse OpenWeatherMap forecast response")
+        if isinstance(e, APIResponseError):
+            raise
         msg = f"OpenWeatherMap API response structure unexpected: {e}"
-        raise ValueError(msg) from e
+        raise APIResponseError(msg) from e

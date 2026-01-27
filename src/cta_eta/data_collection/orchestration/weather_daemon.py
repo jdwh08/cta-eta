@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any, override
 import aiometer
 import httpx
 
+# Own modules
 from cta_eta.data_collection.apis.api_cta_stations import get_stations_cache
 from cta_eta.data_collection.apis.api_weather_nws import (
     discover_nws_grid,
@@ -35,8 +36,6 @@ from cta_eta.data_collection.apis.api_weather_open_meteo import get_open_meteo_c
 from cta_eta.data_collection.apis.api_weather_openweathermap import (
     get_openweathermap_current,
 )
-
-# Own modules
 from cta_eta.data_collection.config import get_config_section, validate_config
 from cta_eta.data_collection.logging import log_context
 from cta_eta.data_collection.merging.weather_merger import merge_weather_sources
@@ -786,6 +785,23 @@ class WeatherDaemon(AsyncBaseDaemon):
             "records_stored_last_cycle": self.records_stored_last_cycle,
             "weather_interval_seconds": self.weather_interval,
         }
+
+    @override
+    def _apply_state(self, state: dict[str, str | int | float]) -> None:
+        """Apply state to daemon instance."""
+        self.last_collection_time = float(state.get("last_collection_timestamp", 0.0))
+        self.records_stored_last_cycle = int(state.get("records_stored_last_cycle", 0))
+        self.weather_interval = int(state.get("weather_interval_seconds", 0))
+        self.logger.info(
+            "Applied daemon state from previous run",
+            extra={
+                "extra_fields": {
+                    "last_collection_timestamp": self.last_collection_time,
+                    "records_stored_last_cycle": self.records_stored_last_cycle,
+                    "weather_interval_seconds": self.weather_interval,
+                }
+            },
+        )
 
 
 if __name__ == "__main__":

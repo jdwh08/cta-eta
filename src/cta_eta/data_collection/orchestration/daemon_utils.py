@@ -12,6 +12,12 @@ from typing import TYPE_CHECKING
 
 import httpx
 
+from cta_eta.data_collection.exceptions import (
+    APIResponseError,
+    ConfigurationError,
+    CTATrackerAPIError,
+)
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -44,17 +50,8 @@ def classify_error(error: Exception) -> ErrorCategory:  # noqa: C901, PLR0911, P
         ErrorCategory enum value indicating how to handle the error
 
     """
-    # Import CTATrackerAPIError locally to avoid circular import
-    # (api_train_position imports config which may import daemon_utils indirectly)
-    try:
-        from cta_eta.data_collection.apis.api_train_position import (  # noqa: PLC0415
-            CTATrackerAPIError,
-        )
-    except ImportError:
-        CTATrackerAPIError = None  # type: ignore[assignment, misc]  # noqa: N806
-
     # CTA-specific application-level errors from API response body
-    if CTATrackerAPIError is not None and isinstance(error, CTATrackerAPIError):
+    if isinstance(error, CTATrackerAPIError):
         err_cd = error.err_cd
         # Error 102: Daily quota exceeded - special handling with midnight sleep
         if err_cd == "102":
@@ -66,6 +63,17 @@ def classify_error(error: Exception) -> ErrorCategory:  # noqa: C901, PLR0911, P
         return ErrorCategory.CONFIGURATION
 
     # Configuration errors (missing credentials, invalid config)
+    if isinstance(error, ConfigurationError):
+        return ErrorCategory.CONFIGURATION
+
+    # API response parsing errors
+    # These could be transient (temporary API issues) or configuration (API structure changed)
+    # Default to transient since malformed responses are more likely temporary API issues
+    if isinstance(error, APIResponseError):
+        return ErrorCategory.TRANSIENT
+
+    # Fallback: check for ValueError with configuration-related keywords
+    # This handles legacy code that hasn't been migrated to ConfigurationError yet
     if isinstance(error, ValueError) and any(
         keyword in str(error).lower()
         for keyword in ["missing", "required", "invalid", "not set", "must be set"]

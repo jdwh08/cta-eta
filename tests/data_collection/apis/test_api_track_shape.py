@@ -8,6 +8,10 @@ import httpx
 import pytest
 
 from cta_eta.data_collection.apis import api_track_shape
+from cta_eta.data_collection.exceptions import (
+    APIResponseError,
+    ConfigurationError,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -21,7 +25,7 @@ def test_get_chidata_headers_requires_token() -> None:
     }
 
     # Act / Assert
-    with pytest.raises(ValueError, match="CHIDATA_APP_TOK must be set"):
+    with pytest.raises(ConfigurationError, match="CHIDATA_APP_TOK must be set"):
         api_track_shape._get_chidata_headers(cfg)
 
 
@@ -33,7 +37,7 @@ def test_get_chidata_headers_requires_secret() -> None:
     }
 
     # Act / Assert
-    with pytest.raises(ValueError, match="CHIDATA_APP_SECRET must be set"):
+    with pytest.raises(ConfigurationError, match="CHIDATA_APP_SECRET must be set"):
         api_track_shape._get_chidata_headers(cfg)
 
 
@@ -226,7 +230,7 @@ def test_fetch_track_shapes_raw_rejects_non_list_json(
     client.get.return_value = httpx_json_response({"not": "a list"}, 200, url)
 
     # Act / Assert
-    with pytest.raises(TypeError, match="Unexpected Chicago Open Data response type"):
+    with pytest.raises(APIResponseError, match="Unexpected Chicago Open Data response type"):
         api_track_shape.fetch_track_shapes_raw(client, cfg)
 
 

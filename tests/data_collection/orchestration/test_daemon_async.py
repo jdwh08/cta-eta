@@ -12,10 +12,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from cta_eta.data_collection.orchestration.daemon_async import (
-    AsyncBaseDaemon,
-    DaemonNotStartedError,
-)
+from cta_eta.data_collection.exceptions import DaemonNotStartedError
+from cta_eta.data_collection.orchestration.daemon_async import AsyncBaseDaemon
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -98,6 +96,15 @@ class ConcreteAsyncDaemon(AsyncBaseDaemon):
     def _get_state(self) -> dict[str, str | int | float]:
         """Return test state for persistence checks."""
         return self._test_state.copy()
+
+    @override
+    def _apply_state(self, state: dict[str, str | int | float]) -> None:
+        """Apply state to daemon instance."""
+        self._test_state = state.copy()
+        self.logger.info(
+            "Applied daemon state from previous run",
+            extra={"extra_fields": {"state_keys": list(state.keys())}},
+        )
 
 
 class TestAsyncBaseDaemonInit:
@@ -560,155 +567,3 @@ class TestAsyncBaseDaemonStatePersistence:
         # Assert
         mock_logger.exception.assert_called()
         assert "Failed to save daemon state" in str(mock_logger.exception.call_args)
-
-
-class TestAsyncBaseDaemonApplyState:
-    """Test cases for _apply_state method."""
-
-    @pytest.mark.usefixtures("cleanup_state_files")
-    def test_apply_state_called_on_init_with_loaded_state(
-        self,
-        mock_logger: MagicMock,
-        sample_config: dict[str, dict[str, str | int | float | bool]],
-        daemon_state_dir: Path,
-        mocker: MockerFixture,
-    ) -> None:
-        """_apply_state is called during __init__ with loaded state."""
-        # Arrange
-        state_file = daemon_state_dir / "ConcreteAsyncDaemon.json"
-        state_data = {"test_key": "test_value", "count": 100}
-        import json
-
-        state_file.write_text(json.dumps(state_data))
-
-        # Spy on _apply_state
-        apply_state_spy = mocker.spy(ConcreteAsyncDaemon, "_apply_state")
-
-        # Act
-        daemon = ConcreteAsyncDaemon(sample_config, mock_logger)
-
-        # Assert
-        apply_state_spy.assert_called_once_with(daemon, state_data)
-
-    @pytest.mark.usefixtures("cleanup_state_files")
-    def test_apply_state_called_with_empty_dict_when_no_state(
-        self,
-        mock_logger: MagicMock,
-        sample_config: dict[str, dict[str, str | int | float | bool]],
-        mocker: MockerFixture,
-    ) -> None:
-        """_apply_state is called with empty dict when no state file exists."""
-        # Arrange
-        apply_state_spy = mocker.spy(ConcreteAsyncDaemon, "_apply_state")
-
-        # Act
-        daemon = ConcreteAsyncDaemon(sample_config, mock_logger)
-
-        # Assert
-        apply_state_spy.assert_called_once_with(daemon, {})
-
-
-class TestAsyncBaseDaemonPreShutdownHook:
-    """Test cases for _pre_shutdown_hook method."""
-
-    @pytest.mark.usefixtures("cleanup_state_files")
-    def test_pre_shutdown_hook_called_before_save_state(
-        self,
-        mock_logger: MagicMock,
-        sample_config: dict[str, dict[str, str | int | float | bool]],
-        mocker: MockerFixture,
-    ) -> None:
-        """_pre_shutdown_hook is called before _save_state during stop()."""
-        # Arrange
-        daemon = ConcreteAsyncDaemon(sample_config, mock_logger)
-        daemon.running = True
-
-        pre_shutdown_spy = mocker.spy(daemon, "_pre_shutdown_hook")
-        save_state_spy = mocker.spy(daemon, "_save_state")
-
-        # Act
-        daemon.stop()
-
-        # Assert
-        pre_shutdown_spy.assert_called_once()
-        save_state_spy.assert_called_once()
-        # Verify _pre_shutdown_hook called before _save_state
-        assert pre_shutdown_spy.call_args is not None
-        assert save_state_spy.call_args is not None
-
-    @pytest.mark.usefixtures("cleanup_state_files")
-    def test_pre_shutdown_hook_flushes_storage_when_available(
-        self,
-        mock_logger: MagicMock,
-        sample_config: dict[str, dict[str, str | int | float | bool]],
-    ) -> None:
-        """_pre_shutdown_hook calls flush() on storage when available."""
-        # Arrange
-        daemon = ConcreteAsyncDaemon(sample_config, mock_logger)
-        daemon.running = True
-
-        # Add mock storage with flush method
-        mock_storage = MagicMock()
-        mock_storage.flush = MagicMock()
-        daemon.storage = mock_storage  # type: ignore[attr-defined]
-
-        # Act
-        daemon.stop()
-
-        # Assert
-        mock_storage.flush.assert_called_once()
-
-    @pytest.mark.usefixtures("cleanup_state_files")
-    def test_pre_shutdown_hook_handles_missing_storage(
-        self,
-        mock_logger: MagicMock,
-        sample_config: dict[str, dict[str, str | int | float | bool]],
-    ) -> None:
-        """_pre_shutdown_hook does not fail when storage attribute missing."""
-        # Arrange
-        daemon = ConcreteAsyncDaemon(sample_config, mock_logger)
-        daemon.running = True
-
-        # Act & Assert - should not raise
-        daemon.stop()
-
-    @pytest.mark.usefixtures("cleanup_state_files")
-    def test_pre_shutdown_hook_handles_storage_without_flush(
-        self,
-        mock_logger: MagicMock,
-        sample_config: dict[str, dict[str, str | int | float | bool]],
-    ) -> None:
-        """_pre_shutdown_hook does not fail when storage has no flush method."""
-        # Arrange
-        daemon = ConcreteAsyncDaemon(sample_config, mock_logger)
-        daemon.running = True
-
-        # Add mock storage without flush method
-        mock_storage = MagicMock(spec=[])  # No flush method
-        daemon.storage = mock_storage  # type: ignore[attr-defined]
-
-        # Act & Assert - should not raise
-        daemon.stop()
-
-    @pytest.mark.usefixtures("cleanup_state_files")
-    def test_pre_shutdown_hook_continues_on_flush_error(
-        self,
-        mock_logger: MagicMock,
-        sample_config: dict[str, dict[str, str | int | float | bool]],
-    ) -> None:
-        """_pre_shutdown_hook logs flush errors but continues shutdown."""
-        # Arrange
-        daemon = ConcreteAsyncDaemon(sample_config, mock_logger)
-        daemon.running = True
-
-        # Add mock storage with failing flush
-        mock_storage = MagicMock()
-        mock_storage.flush = MagicMock(side_effect=RuntimeError("Flush failed"))
-        daemon.storage = mock_storage  # type: ignore[attr-defined]
-
-        # Act
-        daemon.stop()
-
-        # Assert - warning logged but shutdown completes
-        mock_logger.warning.assert_called()
-        assert daemon.running is False

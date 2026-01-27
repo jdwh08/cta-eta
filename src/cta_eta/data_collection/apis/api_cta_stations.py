@@ -38,6 +38,10 @@ import stamina
 
 ### OWN MODULES
 from cta_eta.data_collection.config import get_config_section, load_config
+from cta_eta.data_collection.exceptions import (
+    APIResponseError,
+    ConfigurationError,
+)
 from cta_eta.data_collection.logging import get_logger, log_api_call
 from cta_eta.data_collection.storage_cache.cache import CachedData, create_cached_data
 
@@ -76,13 +80,13 @@ def _get_chidata_headers(
             "CHIDATA_APP_TOK must be set (via .env) to access Chicago Data Portal "
             "reliably with adequate rate limits."
         )
-        raise ValueError(msg)
+        raise ConfigurationError(msg)
     if not secret:
         msg = (
             "CHIDATA_APP_SECRET must be set (via .env) to access Chicago Data Portal "
             "reliably with adequate rate limits."
         )
-        raise ValueError(msg)
+        raise ConfigurationError(msg)
 
     headers: dict[str, str] = {
         "X-App-Token": token,
@@ -120,7 +124,7 @@ def get_cta_stations(
     data = response.json()
     if not isinstance(data, list):
         msg = f"Unexpected Chicago Data Portal response type: {type(data)}"
-        raise TypeError(msg)
+        raise APIResponseError(msg)
 
     return data
 

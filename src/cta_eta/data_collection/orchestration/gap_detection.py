@@ -87,10 +87,7 @@ def detect_gap(
     # Heuristic: <10 minutes = retry exhaustion, >=10 minutes = downtime
     downtime_threshold_seconds = 600.0  # 10 minutes
 
-    if delta < downtime_threshold_seconds:
-        gap_reason = "retry_exhausted"
-    else:
-        gap_reason = "downtime"
+    gap_reason = "retry_exhausted" if delta < downtime_threshold_seconds else "downtime"
 
     # Calculate missed poll cycles
     # Number of poll cycles that would have been scheduled in (last_poll, current]

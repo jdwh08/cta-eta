@@ -7,6 +7,8 @@ from __future__ import annotations
 from contextlib import suppress
 from typing import TYPE_CHECKING, Final
 
+from cta_eta.data_collection.exceptions import APIResponseError
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -30,7 +32,7 @@ def safe_get_nested(
         Value at nested key path
 
     Raises:
-        ValueError: If any key in the path is missing or data is not a dict
+        APIResponseError: If any key in the path is missing or data is not a dict
 
     """
     current: object = data
@@ -42,7 +44,7 @@ def safe_get_nested(
                 f"{api_name} response parsing error: Expected dict at path "
                 f"'{'.'.join(path)}', got {type(current).__name__}"
             )
-            raise TypeError(msg)
+            raise APIResponseError(msg)
 
         path.append(key)
         if key not in current:
@@ -50,7 +52,7 @@ def safe_get_nested(
                 f"{api_name} response missing required field: "
                 f"'{'.'.join(path)}'. Response structure may have changed."
             )
-            raise TypeError(msg)
+            raise APIResponseError(msg)
 
         current = current[key]
 

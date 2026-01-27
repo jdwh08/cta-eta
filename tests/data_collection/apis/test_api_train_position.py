@@ -9,6 +9,10 @@ import httpx
 import pytest
 
 from cta_eta.data_collection.apis import api_train_position
+from cta_eta.data_collection.exceptions import (
+    ConfigurationError,
+    CTATrackerAPIError,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -32,7 +36,7 @@ async def test_get_train_positions_requires_api_key(
     client = mocker.AsyncMock(spec=httpx.AsyncClient)
 
     # Act / Assert
-    with pytest.raises(ValueError, match="CTA_API_KEY environment variable not set"):
+    with pytest.raises(ConfigurationError, match="CTA_API_KEY environment variable not set"):
         await api_train_position.get_train_positions(client)
 
 
@@ -722,7 +726,7 @@ class TestCTATrackerAPIError:
     def test_cta_tracker_api_error_with_code_and_message(self) -> None:
         """CTATrackerAPIError stores err_cd and err_nm and formats message."""
         # Arrange & Act
-        error = api_train_position.CTATrackerAPIError(
+        error = CTATrackerAPIError(
             err_cd="102", err_nm="Daily limit exceeded"
         )
 
@@ -735,7 +739,7 @@ class TestCTATrackerAPIError:
     def test_cta_tracker_api_error_with_code_only(self) -> None:
         """CTATrackerAPIError with only err_cd formats message without err_nm."""
         # Arrange & Act
-        error = api_train_position.CTATrackerAPIError(err_cd="500")
+        error = CTATrackerAPIError(err_cd="500")
 
         # Assert
         assert error.err_cd == "500"
@@ -764,7 +768,7 @@ async def test_get_train_positions_raises_cta_error_on_err_cd_102(
     )
 
     # Act / Assert
-    with pytest.raises(api_train_position.CTATrackerAPIError) as exc_info:
+    with pytest.raises(CTATrackerAPIError) as exc_info:
         await api_train_position.get_train_positions(client)
 
     assert exc_info.value.err_cd == "102"
@@ -792,7 +796,7 @@ async def test_get_train_positions_raises_cta_error_on_err_cd_500(
     )
 
     # Act / Assert
-    with pytest.raises(api_train_position.CTATrackerAPIError) as exc_info:
+    with pytest.raises(CTATrackerAPIError) as exc_info:
         await api_train_position.get_train_positions(client)
 
     assert exc_info.value.err_cd == "500"

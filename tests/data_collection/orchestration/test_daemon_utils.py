@@ -71,7 +71,7 @@ class TestClassifyError:
 
     def test_cta_tracker_api_error_102_returns_daily_quota(self) -> None:
         """Test that CTATrackerAPIError with err_cd=102 returns ErrorCategory.DAILY_QUOTA."""
-        from cta_eta.data_collection.apis.api_train_position import CTATrackerAPIError
+        from cta_eta.data_collection.exceptions import CTATrackerAPIError
 
         err = CTATrackerAPIError(err_cd="102", err_nm="Daily limit exceeded")
         assert classify_error(err) == ErrorCategory.DAILY_QUOTA
@@ -80,7 +80,7 @@ class TestClassifyError:
         self,
     ) -> None:
         """Test that CTATrackerAPIError with config error codes returns ErrorCategory.CONFIGURATION."""
-        from cta_eta.data_collection.apis.api_train_position import CTATrackerAPIError
+        from cta_eta.data_collection.exceptions import CTATrackerAPIError
 
         for err_cd in ("100", "101", "106", "107", "500"):
             err = CTATrackerAPIError(err_cd=err_cd, err_nm=f"Error {err_cd}")
@@ -88,7 +88,7 @@ class TestClassifyError:
 
     def test_cta_tracker_api_error_unknown_code_returns_configuration(self) -> None:
         """Test that CTATrackerAPIError with unknown error code returns ErrorCategory.CONFIGURATION."""
-        from cta_eta.data_collection.apis.api_train_position import CTATrackerAPIError
+        from cta_eta.data_collection.exceptions import CTATrackerAPIError
 
         err = CTATrackerAPIError(err_cd="999", err_nm="Unknown error")
         assert classify_error(err) == ErrorCategory.CONFIGURATION

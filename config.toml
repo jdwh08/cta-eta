@@ -12,13 +12,13 @@ station_data = true  # Requires CHIDATA_APP_TOK and CHIDATA_APP_SECRET
 
 
 [collection]
-# Train position polling interval in seconds
-# CTA Train Tracker API updates ~every 10-15 seconds
-train_interval_seconds = 15
-
 # Weather data polling interval in minutes
 # Weather changes slowly, hourly updates sufficient
 weather_interval_minutes = 30
+
+# Train position polling interval in seconds
+# CTA Train Tracker API updates ~every 10-15 seconds
+train_interval_seconds = 15
 
 # CTA error 102 (daily quota exceeded) probe settings
 # When hitting daily quota, probe with bounded attempts before sleeping until midnight
@@ -26,6 +26,13 @@ weather_interval_minutes = 30
 # probe_102_intervals: intervals in seconds between probes (default: [300, 900] = 5min, 15min)
 probe_102_attempts = 2
 probe_102_intervals = [300, 900]  # 5 minutes, 15 minutes
+
+# Storage Control
+# How do we handle when collection daemons have issues with storage?
+# storage_failure_threshold: number of consecutive storage failures before waiting a lot
+# storage_failure_backoff_seconds: number of seconds to wait
+storage_failure_threshold = 3
+storage_failure_backoff_seconds = 30
 
 
 [cache]
