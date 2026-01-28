@@ -32,6 +32,7 @@ import stamina
 
 ### OWN MODULES
 from cta_eta.data_collection.config import load_config
+from cta_eta.data_collection.exceptions import APIResponseError
 from cta_eta.data_collection.logging import get_logger, log_api_call
 from cta_eta.data_collection.utils import safe_get_nested, validate_lat_lon
 
@@ -75,7 +76,7 @@ def _parse_discover_grid_response(data: dict[str, object]) -> str:
             "Open-Meteo API response 'latitude' or 'longitude' is not numeric. "
             f"Got types: {type(actual_lat).__name__}, {type(actual_lon).__name__}"
         )
-        raise TypeError(msg)
+        raise APIResponseError(msg)
     return f"{actual_lat},{actual_lon}"
 
 
@@ -140,7 +141,7 @@ def _parse_current_weather_response(
 
     if not isinstance(current, dict):
         msg = "Open-Meteo API response 'current' is not a dict"
-        raise TypeError(msg)
+        raise APIResponseError(msg)
 
     if not isinstance(latitude, (int, float)) or not isinstance(
         longitude, (int, float)
@@ -149,12 +150,12 @@ def _parse_current_weather_response(
             "Open-Meteo API response 'latitude' or 'longitude' is not numeric. "
             f"Got types: {type(latitude).__name__}, {type(longitude).__name__}"
         )
-        raise TypeError(msg)
+        raise APIResponseError(msg)
 
     timestamp = current.get("time")  # ty:ignore[invalid-argument-type]
     if timestamp is None:
         msg = "Open-Meteo API response missing 'current.time' field"
-        raise ValueError(msg)
+        raise APIResponseError(msg)
 
     # Convert visibility from feet to miles (API returns in feet)
     visibility_ft = current.get("visibility")  # ty:ignore[invalid-argument-type]
@@ -261,8 +262,10 @@ async def get_open_meteo_current(
 
     try:
         return _parse_current_weather_response(data)
-    except (KeyError, TypeError, ValueError) as e:
+    except (KeyError, TypeError, ValueError, APIResponseError) as e:
         msg = f"Failed to parse Open-Meteo current weather response: {e}"
         logger.exception(msg)
+        if isinstance(e, APIResponseError):
+            raise
         msg = "Open-Meteo API response structure unexpected."
-        raise ValueError(msg) from e
+        raise APIResponseError(msg) from e

@@ -12,10 +12,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from cta_eta.data_collection.orchestration.daemon_async import (
-    AsyncBaseDaemon,
-    DaemonNotStartedError,
-)
+from cta_eta.data_collection.exceptions import DaemonNotStartedError
+from cta_eta.data_collection.orchestration.daemon_async import AsyncBaseDaemon
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -98,6 +96,15 @@ class ConcreteAsyncDaemon(AsyncBaseDaemon):
     def _get_state(self) -> dict[str, str | int | float]:
         """Return test state for persistence checks."""
         return self._test_state.copy()
+
+    @override
+    def _apply_state(self, state: dict[str, str | int | float]) -> None:
+        """Apply state to daemon instance."""
+        self._test_state = state.copy()
+        self.logger.info(
+            "Applied daemon state from previous run",
+            extra={"extra_fields": {"state_keys": list(state.keys())}},
+        )
 
 
 class TestAsyncBaseDaemonInit:
@@ -560,3 +567,483 @@ class TestAsyncBaseDaemonStatePersistence:
         # Assert
         mock_logger.exception.assert_called()
         assert "Failed to save daemon state" in str(mock_logger.exception.call_args)
+
+
+class TestAsyncBaseDaemonDiagnostics:
+    """Test cases for diagnostics integration."""
+
+    @pytest.mark.usefixtures("cleanup_state_files")
+    def test_init_creates_diagnostics_instance(
+        self,
+        mock_logger: MagicMock,
+        sample_config: dict[str, dict[str, str | int | float | bool]],
+    ) -> None:
+        """Initialization creates a DaemonDiagnostics instance."""
+        # Arrange & Act
+        daemon = ConcreteAsyncDaemon(sample_config, mock_logger)
+
+        # Assert
+        assert hasattr(daemon, "diagnostics")
+        assert daemon.diagnostics is not None
+        assert daemon._diagnostics_interval_s == 10.0
+
+    @pytest.mark.usefixtures("cleanup_state_files")
+    def test_diagnostics_task_created_when_enabled(
+        self,
+        mock_logger: MagicMock,
+        sample_config: dict[str, dict[str, str | int | float | bool]],
+        mocker: MockerFixture,
+    ) -> None:
+        """Diagnostics task is created when diagnostics are enabled."""
+        # Arrange
+        config_with_diagnostics = {
+            **sample_config,
+            "diagnostics": {
+                "enabled": True,
+                "summary_interval_seconds": 5.0,
+            },
+        }
+        daemon = ConcreteAsyncDaemon(config_with_diagnostics, mock_logger)
+        mocker.patch.object(daemon, "_register_signal_handlers", autospec=True)
+
+        # Act
+        asyncio.run(daemon._run_main())
+
+        # Assert
+        assert daemon._diagnostics_task is not None
+        assert daemon._diagnostics_task.done()
+
+    @pytest.mark.usefixtures("cleanup_state_files")
+    def test_diagnostics_task_not_created_when_disabled(
+        self,
+        mock_logger: MagicMock,
+        sample_config: dict[str, dict[str, str | int | float | bool]],
+        mocker: MockerFixture,
+    ) -> None:
+        """Diagnostics task is not created when diagnostics are disabled."""
+        # Arrange
+        config_without_diagnostics = {
+            **sample_config,
+            "diagnostics": {
+                "enabled": False,
+                "summary_interval_seconds": 5.0,
+            },
+        }
+        daemon = ConcreteAsyncDaemon(config_without_diagnostics, mock_logger)
+        mocker.patch.object(daemon, "_register_signal_handlers", autospec=True)
+
+        # Act
+        asyncio.run(daemon._run_main())
+
+        # Assert
+        assert daemon._diagnostics_task is None
+
+    @pytest.mark.usefixtures("cleanup_state_files")
+    @pytest.mark.asyncio
+    async def test_run_diagnostics_loop_executes_periodically(
+        self,
+        mock_logger: MagicMock,
+        sample_config: dict[str, dict[str, str | int | float | bool]],
+        mocker: MockerFixture,
+    ) -> None:
+        """Diagnostics loop calls maybe_log_summary periodically."""
+        # Arrange
+        config_with_diagnostics = {
+            **sample_config,
+            "diagnostics": {
+                "enabled": True,
+                "summary_interval_seconds": 0.1,  # Fast interval for testing
+            },
+        }
+        daemon = ConcreteAsyncDaemon(config_with_diagnostics, mock_logger)
+        daemon._loop = asyncio.get_running_loop()
+        daemon._shutdown = asyncio.Event()
+        daemon.running = True
+
+        maybe_log_summary = mocker.patch.object(
+            daemon.diagnostics, "maybe_log_summary", autospec=True
+        )
+
+        # Act
+        diagnostics_task = asyncio.create_task(daemon._run_diagnostics_loop())
+        await asyncio.sleep(0.15)  # Wait for at least one interval
+        daemon.running = False
+        daemon._shutdown.set()
+        await diagnostics_task
+
+        # Assert
+        assert maybe_log_summary.call_count >= 1
+
+    @pytest.mark.usefixtures("cleanup_state_files")
+    @pytest.mark.asyncio
+    async def test_run_diagnostics_loop_handles_no_shutdown(
+        self,
+        mock_logger: MagicMock,
+        sample_config: dict[str, dict[str, str | int | float | bool]],
+    ) -> None:
+        """Diagnostics loop returns early if shutdown is None."""
+        # Arrange
+        daemon = ConcreteAsyncDaemon(sample_config, mock_logger)
+        daemon._shutdown = None
+
+        # Act
+        await daemon._run_diagnostics_loop()
+
+        # Assert
+        # Should return without error
+
+    @pytest.mark.usefixtures("cleanup_state_files")
+    def test_save_diagnostics_snapshot_success(
+        self,
+        mock_logger: MagicMock,
+        sample_config: dict[str, dict[str, str | int | float | bool]],
+        daemon_state_dir: Path,
+    ) -> None:
+        """_save_diagnostics_snapshot writes diagnostics snapshot to file."""
+        # Arrange
+        config_with_diagnostics = {
+            **sample_config,
+            "diagnostics": {
+                "enabled": True,
+                "summary_interval_seconds": 5.0,
+            },
+        }
+        daemon = ConcreteAsyncDaemon(config_with_diagnostics, mock_logger)
+
+        # Act
+        daemon._save_diagnostics_snapshot()
+
+        # Assert
+        snapshot_file = daemon_state_dir / "ConcreteAsyncDaemon.diagnostics.json"
+        assert snapshot_file.exists()
+        snapshot_data = json.loads(snapshot_file.read_text())
+        assert "daemon_class" in snapshot_data
+        assert "diag_run_id" in snapshot_data
+        assert snapshot_data["daemon_class"] == "ConcreteAsyncDaemon"
+
+    @pytest.mark.usefixtures("cleanup_state_files")
+    def test_save_diagnostics_snapshot_handles_io_error(
+        self,
+        mock_logger: MagicMock,
+        sample_config: dict[str, dict[str, str | int | float | bool]],
+        mocker: MockerFixture,
+    ) -> None:
+        """_save_diagnostics_snapshot logs exceptions and does not raise."""
+        # Arrange
+        config_with_diagnostics = {
+            **sample_config,
+            "diagnostics": {
+                "enabled": True,
+                "summary_interval_seconds": 5.0,
+            },
+        }
+        daemon = ConcreteAsyncDaemon(config_with_diagnostics, mock_logger)
+        mocker.patch(
+            "cta_eta.data_collection.orchestration.daemon_async.Path.mkdir",
+            side_effect=PermissionError("Permission denied"),
+            autospec=True,
+        )
+
+        # Act
+        daemon._save_diagnostics_snapshot()
+
+        # Assert
+        mock_logger.exception.assert_called()
+        assert "Failed to save diagnostics snapshot" in str(
+            mock_logger.exception.call_args
+        )
+
+    @pytest.mark.usefixtures("cleanup_state_files")
+    def test_stop_calls_diagnostics_summary_when_enabled(
+        self,
+        mock_logger: MagicMock,
+        sample_config: dict[str, dict[str, str | int | float | bool]],
+        mocker: MockerFixture,
+    ) -> None:
+        """stop() calls diagnostics summary and snapshot when diagnostics enabled."""
+        # Arrange
+        config_with_diagnostics = {
+            **sample_config,
+            "diagnostics": {
+                "enabled": True,
+                "summary_interval_seconds": 5.0,
+            },
+        }
+        daemon = ConcreteAsyncDaemon(config_with_diagnostics, mock_logger)
+        daemon.running = True
+        maybe_log_summary = mocker.patch.object(
+            daemon.diagnostics, "maybe_log_summary", autospec=True
+        )
+        save_snapshot = mocker.patch.object(
+            daemon, "_save_diagnostics_snapshot", autospec=True
+        )
+        mocker.patch.object(daemon, "_save_state", autospec=True)
+
+        # Act
+        daemon.stop()
+
+        # Assert
+        maybe_log_summary.assert_called_once_with(force=True)
+        save_snapshot.assert_called_once()
+
+    @pytest.mark.usefixtures("cleanup_state_files")
+    def test_stop_skips_diagnostics_when_disabled(
+        self,
+        mock_logger: MagicMock,
+        sample_config: dict[str, dict[str, str | int | float | bool]],
+        mocker: MockerFixture,
+    ) -> None:
+        """stop() skips diagnostics when diagnostics are disabled."""
+        # Arrange
+        config_without_diagnostics = {
+            **sample_config,
+            "diagnostics": {
+                "enabled": False,
+                "summary_interval_seconds": 5.0,
+            },
+        }
+        daemon = ConcreteAsyncDaemon(config_without_diagnostics, mock_logger)
+        daemon.running = True
+        maybe_log_summary = mocker.patch.object(
+            daemon.diagnostics, "maybe_log_summary", autospec=True
+        )
+        save_snapshot = mocker.patch.object(
+            daemon, "_save_diagnostics_snapshot", autospec=True
+        )
+        mocker.patch.object(daemon, "_save_state", autospec=True)
+
+        # Act
+        daemon.stop()
+
+        # Assert
+        maybe_log_summary.assert_not_called()
+        save_snapshot.assert_not_called()
+
+
+class TestAsyncBaseDaemonPreShutdownHook:
+    """Test cases for pre-shutdown hook."""
+
+    @pytest.mark.usefixtures("cleanup_state_files")
+    def test_pre_shutdown_hook_flushes_storage_when_available(
+        self,
+        mock_logger: MagicMock,
+        sample_config: dict[str, dict[str, str | int | float | bool]],
+    ) -> None:
+        """_pre_shutdown_hook flushes storage when storage attribute exists."""
+        # Arrange
+        daemon = ConcreteAsyncDaemon(sample_config, mock_logger)
+        mock_storage = MagicMock()
+        mock_storage.flush = MagicMock()
+        daemon.storage = mock_storage
+
+        # Act
+        daemon._pre_shutdown_hook()
+
+        # Assert
+        mock_storage.flush.assert_called_once()
+        mock_logger.debug.assert_called_once_with("Flushed storage during shutdown")
+
+    @pytest.mark.usefixtures("cleanup_state_files")
+    def test_pre_shutdown_hook_handles_missing_storage(
+        self,
+        mock_logger: MagicMock,
+        sample_config: dict[str, dict[str, str | int | float | bool]],
+    ) -> None:
+        """_pre_shutdown_hook handles missing storage gracefully."""
+        # Arrange
+        daemon = ConcreteAsyncDaemon(sample_config, mock_logger)
+        # No storage attribute set
+
+        # Act
+        daemon._pre_shutdown_hook()
+
+        # Assert
+        mock_logger.warning.assert_called_once_with("No storage available to flush")
+
+    @pytest.mark.usefixtures("cleanup_state_files")
+    def test_pre_shutdown_hook_handles_storage_without_flush(
+        self,
+        mock_logger: MagicMock,
+        sample_config: dict[str, dict[str, str | int | float | bool]],
+    ) -> None:
+        """_pre_shutdown_hook handles storage without flush method."""
+        # Arrange
+        daemon = ConcreteAsyncDaemon(sample_config, mock_logger)
+        mock_storage = MagicMock()
+        del mock_storage.flush  # Remove flush method
+        daemon.storage = mock_storage
+
+        # Act
+        daemon._pre_shutdown_hook()
+
+        # Assert
+        mock_logger.warning.assert_called_once_with("Storage has no flush method")
+
+    @pytest.mark.usefixtures("cleanup_state_files")
+    def test_pre_shutdown_hook_handles_flush_exception(
+        self,
+        mock_logger: MagicMock,
+        sample_config: dict[str, dict[str, str | int | float | bool]],
+    ) -> None:
+        """_pre_shutdown_hook handles exceptions during storage flush."""
+        # Arrange
+        daemon = ConcreteAsyncDaemon(sample_config, mock_logger)
+        mock_storage = MagicMock()
+        mock_storage.flush.side_effect = OSError("Flush failed")
+        daemon.storage = mock_storage
+
+        # Act
+        daemon._pre_shutdown_hook()
+
+        # Assert
+        mock_logger.warning.assert_called_once()
+        call_args = mock_logger.warning.call_args
+        assert "Failed to flush storage" in str(call_args)
+        assert call_args[1]["extra"]["extra_fields"]["error_type"] == "OSError"
+
+    @pytest.mark.usefixtures("cleanup_state_files")
+    def test_stop_calls_pre_shutdown_hook(
+        self,
+        mock_logger: MagicMock,
+        sample_config: dict[str, dict[str, str | int | float | bool]],
+        mocker: MockerFixture,
+    ) -> None:
+        """stop() calls _pre_shutdown_hook before saving state."""
+        # Arrange
+        daemon = ConcreteAsyncDaemon(sample_config, mock_logger)
+        daemon.running = True
+        pre_shutdown_hook = mocker.patch.object(
+            daemon, "_pre_shutdown_hook", autospec=True
+        )
+        save_state = mocker.patch.object(daemon, "_save_state", autospec=True)
+        mocker.patch.object(daemon, "_save_diagnostics_snapshot", autospec=True)
+
+        # Act
+        daemon.stop()
+
+        # Assert
+        pre_shutdown_hook.assert_called_once()
+        # Verify hook is called before state save
+        call_order = [str(call) for call in mock_logger.info.call_args_list]
+        assert any("Stopping" in call for call in call_order)
+
+    @pytest.mark.usefixtures("cleanup_state_files")
+    def test_stop_handles_pre_shutdown_hook_exception(
+        self,
+        mock_logger: MagicMock,
+        sample_config: dict[str, dict[str, str | int | float | bool]],
+        mocker: MockerFixture,
+    ) -> None:
+        """stop() handles exceptions in _pre_shutdown_hook gracefully."""
+        # Arrange
+        daemon = ConcreteAsyncDaemon(sample_config, mock_logger)
+        daemon.running = True
+        mocker.patch.object(
+            daemon,
+            "_pre_shutdown_hook",
+            side_effect=RuntimeError("Hook failed"),
+            autospec=True,
+        )
+        save_state = mocker.patch.object(daemon, "_save_state", autospec=True)
+        mocker.patch.object(daemon, "_save_diagnostics_snapshot", autospec=True)
+
+        # Act
+        daemon.stop()
+
+        # Assert
+        mock_logger.exception.assert_called()
+        call_args = mock_logger.exception.call_args
+        assert "Error in pre-shutdown hook" in str(call_args)
+        assert call_args[1]["extra"]["extra_fields"]["error_type"] == "RuntimeError"
+        # State should still be saved despite hook failure
+        save_state.assert_called_once()
+
+
+class TestAsyncBaseDaemonRunMainEdgeCases:
+    """Test cases for edge cases in _run_main()."""
+
+    @pytest.mark.usefixtures("cleanup_state_files")
+    @pytest.mark.asyncio
+    async def test_run_main_cancels_run_task_on_shutdown(
+        self,
+        mock_logger: MagicMock,
+        sample_config: dict[str, dict[str, str | int | float | bool]],
+        mocker: MockerFixture,
+    ) -> None:
+        """_run_main cancels run task when shutdown is requested."""
+        # Arrange
+        daemon = ConcreteAsyncDaemon(sample_config, mock_logger)
+        mocker.patch.object(daemon, "_register_signal_handlers", autospec=True)
+
+        async def long_running_run() -> None:
+            """Simulate a long-running run that would block shutdown."""
+            daemon.run_called = True
+            while daemon.running:
+                await asyncio.sleep(0.1)
+
+        original_run = daemon.run
+        daemon.run = long_running_run
+
+        # Act
+        # Start _run_main in a task
+        main_task = asyncio.create_task(daemon._run_main())
+        # Wait a bit for it to start
+        await asyncio.sleep(0.05)
+        # Request shutdown
+        daemon.stop()
+        # Wait for completion
+        await main_task
+
+        # Assert
+        assert daemon.running is False
+        assert daemon.run_called is True
+
+    @pytest.mark.usefixtures("cleanup_state_files")
+    @pytest.mark.asyncio
+    async def test_run_main_cancels_diagnostics_task_on_shutdown(
+        self,
+        mock_logger: MagicMock,
+        sample_config: dict[str, dict[str, str | int | float | bool]],
+        mocker: MockerFixture,
+    ) -> None:
+        """_run_main cancels diagnostics task during shutdown."""
+        # Arrange
+        config_with_diagnostics = {
+            **sample_config,
+            "diagnostics": {
+                "enabled": True,
+                "summary_interval_seconds": 5.0,
+            },
+        }
+        daemon = ConcreteAsyncDaemon(config_with_diagnostics, mock_logger)
+        mocker.patch.object(daemon, "_register_signal_handlers", autospec=True)
+
+        # Act
+        await daemon._run_main()
+
+        # Assert
+        # Diagnostics task should be cancelled and done
+        if daemon._diagnostics_task is not None:
+            assert daemon._diagnostics_task.done()
+
+    @pytest.mark.usefixtures("cleanup_state_files")
+    def test_register_signal_handlers_when_loop_is_none(
+        self,
+        mock_logger: MagicMock,
+        sample_config: dict[str, dict[str, str | int | float | bool]],
+        mocker: MockerFixture,
+    ) -> None:
+        """_register_signal_handlers uses signal.signal when loop is None."""
+        # Arrange
+        daemon = ConcreteAsyncDaemon(sample_config, mock_logger)
+        daemon._loop = None
+        mock_signal = mocker.patch(
+            "cta_eta.data_collection.orchestration.daemon_async.signal.signal",
+            autospec=True,
+        )
+
+        # Act
+        daemon._register_signal_handlers()
+
+        # Assert
+        assert mock_signal.call_count == EXPECTED_SIGNAL_HANDLER_COUNT

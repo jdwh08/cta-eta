@@ -22,8 +22,9 @@ import signal
 from abc import ABC, abstractmethod
 from contextlib import suppress
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+from cta_eta.data_collection.exceptions import DaemonNotStartedError
 from cta_eta.data_collection.orchestration.diagnostics import (
     DaemonDiagnostics,
     DaemonDiagnosticsConfig,
@@ -34,8 +35,9 @@ if TYPE_CHECKING:
     from types import FrameType
 
 
-class DaemonNotStartedError(RuntimeError):
-    """Raised when an async daemon API is used before `start()`."""
+type ConfigValue = Any
+type ConfigSection = dict[str, ConfigValue]
+type Config = dict[str, ConfigSection]
 
 
 class AsyncBaseDaemon(ABC):
@@ -51,7 +53,7 @@ class AsyncBaseDaemon(ABC):
     - Signal handlers are registered on the running event loop when possible.
     """
 
-    config: dict[str, dict[str, str | int | float | bool]]
+    config: Config
     logger: logging.Logger
     running: bool
 
@@ -63,7 +65,7 @@ class AsyncBaseDaemon(ABC):
 
     def __init__(
         self,
-        config: dict[str, dict[str, str | int | float | bool]],
+        config: Config,
         logger: logging.Logger,
     ) -> None:
         """Initialize daemon with configuration and logger.
@@ -92,7 +94,9 @@ class AsyncBaseDaemon(ABC):
             config=diag_cfg,
         )
 
-        self._load_state()
+        # Load and apply state
+        state = self._load_state()
+        self._apply_state(state if state is not None else {})
 
     def start(self) -> None:
         """Start the daemon and run the async main loop.
@@ -232,6 +236,7 @@ class AsyncBaseDaemon(ABC):
         - Logs shutdown once
         - Marks the daemon as not running
         - Triggers an interruptible shutdown event (if started)
+        - Calls pre-shutdown hook for daemon-specific cleanup
         - Persists state
         """
         if not self.running:
@@ -256,9 +261,28 @@ class AsyncBaseDaemon(ABC):
             self.diagnostics.maybe_log_summary(force=True)
             self._save_diagnostics_snapshot()
 
+        # Pre-shutdown hook for daemon-specific cleanup (e.g., flush storage)
+        try:
+            self._pre_shutdown_hook()
+        except Exception as e:
+            self.logger.exception(
+                "Error in pre-shutdown hook",
+                extra={
+                    "extra_fields": {
+                        "error_type": type(e).__name__,
+                        "error_message": str(e),
+                    }
+                },
+            )
+
         self._save_state()
 
     def _save_state(self) -> None:
+        """Save daemon state to JSON file.
+
+        Wraps state save in try/except to log errors but not crash shutdown.
+        State persistence is critical for restart gap detection.
+        """
         try:
             state = self._get_state()
             state_dir = Path(".daemon_state")
@@ -345,6 +369,51 @@ class AsyncBaseDaemon(ABC):
     @abstractmethod
     def _get_state(self) -> dict[str, str | int | float]:
         """Return current daemon state for persistence."""
+
+    @abstractmethod
+    def _apply_state(self, state: dict[str, str | int | float]) -> None:
+        """Apply loaded state to daemon instance.
+
+        Subclasses can override this to restore state attributes from the
+        loaded state dict. Called during __init__ after _load_state().
+
+        Args:
+            state: State dictionary loaded from persistent storage (empty dict if no state)
+
+        """
+
+    def _pre_shutdown_hook(self) -> None:
+        """Pre-shutdown hook for daemon-specific cleanup.
+
+        Called before state save during shutdown. Subclasses can override to
+        perform cleanup tasks like flushing buffered storage.
+
+        Default implementation attempts to flush storage if available.
+        """
+        # Attempt to flush storage if present
+        storage = getattr(self, "storage", None)
+        if storage is None:
+            self.logger.warning("No storage available to flush")
+            return
+
+        flush = getattr(storage, "flush", None)
+        if not callable(flush):
+            self.logger.warning("Storage has no flush method")
+            return
+
+        try:
+            flush()
+            self.logger.debug("Flushed storage during shutdown")
+        except Exception as e:  # noqa: BLE001
+            self.logger.warning(
+                f"Failed to flush storage: {e}",
+                extra={
+                    "extra_fields": {
+                        "error_type": type(e).__name__,
+                        "error_message": str(e),
+                    }
+                },
+            )
 
     async def _run_diagnostics_loop(self) -> None:
         """Periodically log diagnostics summaries while running.

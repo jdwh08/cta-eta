@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from cta_eta.data_collection.apis import api_weather_openweathermap
+from cta_eta.data_collection.exceptions import APIResponseError
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -395,7 +396,7 @@ async def test_discover_openweathermap_grid_parse_error_coord_not_dict(
     )
 
     # Act / Assert
-    with pytest.raises(TypeError, match="'coord' is not a dict"):
+    with pytest.raises(APIResponseError, match="'coord' is not a dict"):
         await api_weather_openweathermap.discover_openweathermap_grid(
             owm_client, 41.72, -87.62
         )
@@ -415,7 +416,7 @@ async def test_discover_openweathermap_grid_parse_error_coord_lat_lon_none(
     )
 
     # Act / Assert
-    with pytest.raises(TypeError, match=r"missing 'coord\.lat' or 'coord\.lon'"):
+    with pytest.raises(APIResponseError, match=r"missing 'coord\.lat' or 'coord\.lon'"):
         await api_weather_openweathermap.discover_openweathermap_grid(
             owm_client, 41.72, -87.62
         )
@@ -435,7 +436,9 @@ async def test_discover_openweathermap_grid_parse_error_coord_lat_lon_not_numeri
     )
 
     # Act / Assert
-    with pytest.raises(TypeError, match=r"coord\.lat.*or.*coord\.lon.*is not numeric"):
+    with pytest.raises(
+        APIResponseError, match=r"coord\.lat.*or.*coord\.lon.*is not numeric"
+    ):
         await api_weather_openweathermap.discover_openweathermap_grid(
             owm_client, 41.72, -87.62
         )
@@ -455,7 +458,7 @@ async def test_discover_openweathermap_grid_parse_error_propagates(
     )
 
     # Act / Assert
-    with pytest.raises(TypeError, match="missing required field"):
+    with pytest.raises(APIResponseError, match="missing required field"):
         await api_weather_openweathermap.discover_openweathermap_grid(
             owm_client, 41.72, -87.62
         )
@@ -481,7 +484,7 @@ async def test_get_openweathermap_current_parse_error_coord_not_dict(
     )
 
     # Act / Assert
-    with pytest.raises(ValueError, match="structure unexpected"):
+    with pytest.raises(APIResponseError, match="'coord' is not a dict"):
         await api_weather_openweathermap.get_openweathermap_current(
             owm_client, "41.88,-87.63"
         )
@@ -507,7 +510,7 @@ async def test_get_openweathermap_current_parse_error_main_not_dict(
     )
 
     # Act / Assert
-    with pytest.raises(ValueError, match="structure unexpected"):
+    with pytest.raises(APIResponseError, match="'main' is not a dict"):
         await api_weather_openweathermap.get_openweathermap_current(
             owm_client, "41.88,-87.63"
         )
@@ -533,7 +536,7 @@ async def test_get_openweathermap_current_parse_error_wind_not_dict(
     )
 
     # Act / Assert
-    with pytest.raises(ValueError, match="structure unexpected"):
+    with pytest.raises(APIResponseError, match="'wind' is not a dict"):
         await api_weather_openweathermap.get_openweathermap_current(
             owm_client, "41.88,-87.63"
         )
@@ -559,7 +562,7 @@ async def test_get_openweathermap_current_parse_error_weather_missing_or_empty(
     )
 
     # Act / Assert
-    with pytest.raises(ValueError, match="structure unexpected"):
+    with pytest.raises(APIResponseError, match="'weather' is missing or empty"):
         await api_weather_openweathermap.get_openweathermap_current(
             owm_client, "41.88,-87.63"
         )
@@ -585,7 +588,7 @@ async def test_get_openweathermap_current_parse_error_weather0_not_dict(
     )
 
     # Act / Assert
-    with pytest.raises(ValueError, match="structure unexpected"):
+    with pytest.raises(APIResponseError, match="'weather\\[0\\]' is not a dict"):
         await api_weather_openweathermap.get_openweathermap_current(
             owm_client, "41.88,-87.63"
         )
@@ -610,7 +613,7 @@ async def test_get_openweathermap_current_parse_error_dt_missing(
     )
 
     # Act / Assert
-    with pytest.raises(ValueError, match="structure unexpected"):
+    with pytest.raises(APIResponseError, match="missing 'dt' field"):
         await api_weather_openweathermap.get_openweathermap_current(
             owm_client, "41.88,-87.63"
         )
@@ -642,7 +645,7 @@ async def test_get_openweathermap_forecast_hourly_parse_error_list_missing_or_em
     )
 
     # Act / Assert
-    with pytest.raises(ValueError, match="structure unexpected"):
+    with pytest.raises(APIResponseError, match="'list' is missing or empty"):
         await api_weather_openweathermap.get_openweathermap_forecast_hourly(
             owm_client, "41.88,-87.63"
         )
@@ -665,7 +668,7 @@ async def test_get_openweathermap_forecast_hourly_parse_error_list0_not_dict(
     )
 
     # Act / Assert
-    with pytest.raises(ValueError, match="structure unexpected"):
+    with pytest.raises(APIResponseError, match="'list\\[0\\]' is not a dict"):
         await api_weather_openweathermap.get_openweathermap_forecast_hourly(
             owm_client, "41.88,-87.63"
         )
@@ -694,7 +697,7 @@ async def test_get_openweathermap_forecast_hourly_parse_error_main_not_dict(
     )
 
     # Act / Assert
-    with pytest.raises(ValueError, match="structure unexpected"):
+    with pytest.raises(APIResponseError, match="'list\\[0\\]\\.main' is not a dict"):
         await api_weather_openweathermap.get_openweathermap_forecast_hourly(
             owm_client, "41.88,-87.63"
         )
@@ -724,7 +727,7 @@ async def test_get_openweathermap_forecast_hourly_parse_error_city_not_dict(
     )
 
     # Act / Assert
-    with pytest.raises(ValueError, match="structure unexpected"):
+    with pytest.raises(APIResponseError, match="'city' is not a dict"):
         await api_weather_openweathermap.get_openweathermap_forecast_hourly(
             owm_client, "41.88,-87.63"
         )
@@ -754,7 +757,7 @@ async def test_get_openweathermap_forecast_hourly_parse_error_city_coord_invalid
     )
 
     # Act / Assert
-    with pytest.raises(ValueError, match="structure unexpected"):
+    with pytest.raises(APIResponseError, match="'city\\.coord' is not a dict"):
         await api_weather_openweathermap.get_openweathermap_forecast_hourly(
             owm_client, "41.88,-87.63"
         )

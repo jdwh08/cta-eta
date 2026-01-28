@@ -24,6 +24,10 @@ import stamina
 
 ### OWN MODULES
 from cta_eta.data_collection.config import get_config_section, load_config
+from cta_eta.data_collection.exceptions import (
+    APIResponseError,
+    ConfigurationError,
+)
 from cta_eta.data_collection.logging import get_logger, log_api_call
 from cta_eta.data_collection.utils import (
     convert_celsius_to_fahrenheit,
@@ -48,14 +52,14 @@ def _get_auth_header() -> dict[str, str]:
         Dictionary with the auth header
 
     Raises:
-        ValueError: If NWS_APP_NAME or NWS_EMAIL is not set
+        ConfigurationError: If NWS_APP_NAME or NWS_EMAIL is not set
 
     """
     app_name = os.getenv("NWS_APP_NAME")
     email = os.getenv("NWS_EMAIL")
     if not app_name or not email:
         msg = "NWS_APP_NAME and NWS_EMAIL must be set in environment variables"
-        raise ValueError(msg)
+        raise ConfigurationError(msg)
     return {"User-Agent": f"({app_name}, {email})"}
 
 
@@ -149,26 +153,26 @@ def _parse_hourly_forecast_response(  # noqa: C901, PLR0912, PLR0915
     properties = safe_get_nested(data, "properties", api_name="NWS")
     if not isinstance(properties, dict):
         msg = "NWS API response parsing error: 'properties' is not a dict"
-        raise TypeError(msg)
+        raise APIResponseError(msg)
 
     periods = properties.get("periods")  # ty:ignore[invalid-argument-type]
     if not periods or not isinstance(periods, list) or len(periods) == 0:
         msg = "NWS API response missing or empty 'periods' array"
-        raise ValueError(msg)
+        raise APIResponseError(msg)
 
     period = periods[0]
     if not isinstance(period, dict):
         msg = "NWS API response parsing error: period is not a dict"
-        raise TypeError(msg)
+        raise APIResponseError(msg)
 
     # Parse temperature (convert to Fahrenheit if needed)
     temperature = period.get("temperature")
     if temperature is None:
         msg = "NWS API response missing 'temperature' field in period"
-        raise ValueError(msg)
+        raise APIResponseError(msg)
     if not isinstance(temperature, (int, float)):
         msg = f"NWS API response 'temperature' is not numeric: {type(temperature).__name__}"
-        raise TypeError(msg)
+        raise APIResponseError(msg)
 
     temp_unit = period.get("temperatureUnit", "")
     if temp_unit == "wmoUnit:degC":
@@ -180,15 +184,15 @@ def _parse_hourly_forecast_response(  # noqa: C901, PLR0912, PLR0915
     dewpoint_obj = period.get("dewpoint")
     if not isinstance(dewpoint_obj, dict):
         msg = "NWS API response missing or invalid 'dewpoint' field in period"
-        raise TypeError(msg)
+        raise APIResponseError(msg)
 
     dewpoint = dewpoint_obj.get("value")
     if dewpoint is None:
         msg = "NWS API response missing 'dewpoint.value' field"
-        raise ValueError(msg)
+        raise APIResponseError(msg)
     if not isinstance(dewpoint, (int, float)):
         msg = f"NWS API response 'dewpoint.value' is not numeric: {type(dewpoint).__name__}"
-        raise TypeError(msg)
+        raise APIResponseError(msg)
 
     dewpoint_unit = dewpoint_obj.get("unitCode", "")
     if dewpoint_unit == "wmoUnit:degC":
@@ -270,7 +274,9 @@ async def get_nws_hourly_forecast(
 
     try:
         return _parse_hourly_forecast_response(data)
-    except (KeyError, TypeError, ValueError) as e:
+    except (KeyError, TypeError, ValueError, APIResponseError) as e:
         msg = "Failed to parse NWS hourly forecast response, unexpected response structure."
         logger.exception(msg)
-        raise ValueError(msg) from e
+        if isinstance(e, APIResponseError):
+            raise
+        raise APIResponseError(msg) from e

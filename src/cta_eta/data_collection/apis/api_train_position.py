@@ -52,10 +52,15 @@ import httpx
 import stamina
 
 from cta_eta.data_collection.config import load_config
+from cta_eta.data_collection.exceptions import (
+    ConfigurationError,
+    CTATrackerAPIError,
+)
 from cta_eta.data_collection.logging import get_logger, log_api_call
 from cta_eta.data_collection.utils import validate_lat_lon
 
 logger = get_logger(__name__)
+
 
 # CTA API endpoint and configuration
 TRAIN_POSITION_URL: Final[str] = (
@@ -77,6 +82,10 @@ async def get_train_positions(client: httpx.AsyncClient) -> dict[str, Any]:
     Makes a single API call to retrieve positions for all 8 CTA train lines at once.
     Uses stamina retry decorator for resilience against transient HTTP errors.
 
+    CTA API returns HTTP 200 with error codes in JSON body. This function checks
+    ctatt.errCd and raises CTATrackerAPIError for non-zero error codes, allowing
+    the daemon to classify and handle them appropriately.
+
     Args:
         client: HTTP client for API requests
 
@@ -85,13 +94,14 @@ async def get_train_positions(client: httpx.AsyncClient) -> dict[str, Any]:
 
     Raises:
         httpx.HTTPStatusError: After max retry attempts exhausted
-        ValueError: If CTA_API_KEY environment variable not set
+        CTATrackerAPIError: When CTA returns error code in response body
+        ConfigurationError: If CTA_API_KEY environment variable not set
 
     """
     api_key = os.getenv("CTA_API_KEY")
     if not api_key:
         msg = "CTA_API_KEY environment variable not set"
-        raise ValueError(msg)
+        raise ConfigurationError(msg)
 
     response = await client.get(
         TRAIN_POSITION_URL,
@@ -102,7 +112,15 @@ async def get_train_positions(client: httpx.AsyncClient) -> dict[str, Any]:
         },
     )
     response.raise_for_status()
-    return response.json()
+    body = response.json()
+
+    # Check for CTA application-level errors in response body
+    ctatt = body.get("ctatt") or {}
+    err_cd = ctatt.get("errCd")
+    if err_cd is not None and str(err_cd) != "0":
+        raise CTATrackerAPIError(err_cd=str(err_cd), err_nm=ctatt.get("errNm"))
+
+    return body
 
 
 def normalize_train_positions(
@@ -154,7 +172,10 @@ def normalize_train_positions(
 
     for route in routes:
         route_name = route.get("@name")
-        trains = route.get("train", [])
+        trains_raw = route.get("train", [])
+
+        # Normalize trains to always be a list (XML-to-JSON conversion returns dict for single train)
+        trains = trains_raw if isinstance(trains_raw, list) else [trains_raw]
 
         for train in trains:
             v_lat = train.get("lat")

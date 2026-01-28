@@ -54,6 +54,11 @@ class DaemonDiagnosticsConfig:
     event_log_max_bytes: int = _DEFAULT_EVENT_LOG_MAX_BYTES
     event_log_backups: int = _DEFAULT_EVENT_LOG_BACKUPS
 
+    # If set, metrics snapshots are written periodically as JSONL and rotated by size.
+    metrics_log_path: str | None = None
+    metrics_log_max_bytes: int = _DEFAULT_EVENT_LOG_MAX_BYTES
+    metrics_log_backups: int = _DEFAULT_EVENT_LOG_BACKUPS
+
     @classmethod
     def from_config(
         cls,
@@ -100,6 +105,11 @@ class DaemonDiagnosticsConfig:
             )
             event_log_path = f".daemon_state/{daemon_name}.events.jsonl"
 
+        metrics_log_path = cfg.get("metrics_log_path")
+        if metrics_log_path is None:
+            # Sensible default location when diagnostics are enabled.
+            metrics_log_path = f".daemon_state/{daemon_name}.metrics.jsonl"
+
         return cls(
             enabled=bool(cfg.get("enabled", False)),
             summary_interval_seconds=max(
@@ -114,6 +124,13 @@ class DaemonDiagnosticsConfig:
             ),
             event_log_backups=max(
                 0, _get_int("event_log_backups", _DEFAULT_EVENT_LOG_BACKUPS)
+            ),
+            metrics_log_path=str(metrics_log_path) if metrics_log_path else None,
+            metrics_log_max_bytes=max(
+                1024, _get_int("metrics_log_max_bytes", _DEFAULT_EVENT_LOG_MAX_BYTES)
+            ),
+            metrics_log_backups=max(
+                0, _get_int("metrics_log_backups", _DEFAULT_EVENT_LOG_BACKUPS)
             ),
         )
 
@@ -142,6 +159,8 @@ class DaemonDiagnostics:
         self._durations_ms: dict[str, deque[float]] = defaultdict(
             lambda: deque(maxlen=250)
         )
+        # Timestamped span records for rolling window metrics
+        self._span_records: deque[tuple[float, str, bool, float]] = deque(maxlen=1000)
 
         self._last_summary_at = time.monotonic()
         self._run_id = uuid.uuid4().hex
@@ -189,6 +208,8 @@ class DaemonDiagnostics:
         if not ok:
             self._span_errors[name] += 1
         self._durations_ms[name].append(float(elapsed_ms))
+        # Store timestamped span record for rolling window calculations
+        self._span_records.append((time.time(), name, ok, float(elapsed_ms)))
         self._record_event(
             kind="span",
             name=name,
@@ -270,6 +291,9 @@ class DaemonDiagnostics:
             },
         )
 
+        # Write metrics snapshot to JSONL
+        self.write_metrics_snapshot()
+
     def snapshot(self) -> dict[str, object]:
         """Return an in-memory snapshot suitable for persistence/debugging."""
         return {
@@ -280,6 +304,129 @@ class DaemonDiagnostics:
             "error_types": dict(self._error_types),
             "recent_events": list(self._recent_events),
         }
+
+    def calculate_metrics(self) -> dict[str, object]:
+        """Calculate rolling window metrics for monitoring.
+
+        Returns a dictionary with:
+        - per_span_metrics: {span_name: {success_rate, error_rate, total_calls, p50_ms, p95_ms, p99_ms}}
+        - time_window_metrics: {last_hour: {...}, last_24h: {...}}
+        - overall_health: aggregate health score (all spans combined)
+        """
+        if not self.enabled:
+            return {}
+
+        now = time.time()
+        one_hour_ago = now - 3600.0
+        twenty_four_hours_ago = now - 86400.0
+
+        # Filter span records by time windows
+        last_hour_records = [r for r in self._span_records if r[0] >= one_hour_ago]
+        last_24h_records = [
+            r for r in self._span_records if r[0] >= twenty_four_hours_ago
+        ]
+
+        # Calculate metrics for each time window
+        def _calculate_window_metrics(
+            records: list[tuple[float, str, bool, float]],
+        ) -> dict[str, object]:
+            """Calculate metrics for a specific time window."""
+            if not records:
+                return {}
+
+            # Group by span name
+            span_data: dict[str, list[tuple[bool, float]]] = defaultdict(list)
+            for _ts, name, ok, duration_ms in records:
+                span_data[name].append((ok, duration_ms))
+
+            per_span: dict[str, dict[str, float | int]] = {}
+            total_success = 0
+            total_calls = 0
+
+            for span_name, data in span_data.items():
+                success_count = sum(1 for ok, _ in data if ok)
+                total = len(data)
+                durations = [d for _, d in data]
+                sorted_durations = sorted(durations)
+
+                total_success += success_count
+                total_calls += total
+
+                per_span[span_name] = {
+                    "success_rate": success_count / total if total > 0 else 0.0,
+                    "error_rate": (total - success_count) / total if total > 0 else 0.0,
+                    "total_calls": total,
+                    "p50_ms": percentile(sorted_durations, 50)
+                    if sorted_durations
+                    else 0.0,
+                    "p95_ms": percentile(sorted_durations, 95)
+                    if sorted_durations
+                    else 0.0,
+                    "p99_ms": percentile(sorted_durations, 99)
+                    if sorted_durations
+                    else 0.0,
+                }
+
+            overall_success_rate = (
+                total_success / total_calls if total_calls > 0 else 0.0
+            )
+
+            return {
+                "per_span_metrics": per_span,
+                "overall_success_rate": overall_success_rate,
+                "total_calls": total_calls,
+            }
+
+        last_hour_metrics = _calculate_window_metrics(last_hour_records)
+        last_24h_metrics = _calculate_window_metrics(last_24h_records)
+
+        return {
+            "time_window_metrics": {
+                "last_hour": last_hour_metrics,
+                "last_24h": last_24h_metrics,
+            },
+            "overall_health": last_hour_metrics.get("overall_success_rate", 0.0)
+            if last_hour_metrics
+            else 0.0,
+        }
+
+    def write_metrics_snapshot(self) -> None:
+        """Write a metrics snapshot to JSONL file.
+
+        Writes current metrics calculated by calculate_metrics() to a JSONL file,
+        with rotation based on file size. Each line is a complete JSON object with
+        timestamp, run_id, and metrics.
+        """
+        path_str = self._config.metrics_log_path
+        if not self.enabled or not path_str:
+            return
+
+        path = Path(path_str)
+        metrics = self.calculate_metrics()
+
+        snapshot: dict[str, object] = {
+            "ts": time.time(),
+            "daemon_class": self._daemon,
+            "diag_run_id": self._run_id,
+            "metrics": metrics,
+        }
+
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            rotate_file_if_needed(
+                path,
+                max_bytes=self._config.metrics_log_max_bytes,
+                backups=self._config.metrics_log_backups,
+            )
+            with path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(snapshot, separators=(",", ":")) + "\n")
+        except OSError:
+            # Never let telemetry I/O take down the daemon.
+            with suppress(OSError):
+                self._logger.debug(
+                    "Metrics snapshot write failed",
+                    extra={"extra_fields": {"daemon_class": self._daemon}},
+                )
 
     def _record_event(self, *, kind: str, **fields: object) -> None:
         event: dict[str, object] = {

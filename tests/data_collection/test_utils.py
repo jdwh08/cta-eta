@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from cta_eta.data_collection.exceptions import APIResponseError
 from cta_eta.data_collection.utils import (
     convert_celsius_to_fahrenheit,
     percentile,
@@ -51,7 +52,7 @@ class TestSafeGetNested:
 
         # Act & Assert
         with pytest.raises(
-            TypeError, match=r"NWS response missing required field: 'a\.b'"
+            APIResponseError, match=r"NWS response missing required field: 'a\.b'"
         ):
             safe_get_nested(data, "a", "b", api_name="NWS")
 
@@ -61,7 +62,9 @@ class TestSafeGetNested:
         data: dict[str, object] = {"a": 1}
 
         # Act & Assert
-        with pytest.raises(TypeError, match="API response missing required field: 'b'"):
+        with pytest.raises(
+            APIResponseError, match="API response missing required field: 'b'"
+        ):
             safe_get_nested(data, "b")
 
     def test_missing_nested_key_raises_type_error(self) -> None:
@@ -70,7 +73,7 @@ class TestSafeGetNested:
         data: dict[str, object] = {"a": {"b": 1}}
 
         # Act & Assert
-        with pytest.raises(TypeError, match=r"'a\.c'") as exc_info:
+        with pytest.raises(APIResponseError, match=r"'a\.c'") as exc_info:
             safe_get_nested(data, "a", "c")
         assert "missing required field" in str(exc_info.value)
 
@@ -80,7 +83,9 @@ class TestSafeGetNested:
         data: dict[str, object] = {"a": [1, 2, 3]}
 
         # Act & Assert
-        with pytest.raises(TypeError, match=r"Expected dict at path 'a', got list"):
+        with pytest.raises(
+            APIResponseError, match=r"Expected dict at path 'a', got list"
+        ):
             safe_get_nested(data, "a", "b")
 
     def test_non_dict_at_nested_path_raises_type_error(self) -> None:
@@ -89,7 +94,9 @@ class TestSafeGetNested:
         data: dict[str, object] = {"a": {"b": "string"}}
 
         # Act & Assert
-        with pytest.raises(TypeError, match=r"Expected dict at path 'a\.b', got str"):
+        with pytest.raises(
+            APIResponseError, match=r"Expected dict at path 'a\.b', got str"
+        ):
             safe_get_nested(data, "a", "b", "c")
 
 

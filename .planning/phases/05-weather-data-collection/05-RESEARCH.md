@@ -27,20 +27,18 @@ The established libraries/tools for Python multi-source weather API integration:
 | httpx | 0.27+ | Async HTTP client | Dual sync/async, HTTP/2, familiar Requests API |
 | asyncio | stdlib | Async orchestration | Python's standard async framework |
 | pandas | 2.3+ | Data merging/manipulation | De facto standard for data wrangling |
-| tenacity | 9.0+ | Retry with exponential backoff | Most mature retry library with async support |
+| stamina | 24.2+ | Simple retry decorator | Already in codebase, sufficient for basic retry |
 
 ### Supporting
 | Library | Version | Purpose | When to Use |
 |---------|---------|---------|-------------|
 | aiometer | 0.5+ | Async rate limiting | Strict rate limit enforcement (Open-Meteo 10k/day) |
-| stamina | 24.2+ | Simple retry decorator | Already in codebase, sufficient for basic retry |
 | pydantic | 2.10+ | Data validation | Optional - validate merged weather responses |
 
 ### Alternatives Considered
 | Instead of | Could Use | Tradeoff |
 |------------|-----------|----------|
 | httpx | aiohttp | aiohttp faster but async-only, no HTTP/2; httpx more versatile |
-| tenacity | stamina | stamina simpler but less control over backoff strategies |
 | aiometer | custom semaphore | aiometer uses GCRA algorithm, more robust than DIY |
 
 **Installation:**
