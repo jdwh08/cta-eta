@@ -436,7 +436,9 @@ async def test_discover_openweathermap_grid_parse_error_coord_lat_lon_not_numeri
     )
 
     # Act / Assert
-    with pytest.raises(APIResponseError, match=r"coord\.lat.*or.*coord\.lon.*is not numeric"):
+    with pytest.raises(
+        APIResponseError, match=r"coord\.lat.*or.*coord\.lon.*is not numeric"
+    ):
         await api_weather_openweathermap.discover_openweathermap_grid(
             owm_client, 41.72, -87.62
         )

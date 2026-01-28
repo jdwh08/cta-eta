@@ -14,6 +14,7 @@ Partitioning:
 """
 
 import io
+import json
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -391,10 +392,9 @@ class ParquetWriter:
         if metadata is not None:
             # Convert metadata dict to bytes for storage in Parquet metadata
             # PyArrow expects metadata values to be bytes
-            import json
-
             metadata_bytes = {
-                key: json.dumps(value).encode("utf-8") for key, value in metadata.items()
+                key: json.dumps(value).encode("utf-8")
+                for key, value in metadata.items()
             }
             # Get existing schema metadata or create new
             existing_metadata = table.schema.metadata or {}

@@ -230,7 +230,9 @@ def test_fetch_track_shapes_raw_rejects_non_list_json(
     client.get.return_value = httpx_json_response({"not": "a list"}, 200, url)
 
     # Act / Assert
-    with pytest.raises(APIResponseError, match="Unexpected Chicago Open Data response type"):
+    with pytest.raises(
+        APIResponseError, match="Unexpected Chicago Open Data response type"
+    ):
         api_track_shape.fetch_track_shapes_raw(client, cfg)
 
 

@@ -270,9 +270,7 @@ async def test_get_open_meteo_current_parse_error_lat_lon_not_numeric(
     )
 
     # Act / Assert
-    with pytest.raises(
-        APIResponseError, match="Open-Meteo API response"
-    ):
+    with pytest.raises(APIResponseError, match="Open-Meteo API response"):
         await api_weather_open_meteo.get_open_meteo_current(
             open_meteo_client, "41.88,-87.63"
         )
@@ -295,9 +293,7 @@ async def test_get_open_meteo_current_parse_error_missing_current_time(
     )
 
     # Act / Assert
-    with pytest.raises(
-        APIResponseError, match="Open-Meteo API response"
-    ):
+    with pytest.raises(APIResponseError, match="Open-Meteo API response"):
         await api_weather_open_meteo.get_open_meteo_current(
             open_meteo_client, "41.88,-87.63"
         )

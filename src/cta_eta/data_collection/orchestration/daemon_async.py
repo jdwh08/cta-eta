@@ -404,7 +404,7 @@ class AsyncBaseDaemon(ABC):
         try:
             flush()
             self.logger.debug("Flushed storage during shutdown")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             self.logger.warning(
                 f"Failed to flush storage: {e}",
                 extra={

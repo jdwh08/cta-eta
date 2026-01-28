@@ -503,6 +503,54 @@ class TestDaemonDiagnosticsSpan:
         assert event["cycle_id"] == "c1"
         assert event["ok"] is True
 
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("cleanup_test_files")
+    async def test_span_adds_to_span_records(
+        self, diagnostics: DaemonDiagnostics, mocker: MockerFixture
+    ) -> None:
+        """Span context manager adds timestamped record to _span_records."""
+        # Arrange
+        mock_time = 1000000.0
+        span_name = "test_span"
+
+        with mocker.patch("time.time", return_value=mock_time):
+            # Act
+            async with diagnostics.span(span_name):
+                await asyncio.sleep(0.01)
+
+        # Assert
+        assert len(diagnostics._span_records) == 1
+        record = diagnostics._span_records[0]
+        assert record[0] == mock_time
+        assert record[1] == span_name
+        assert record[2] is True  # ok=True for successful span
+        assert record[3] > 0  # duration_ms should be positive
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("cleanup_test_files")
+    async def test_span_adds_failed_record_to_span_records(
+        self, diagnostics: DaemonDiagnostics, mocker: MockerFixture
+    ) -> None:
+        """Span context manager adds failed record to _span_records."""
+        # Arrange
+        mock_time = 1000000.0
+        span_name = "test_span"
+        test_error = ValueError("test error")
+
+        with mocker.patch("time.time", return_value=mock_time):
+            # Act & Assert
+            with pytest.raises(ValueError):
+                async with diagnostics.span(span_name):
+                    raise test_error
+
+        # Assert
+        assert len(diagnostics._span_records) == 1
+        record = diagnostics._span_records[0]
+        assert record[0] == mock_time
+        assert record[1] == span_name
+        assert record[2] is False  # ok=False for failed span
+        assert record[3] >= 0  # duration_ms should be non-negative
+
 
 class TestDaemonDiagnosticsRecordSpan:
     """Tests for DaemonDiagnostics.record_span()."""
@@ -1191,7 +1239,9 @@ class TestDaemonDiagnosticsCalculateMetrics:
             diagnostics.record_span("old_span", 10.0, ok=True)
 
         # Add recent spans (inside 1h window)
-        with mocker.patch("time.time", return_value=current_time - 1800.0):  # 30 min ago
+        with mocker.patch(
+            "time.time", return_value=current_time - 1800.0
+        ):  # 30 min ago
             diagnostics.record_span("recent_span", 20.0, ok=True)
 
         # Act - calculate with current time
@@ -1226,6 +1276,396 @@ class TestDaemonDiagnosticsCalculateMetrics:
 
         # Assert
         assert metrics["overall_health"] == 0.7
+
+    @pytest.mark.usefixtures("cleanup_test_files")
+    def test_calculate_metrics_single_record(
+        self, diagnostics: DaemonDiagnostics
+    ) -> None:
+        """calculate_metrics handles single span record correctly."""
+        # Arrange
+        diagnostics.record_span("test_span", 15.5, ok=True)
+
+        # Act
+        metrics = diagnostics.calculate_metrics()
+
+        # Assert
+        last_hour = metrics["time_window_metrics"]["last_hour"]
+        span_metrics = last_hour["per_span_metrics"]["test_span"]
+        assert span_metrics["success_rate"] == 1.0
+        assert span_metrics["error_rate"] == 0.0
+        assert span_metrics["total_calls"] == 1
+        assert span_metrics["p50_ms"] == 15.5
+        assert span_metrics["p95_ms"] == 15.5
+        assert span_metrics["p99_ms"] == 15.5
+
+    @pytest.mark.usefixtures("cleanup_test_files")
+    def test_calculate_metrics_all_failures(
+        self, diagnostics: DaemonDiagnostics
+    ) -> None:
+        """calculate_metrics handles all failures correctly."""
+        # Arrange
+        for i in range(5):
+            diagnostics.record_span("test_span", 10.0 + float(i), ok=False)
+
+        # Act
+        metrics = diagnostics.calculate_metrics()
+
+        # Assert
+        last_hour = metrics["time_window_metrics"]["last_hour"]
+        span_metrics = last_hour["per_span_metrics"]["test_span"]
+        assert span_metrics["success_rate"] == 0.0
+        assert span_metrics["error_rate"] == 1.0
+        assert span_metrics["total_calls"] == 5
+        assert last_hour["overall_success_rate"] == 0.0
+
+    @pytest.mark.usefixtures("cleanup_test_files")
+    def test_calculate_metrics_zero_duration(
+        self, diagnostics: DaemonDiagnostics
+    ) -> None:
+        """calculate_metrics handles zero duration correctly."""
+        # Arrange
+        diagnostics.record_span("test_span", 0.0, ok=True)
+        diagnostics.record_span("test_span", 0.0, ok=True)
+
+        # Act
+        metrics = diagnostics.calculate_metrics()
+
+        # Assert
+        last_hour = metrics["time_window_metrics"]["last_hour"]
+        span_metrics = last_hour["per_span_metrics"]["test_span"]
+        assert span_metrics["p50_ms"] == 0.0
+        assert span_metrics["p95_ms"] == 0.0
+        assert span_metrics["p99_ms"] == 0.0
+
+    @pytest.mark.usefixtures("cleanup_test_files")
+    def test_calculate_metrics_exactly_at_one_hour_boundary(
+        self, diagnostics: DaemonDiagnostics, mocker: MockerFixture
+    ) -> None:
+        """calculate_metrics includes records exactly at 1-hour boundary."""
+        # Arrange
+        base_time = 1000000.0
+        exactly_one_hour_ago = base_time - 3600.0
+
+        # Record span exactly 1 hour ago (should be included)
+        with mocker.patch("time.time", return_value=exactly_one_hour_ago):
+            diagnostics.record_span("boundary_span", 10.0, ok=True)
+
+        # Record span just before 1 hour ago (should be excluded)
+        with mocker.patch("time.time", return_value=exactly_one_hour_ago - 1.0):
+            diagnostics.record_span("old_span", 10.0, ok=True)
+
+        # Act
+        with mocker.patch("time.time", return_value=base_time):
+            metrics = diagnostics.calculate_metrics()
+
+        # Assert
+        last_hour = metrics["time_window_metrics"]["last_hour"]
+        assert "boundary_span" in last_hour["per_span_metrics"]
+        assert "old_span" not in last_hour["per_span_metrics"]
+
+    @pytest.mark.usefixtures("cleanup_test_files")
+    def test_calculate_metrics_exactly_at_24h_boundary(
+        self, diagnostics: DaemonDiagnostics, mocker: MockerFixture
+    ) -> None:
+        """calculate_metrics includes records exactly at 24-hour boundary."""
+        # Arrange
+        base_time = 1000000.0
+        exactly_24h_ago = base_time - 86400.0
+
+        # Record span exactly 24 hours ago (should be included in 24h window)
+        with mocker.patch("time.time", return_value=exactly_24h_ago):
+            diagnostics.record_span("boundary_span", 10.0, ok=True)
+
+        # Record span just before 24 hours ago (should be excluded)
+        with mocker.patch("time.time", return_value=exactly_24h_ago - 1.0):
+            diagnostics.record_span("old_span", 10.0, ok=True)
+
+        # Act
+        with mocker.patch("time.time", return_value=base_time):
+            metrics = diagnostics.calculate_metrics()
+
+        # Assert
+        last_24h = metrics["time_window_metrics"]["last_24h"]
+        assert "boundary_span" in last_24h["per_span_metrics"]
+        assert "old_span" not in last_24h["per_span_metrics"]
+
+    @pytest.mark.usefixtures("cleanup_test_files")
+    def test_calculate_metrics_outside_24h_window(
+        self, diagnostics: DaemonDiagnostics, mocker: MockerFixture
+    ) -> None:
+        """calculate_metrics excludes records outside 24-hour window."""
+        # Arrange
+        base_time = 1000000.0
+        more_than_24h_ago = base_time - 86401.0  # 1 second more than 24h
+
+        # Record span more than 24 hours ago
+        mocker.patch("time.time", return_value=more_than_24h_ago)
+        diagnostics.record_span("very_old_span", 10.0, ok=True)
+
+        # Act
+        mocker.patch("time.time", return_value=base_time)
+        metrics = diagnostics.calculate_metrics()
+
+        # Assert
+        last_hour = metrics["time_window_metrics"]["last_hour"]
+        last_24h = metrics["time_window_metrics"]["last_24h"]
+        # When no records in window, _calculate_window_metrics returns empty dict
+        assert last_hour == {}
+        assert last_24h == {}
+
+    @pytest.mark.usefixtures("cleanup_test_files")
+    def test_calculate_metrics_percentile_single_sample(
+        self, diagnostics: DaemonDiagnostics
+    ) -> None:
+        """calculate_metrics calculates percentiles correctly with single sample."""
+        # Arrange
+        diagnostics.record_span("test_span", 42.5, ok=True)
+
+        # Act
+        metrics = diagnostics.calculate_metrics()
+
+        # Assert
+        last_hour = metrics["time_window_metrics"]["last_hour"]
+        span_metrics = last_hour["per_span_metrics"]["test_span"]
+        # With single sample, all percentiles should be the same
+        assert span_metrics["p50_ms"] == 42.5
+        assert span_metrics["p95_ms"] == 42.5
+        assert span_metrics["p99_ms"] == 42.5
+
+    @pytest.mark.usefixtures("cleanup_test_files")
+    def test_calculate_metrics_percentile_two_samples(
+        self, diagnostics: DaemonDiagnostics
+    ) -> None:
+        """calculate_metrics calculates percentiles correctly with two samples."""
+        # Arrange
+        diagnostics.record_span("test_span", 10.0, ok=True)
+        diagnostics.record_span("test_span", 20.0, ok=True)
+
+        # Act
+        metrics = diagnostics.calculate_metrics()
+
+        # Assert
+        last_hour = metrics["time_window_metrics"]["last_hour"]
+        span_metrics = last_hour["per_span_metrics"]["test_span"]
+        # p50 should be between 10 and 20
+        assert 10.0 <= span_metrics["p50_ms"] <= 20.0
+        # p95 and p99 should be >= p50
+        assert span_metrics["p95_ms"] >= span_metrics["p50_ms"]
+        assert span_metrics["p99_ms"] >= span_metrics["p50_ms"]
+
+    @pytest.mark.usefixtures("cleanup_test_files")
+    def test_calculate_metrics_empty_last_hour_overall_health(
+        self, diagnostics: DaemonDiagnostics, mocker: MockerFixture
+    ) -> None:
+        """calculate_metrics sets overall_health to 0.0 when last_hour is empty."""
+        # Arrange - add old span outside 1h window
+        base_time = 1000000.0
+        old_time = base_time - 7200.0  # 2 hours ago
+
+        with mocker.patch("time.time", return_value=old_time):
+            diagnostics.record_span("old_span", 10.0, ok=True)
+
+        # Act
+        with mocker.patch("time.time", return_value=base_time):
+            metrics = diagnostics.calculate_metrics()
+
+        # Assert
+        assert metrics["overall_health"] == 0.0
+        assert metrics["time_window_metrics"]["last_hour"] == {}
+
+    @pytest.mark.usefixtures("cleanup_test_files")
+    def test_calculate_metrics_multiple_spans_different_windows(
+        self, diagnostics: DaemonDiagnostics, mocker: MockerFixture
+    ) -> None:
+        """calculate_metrics correctly separates spans in different time windows."""
+        # Arrange
+        base_time = 1000000.0
+        # Span in last hour
+        with mocker.patch("time.time", return_value=base_time - 1800.0):  # 30 min ago
+            diagnostics.record_span("recent_span", 10.0, ok=True)
+
+        # Span in last 24h but not last hour
+        with mocker.patch("time.time", return_value=base_time - 7200.0):  # 2 hours ago
+            diagnostics.record_span("old_span", 20.0, ok=True)
+
+        # Act
+        with mocker.patch("time.time", return_value=base_time):
+            metrics = diagnostics.calculate_metrics()
+
+        # Assert
+        last_hour = metrics["time_window_metrics"]["last_hour"]
+        last_24h = metrics["time_window_metrics"]["last_24h"]
+
+        # Both should be in 24h window
+        assert "recent_span" in last_24h["per_span_metrics"]
+        assert "old_span" in last_24h["per_span_metrics"]
+
+        # Only recent should be in 1h window
+        assert "recent_span" in last_hour["per_span_metrics"]
+        assert "old_span" not in last_hour["per_span_metrics"]
+
+    @pytest.mark.usefixtures("cleanup_test_files")
+    def test_record_span_adds_to_span_records(
+        self, diagnostics: DaemonDiagnostics, mocker: MockerFixture
+    ) -> None:
+        """record_span adds timestamped records to _span_records."""
+        # Arrange
+        mock_time = 1000000.0
+        with mocker.patch("time.time", return_value=mock_time):
+            diagnostics.record_span("test_span", 15.5, ok=True)
+
+        # Assert
+        assert len(diagnostics._span_records) == 1
+        record = diagnostics._span_records[0]
+        assert record[0] == mock_time  # timestamp
+        assert record[1] == "test_span"  # name
+        assert record[2] is True  # ok
+        assert record[3] == 15.5  # duration_ms
+
+    @pytest.mark.usefixtures("cleanup_test_files")
+    def test_span_records_maxlen_behavior(self, diagnostics: DaemonDiagnostics) -> None:
+        """_span_records deque respects maxlen and drops oldest records."""
+        # Arrange - maxlen is 1000
+        # Add more than maxlen records
+        for i in range(1005):
+            diagnostics.record_span("test_span", float(i), ok=True)
+
+        # Assert
+        assert len(diagnostics._span_records) == 1000
+        # First record should be dropped (index 5 should be first)
+        assert diagnostics._span_records[0][3] == 5.0  # duration_ms of 5th record
+
+    @pytest.mark.usefixtures("cleanup_test_files")
+    def test_calculate_metrics_handles_empty_window_correctly(
+        self, diagnostics: DaemonDiagnostics, mocker: MockerFixture
+    ) -> None:
+        """calculate_metrics returns empty dict for _calculate_window_metrics when no records."""
+        # Arrange - no spans recorded, or all spans are outside window
+        base_time = 1000000.0
+        very_old_time = base_time - 100000.0  # Very old
+
+        with mocker.patch("time.time", return_value=very_old_time):
+            diagnostics.record_span("very_old_span", 10.0, ok=True)
+
+        # Act
+        with mocker.patch("time.time", return_value=base_time):
+            metrics = diagnostics.calculate_metrics()
+
+        # Assert
+        last_hour = metrics["time_window_metrics"]["last_hour"]
+        last_24h = metrics["time_window_metrics"]["last_24h"]
+        # Both windows should be empty since record is outside 24h
+        assert last_hour == {}
+        assert last_24h == {}
+        assert metrics["overall_health"] == 0.0
+
+    @pytest.mark.usefixtures("cleanup_test_files")
+    def test_calculate_metrics_percentile_edge_cases(
+        self, diagnostics: DaemonDiagnostics
+    ) -> None:
+        """calculate_metrics handles percentile edge cases correctly."""
+        # Arrange - add spans with specific durations for percentile testing
+        # 100 samples for better percentile accuracy
+        durations = [float(i) for i in range(1, 101)]  # 1.0 to 100.0
+        for duration in durations:
+            diagnostics.record_span("test_span", duration, ok=True)
+
+        # Act
+        metrics = diagnostics.calculate_metrics()
+
+        # Assert
+        last_hour = metrics["time_window_metrics"]["last_hour"]
+        span_metrics = last_hour["per_span_metrics"]["test_span"]
+        # p50 should be around 50.0
+        assert 45.0 <= span_metrics["p50_ms"] <= 55.0
+        # p95 should be around 95.0
+        assert 90.0 <= span_metrics["p95_ms"] <= 100.0
+        # p99 should be around 99.0
+        assert 95.0 <= span_metrics["p99_ms"] <= 100.0
+        # Percentiles should be in ascending order
+        assert span_metrics["p50_ms"] < span_metrics["p95_ms"]
+        assert span_metrics["p95_ms"] < span_metrics["p99_ms"]
+
+    @pytest.mark.usefixtures("cleanup_test_files")
+    def test_calculate_metrics_very_large_durations(
+        self, diagnostics: DaemonDiagnostics
+    ) -> None:
+        """calculate_metrics handles very large durations correctly."""
+        # Arrange
+        large_durations = [1000.0, 5000.0, 10000.0, 50000.0]
+        for duration in large_durations:
+            diagnostics.record_span("test_span", duration, ok=True)
+
+        # Act
+        metrics = diagnostics.calculate_metrics()
+
+        # Assert
+        last_hour = metrics["time_window_metrics"]["last_hour"]
+        span_metrics = last_hour["per_span_metrics"]["test_span"]
+        assert span_metrics["p50_ms"] >= 1000.0
+        assert span_metrics["p95_ms"] >= 5000.0
+        assert span_metrics["p99_ms"] >= 10000.0
+
+    @pytest.mark.usefixtures("cleanup_test_files")
+    def test_calculate_metrics_mixed_time_windows_with_overlap(
+        self, diagnostics: DaemonDiagnostics, mocker: MockerFixture
+    ) -> None:
+        """calculate_metrics correctly handles overlapping time windows."""
+        # Arrange
+        base_time = 1000000.0
+
+        # Record spans at different times
+        # Recent (in both windows)
+        with mocker.patch("time.time", return_value=base_time - 1800.0):  # 30 min ago
+            diagnostics.record_span("recent", 10.0, ok=True)
+
+        # Medium (in 24h but not 1h)
+        with mocker.patch("time.time", return_value=base_time - 7200.0):  # 2 hours ago
+            diagnostics.record_span("medium", 20.0, ok=True)
+
+        # Old (outside both windows)
+        with mocker.patch(
+            "time.time", return_value=base_time - 90000.0
+        ):  # 25 hours ago
+            diagnostics.record_span("old", 30.0, ok=True)
+
+        # Act
+        with mocker.patch("time.time", return_value=base_time):
+            metrics = diagnostics.calculate_metrics()
+
+        # Assert
+        last_hour = metrics["time_window_metrics"]["last_hour"]
+        last_24h = metrics["time_window_metrics"]["last_24h"]
+
+        # Only recent should be in 1h window
+        assert "recent" in last_hour["per_span_metrics"]
+        assert "medium" not in last_hour["per_span_metrics"]
+        assert "old" not in last_hour["per_span_metrics"]
+
+        # Recent and medium should be in 24h window
+        assert "recent" in last_24h["per_span_metrics"]
+        assert "medium" in last_24h["per_span_metrics"]
+        assert "old" not in last_24h["per_span_metrics"]
+
+    @pytest.mark.usefixtures("cleanup_test_files")
+    def test_calculate_metrics_overall_health_with_empty_last_hour(
+        self, diagnostics: DaemonDiagnostics, mocker: MockerFixture
+    ) -> None:
+        """calculate_metrics sets overall_health to 0.0 when last_hour metrics are empty."""
+        # Arrange
+        base_time = 1000000.0
+        # Add span outside 1h but inside 24h
+        with mocker.patch("time.time", return_value=base_time - 7200.0):
+            diagnostics.record_span("old_span", 10.0, ok=True)
+
+        # Act
+        with mocker.patch("time.time", return_value=base_time):
+            metrics = diagnostics.calculate_metrics()
+
+        # Assert
+        # last_hour should be empty, so overall_health should be 0.0
+        assert metrics["overall_health"] == 0.0
+        assert metrics["time_window_metrics"]["last_hour"] == {}
 
 
 class TestDaemonDiagnosticsMetricsConfig:
@@ -1274,6 +1714,50 @@ class TestDaemonDiagnosticsMetricsConfig:
 
         # Assert
         assert config.metrics_log_path == ".daemon_state/TestDaemon.metrics.jsonl"
+
+    def test_from_config_metrics_log_max_bytes_enforces_minimum(self) -> None:
+        """from_config enforces minimum metrics_log_max_bytes of 1024."""
+        # Arrange
+        raw = {"metrics_log_max_bytes": 512}
+
+        # Act
+        config = DaemonDiagnosticsConfig.from_config(raw, daemon_name="TestDaemon")
+
+        # Assert
+        assert config.metrics_log_max_bytes == 1024
+
+    def test_from_config_metrics_log_max_bytes_invalid_int(self) -> None:
+        """from_config handles invalid metrics_log_max_bytes gracefully."""
+        # Arrange
+        raw = {"metrics_log_max_bytes": "not_an_int"}
+
+        # Act
+        config = DaemonDiagnosticsConfig.from_config(raw, daemon_name="TestDaemon")
+
+        # Assert
+        assert config.metrics_log_max_bytes == 5 * 1024 * 1024  # default
+
+    def test_from_config_metrics_log_backups_enforces_minimum(self) -> None:
+        """from_config enforces minimum metrics_log_backups of 0."""
+        # Arrange
+        raw = {"metrics_log_backups": -1}
+
+        # Act
+        config = DaemonDiagnosticsConfig.from_config(raw, daemon_name="TestDaemon")
+
+        # Assert
+        assert config.metrics_log_backups == 0
+
+    def test_from_config_metrics_log_backups_invalid_int(self) -> None:
+        """from_config handles invalid metrics_log_backups gracefully."""
+        # Arrange
+        raw = {"metrics_log_backups": "not_an_int"}
+
+        # Act
+        config = DaemonDiagnosticsConfig.from_config(raw, daemon_name="TestDaemon")
+
+        # Assert
+        assert config.metrics_log_backups == 3  # default
 
 
 class TestDaemonDiagnosticsWriteMetricsSnapshot:
@@ -1467,6 +1951,206 @@ class TestDaemonDiagnosticsWriteMetricsSnapshot:
 
         lines = log_path.read_text().strip().split("\n")
         assert len(lines) == 1
+
+        # Clean up
+        if log_path.exists():
+            log_path.unlink()
+
+    @pytest.mark.usefixtures("cleanup_state_files")
+    def test_write_metrics_snapshot_with_empty_metrics(
+        self, diagnostics: DaemonDiagnostics
+    ) -> None:
+        """write_metrics_snapshot writes snapshot even with empty metrics."""
+        # Arrange
+        config = DaemonDiagnosticsConfig(
+            enabled=True, metrics_log_path="test.metrics.jsonl"
+        )
+        diag = DaemonDiagnostics(
+            logger=diagnostics._logger, daemon_name="TestDaemon", config=config
+        )
+        # No spans recorded
+
+        # Act
+        diag.write_metrics_snapshot()
+
+        # Assert
+        log_path = Path("test.metrics.jsonl")
+        assert log_path.exists()
+        lines = log_path.read_text().strip().split("\n")
+        assert len(lines) == 1
+        loaded = json.loads(lines[0])
+        assert "metrics" in loaded
+        assert loaded["metrics"]["time_window_metrics"]["last_hour"] == {}
+        assert loaded["metrics"]["overall_health"] == 0.0
+
+        # Clean up
+        if log_path.exists():
+            log_path.unlink()
+
+    @pytest.mark.usefixtures("cleanup_state_files")
+    def test_write_metrics_snapshot_with_old_records_only(
+        self, diagnostics: DaemonDiagnostics, mocker: MockerFixture
+    ) -> None:
+        """write_metrics_snapshot handles metrics with only old records."""
+        # Arrange
+        config = DaemonDiagnosticsConfig(
+            enabled=True, metrics_log_path="test.metrics.jsonl"
+        )
+        diag = DaemonDiagnostics(
+            logger=diagnostics._logger, daemon_name="TestDaemon", config=config
+        )
+
+        base_time = 1000000.0
+        # Record span outside 1h window but inside 24h
+        with mocker.patch("time.time", return_value=base_time - 7200.0):
+            diag.record_span("old_span", 10.0, ok=True)
+
+        # Act
+        with mocker.patch("time.time", return_value=base_time):
+            diag.write_metrics_snapshot()
+
+        # Assert
+        log_path = Path("test.metrics.jsonl")
+        assert log_path.exists()
+        lines = log_path.read_text().strip().split("\n")
+        loaded = json.loads(lines[0])
+        # last_hour should be empty, but last_24h should have data
+        assert loaded["metrics"]["time_window_metrics"]["last_hour"] == {}
+        assert (
+            "old_span"
+            in loaded["metrics"]["time_window_metrics"]["last_24h"]["per_span_metrics"]
+        )
+
+        # Clean up
+        if log_path.exists():
+            log_path.unlink()
+
+    @pytest.mark.usefixtures("cleanup_state_files")
+    def test_write_metrics_snapshot_handles_file_write_error(
+        self, diagnostics: DaemonDiagnostics, mocker: MockerFixture
+    ) -> None:
+        """write_metrics_snapshot handles file write errors gracefully."""
+        # Arrange
+        config = DaemonDiagnosticsConfig(
+            enabled=True, metrics_log_path="test.metrics.jsonl"
+        )
+        diag = DaemonDiagnostics(
+            logger=diagnostics._logger, daemon_name="TestDaemon", config=config
+        )
+        diag.record_span("test_span", 10.0, ok=True)
+
+        # Mock file open to raise OSError
+        mocker.patch(
+            "cta_eta.data_collection.orchestration.diagnostics.Path.open",
+            side_effect=OSError("Disk full"),
+        )
+
+        # Act - should not raise
+        diag.write_metrics_snapshot()
+
+        # Assert - should log debug message
+        diagnostics._logger.debug.assert_called()
+
+    @pytest.mark.usefixtures("cleanup_state_files")
+    def test_write_metrics_snapshot_handles_rotate_error(
+        self, diagnostics: DaemonDiagnostics, mocker: MockerFixture
+    ) -> None:
+        """write_metrics_snapshot handles rotation errors gracefully."""
+        # Arrange
+        config = DaemonDiagnosticsConfig(
+            enabled=True, metrics_log_path="test.metrics.jsonl"
+        )
+        diag = DaemonDiagnostics(
+            logger=diagnostics._logger, daemon_name="TestDaemon", config=config
+        )
+        diag.record_span("test_span", 10.0, ok=True)
+
+        # Mock rotate_file_if_needed to raise OSError
+        mocker.patch(
+            "cta_eta.data_collection.orchestration.diagnostics.rotate_file_if_needed",
+            side_effect=OSError("Permission denied"),
+        )
+
+        # Act - should not raise
+        diag.write_metrics_snapshot()
+
+        # Assert - should log debug message
+        diagnostics._logger.debug.assert_called()
+
+    @pytest.mark.usefixtures("cleanup_state_files")
+    def test_write_metrics_snapshot_includes_all_metric_fields(
+        self, diagnostics: DaemonDiagnostics
+    ) -> None:
+        """write_metrics_snapshot includes all expected metric fields."""
+        # Arrange
+        config = DaemonDiagnosticsConfig(
+            enabled=True, metrics_log_path="test.metrics.jsonl"
+        )
+        diag = DaemonDiagnostics(
+            logger=diagnostics._logger, daemon_name="TestDaemon", config=config
+        )
+        diag.record_span("span1", 10.0, ok=True)
+        diag.record_span("span2", 20.0, ok=False)
+
+        # Act
+        diag.write_metrics_snapshot()
+
+        # Assert
+        log_path = Path("test.metrics.jsonl")
+        loaded = json.loads(log_path.read_text().strip())
+        assert "ts" in loaded
+        assert "daemon_class" in loaded
+        assert "diag_run_id" in loaded
+        assert "metrics" in loaded
+        metrics = loaded["metrics"]
+        assert "time_window_metrics" in metrics
+        assert "overall_health" in metrics
+        assert "last_hour" in metrics["time_window_metrics"]
+        assert "last_24h" in metrics["time_window_metrics"]
+
+        # Clean up
+        if log_path.exists():
+            log_path.unlink()
+
+    @pytest.mark.usefixtures("cleanup_state_files")
+    def test_write_metrics_snapshot_multiple_with_changing_metrics(
+        self, diagnostics: DaemonDiagnostics, mocker: MockerFixture
+    ) -> None:
+        """write_metrics_snapshot writes different metrics across multiple calls."""
+        # Arrange
+        config = DaemonDiagnosticsConfig(
+            enabled=True, metrics_log_path="test.metrics.jsonl"
+        )
+        diag = DaemonDiagnostics(
+            logger=diagnostics._logger, daemon_name="TestDaemon", config=config
+        )
+
+        # First snapshot
+        diag.record_span("span1", 10.0, ok=True)
+        diag.write_metrics_snapshot()
+
+        # Second snapshot with more spans
+        diag.record_span("span2", 20.0, ok=True)
+        diag.record_span("span1", 15.0, ok=False)
+        diag.write_metrics_snapshot()
+
+        # Assert
+        log_path = Path("test.metrics.jsonl")
+        lines = log_path.read_text().strip().split("\n")
+        assert len(lines) == 2
+
+        # First snapshot should have only span1
+        first = json.loads(lines[0])
+        first_metrics = first["metrics"]["time_window_metrics"]["last_hour"]
+        assert "span1" in first_metrics["per_span_metrics"]
+        assert first_metrics["per_span_metrics"]["span1"]["total_calls"] == 1
+
+        # Second snapshot should have both spans
+        second = json.loads(lines[1])
+        second_metrics = second["metrics"]["time_window_metrics"]["last_hour"]
+        assert "span1" in second_metrics["per_span_metrics"]
+        assert "span2" in second_metrics["per_span_metrics"]
+        assert second_metrics["per_span_metrics"]["span1"]["total_calls"] == 2
 
         # Clean up
         if log_path.exists():

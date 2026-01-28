@@ -211,7 +211,9 @@ class TestDetectGap:
 
     def test_negative_delta_raises_error(self) -> None:
         """Test that negative time delta (current < last) raises ValueError."""
-        with pytest.raises(ValueError, match="current_timestamp must be >= last_poll_timestamp"):
+        with pytest.raises(
+            ValueError, match="current_timestamp must be >= last_poll_timestamp"
+        ):
             detect_gap(
                 last_poll_timestamp=1000.0,
                 current_timestamp=900.0,  # Current before last!

@@ -36,7 +36,9 @@ async def test_get_train_positions_requires_api_key(
     client = mocker.AsyncMock(spec=httpx.AsyncClient)
 
     # Act / Assert
-    with pytest.raises(ConfigurationError, match="CTA_API_KEY environment variable not set"):
+    with pytest.raises(
+        ConfigurationError, match="CTA_API_KEY environment variable not set"
+    ):
         await api_train_position.get_train_positions(client)
 
 
@@ -726,9 +728,7 @@ class TestCTATrackerAPIError:
     def test_cta_tracker_api_error_with_code_and_message(self) -> None:
         """CTATrackerAPIError stores err_cd and err_nm and formats message."""
         # Arrange & Act
-        error = CTATrackerAPIError(
-            err_cd="102", err_nm="Daily limit exceeded"
-        )
+        error = CTATrackerAPIError(err_cd="102", err_nm="Daily limit exceeded")
 
         # Assert
         assert error.err_cd == "102"

@@ -322,10 +322,14 @@ class DaemonDiagnostics:
 
         # Filter span records by time windows
         last_hour_records = [r for r in self._span_records if r[0] >= one_hour_ago]
-        last_24h_records = [r for r in self._span_records if r[0] >= twenty_four_hours_ago]
+        last_24h_records = [
+            r for r in self._span_records if r[0] >= twenty_four_hours_ago
+        ]
 
         # Calculate metrics for each time window
-        def _calculate_window_metrics(records: list[tuple[float, str, bool, float]]) -> dict[str, object]:
+        def _calculate_window_metrics(
+            records: list[tuple[float, str, bool, float]],
+        ) -> dict[str, object]:
             """Calculate metrics for a specific time window."""
             if not records:
                 return {}
@@ -352,12 +356,20 @@ class DaemonDiagnostics:
                     "success_rate": success_count / total if total > 0 else 0.0,
                     "error_rate": (total - success_count) / total if total > 0 else 0.0,
                     "total_calls": total,
-                    "p50_ms": percentile(sorted_durations, 50) if sorted_durations else 0.0,
-                    "p95_ms": percentile(sorted_durations, 95) if sorted_durations else 0.0,
-                    "p99_ms": percentile(sorted_durations, 99) if sorted_durations else 0.0,
+                    "p50_ms": percentile(sorted_durations, 50)
+                    if sorted_durations
+                    else 0.0,
+                    "p95_ms": percentile(sorted_durations, 95)
+                    if sorted_durations
+                    else 0.0,
+                    "p99_ms": percentile(sorted_durations, 99)
+                    if sorted_durations
+                    else 0.0,
                 }
 
-            overall_success_rate = total_success / total_calls if total_calls > 0 else 0.0
+            overall_success_rate = (
+                total_success / total_calls if total_calls > 0 else 0.0
+            )
 
             return {
                 "per_span_metrics": per_span,
@@ -373,7 +385,9 @@ class DaemonDiagnostics:
                 "last_hour": last_hour_metrics,
                 "last_24h": last_24h_metrics,
             },
-            "overall_health": last_hour_metrics.get("overall_success_rate", 0.0) if last_hour_metrics else 0.0,
+            "overall_health": last_hour_metrics.get("overall_success_rate", 0.0)
+            if last_hour_metrics
+            else 0.0,
         }
 
     def write_metrics_snapshot(self) -> None:

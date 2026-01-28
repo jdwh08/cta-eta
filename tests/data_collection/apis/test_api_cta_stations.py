@@ -112,7 +112,9 @@ def test_get_cta_stations_rejects_non_list_json(
     client.get.return_value = httpx_json_response({"not": "a list"}, 200, url)
 
     # Act / Assert
-    with pytest.raises(APIResponseError, match="Unexpected Chicago Data Portal response type"):
+    with pytest.raises(
+        APIResponseError, match="Unexpected Chicago Data Portal response type"
+    ):
         api_cta_stations.get_cta_stations(client, cfg)
 
 
