@@ -1061,3 +1061,168 @@ class TestDaemonDiagnosticsRecentEventsBounded:
         # Should have the last max_events events
         first_event = diagnostics._recent_events[0]
         assert first_event["index"] == 10  # First 10 were dropped
+
+
+class TestDaemonDiagnosticsCalculateMetrics:
+    """Tests for DaemonDiagnostics.calculate_metrics()."""
+
+    @pytest.mark.usefixtures("cleanup_test_files")
+    def test_calculate_metrics_returns_empty_when_disabled(
+        self, disabled_diagnostics: DaemonDiagnostics
+    ) -> None:
+        """calculate_metrics returns empty dict when disabled."""
+        # Act
+        metrics = disabled_diagnostics.calculate_metrics()
+
+        # Assert
+        assert metrics == {}
+
+    @pytest.mark.usefixtures("cleanup_test_files")
+    def test_calculate_metrics_returns_empty_when_no_spans(
+        self, diagnostics: DaemonDiagnostics
+    ) -> None:
+        """calculate_metrics returns empty time windows when no spans recorded."""
+        # Act
+        metrics = diagnostics.calculate_metrics()
+
+        # Assert
+        assert "time_window_metrics" in metrics
+        assert metrics["time_window_metrics"]["last_hour"] == {}
+        assert metrics["time_window_metrics"]["last_24h"] == {}
+        assert metrics["overall_health"] == 0.0
+
+    @pytest.mark.usefixtures("cleanup_test_files")
+    def test_calculate_metrics_with_successful_spans(
+        self, diagnostics: DaemonDiagnostics
+    ) -> None:
+        """calculate_metrics calculates correct success_rate when all spans succeed."""
+        # Arrange
+        for i in range(10):
+            diagnostics.record_span("test_span", 10.0 + i, ok=True)
+
+        # Act
+        metrics = diagnostics.calculate_metrics()
+
+        # Assert
+        last_hour = metrics["time_window_metrics"]["last_hour"]
+        assert "per_span_metrics" in last_hour
+        span_metrics = last_hour["per_span_metrics"]["test_span"]
+        assert span_metrics["success_rate"] == 1.0
+        assert span_metrics["error_rate"] == 0.0
+        assert span_metrics["total_calls"] == 10
+        assert last_hour["overall_success_rate"] == 1.0
+
+    @pytest.mark.usefixtures("cleanup_test_files")
+    def test_calculate_metrics_with_mixed_success_failure(
+        self, diagnostics: DaemonDiagnostics
+    ) -> None:
+        """calculate_metrics calculates correct success_rate with mixed results."""
+        # Arrange - 8 successful, 2 failed
+        for i in range(8):
+            diagnostics.record_span("test_span", 10.0 + i, ok=True)
+        for i in range(2):
+            diagnostics.record_span("test_span", 50.0 + i, ok=False)
+
+        # Act
+        metrics = diagnostics.calculate_metrics()
+
+        # Assert
+        last_hour = metrics["time_window_metrics"]["last_hour"]
+        span_metrics = last_hour["per_span_metrics"]["test_span"]
+        assert span_metrics["success_rate"] == 0.8
+        assert span_metrics["error_rate"] == 0.2
+        assert span_metrics["total_calls"] == 10
+
+    @pytest.mark.usefixtures("cleanup_test_files")
+    def test_calculate_metrics_latency_percentiles(
+        self, diagnostics: DaemonDiagnostics
+    ) -> None:
+        """calculate_metrics calculates correct latency percentiles."""
+        # Arrange - add spans with specific durations
+        durations = [10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0, 100.0]
+        for duration in durations:
+            diagnostics.record_span("test_span", duration, ok=True)
+
+        # Act
+        metrics = diagnostics.calculate_metrics()
+
+        # Assert
+        last_hour = metrics["time_window_metrics"]["last_hour"]
+        span_metrics = last_hour["per_span_metrics"]["test_span"]
+        assert span_metrics["p50_ms"] > 0
+        assert span_metrics["p95_ms"] > 0
+        assert span_metrics["p99_ms"] > 0
+        # p95 should be greater than p50
+        assert span_metrics["p95_ms"] > span_metrics["p50_ms"]
+
+    @pytest.mark.usefixtures("cleanup_test_files")
+    def test_calculate_metrics_multiple_spans(
+        self, diagnostics: DaemonDiagnostics
+    ) -> None:
+        """calculate_metrics handles multiple different span names."""
+        # Arrange
+        diagnostics.record_span("span1", 10.0, ok=True)
+        diagnostics.record_span("span1", 20.0, ok=True)
+        diagnostics.record_span("span2", 30.0, ok=False)
+        diagnostics.record_span("span2", 40.0, ok=True)
+
+        # Act
+        metrics = diagnostics.calculate_metrics()
+
+        # Assert
+        last_hour = metrics["time_window_metrics"]["last_hour"]
+        per_span = last_hour["per_span_metrics"]
+        assert "span1" in per_span
+        assert "span2" in per_span
+        assert per_span["span1"]["success_rate"] == 1.0
+        assert per_span["span2"]["success_rate"] == 0.5
+
+    @pytest.mark.usefixtures("cleanup_test_files")
+    def test_calculate_metrics_time_window_filtering(
+        self, diagnostics: DaemonDiagnostics, mocker: MockerFixture
+    ) -> None:
+        """calculate_metrics filters events by time window correctly."""
+        # Arrange - mock time to control timestamps
+        base_time = 1000000.0
+        current_time = base_time + 7200.0  # 2 hours later
+
+        # Add old spans (outside 1h window but inside 24h)
+        with mocker.patch("time.time", return_value=base_time):
+            diagnostics.record_span("old_span", 10.0, ok=True)
+
+        # Add recent spans (inside 1h window)
+        with mocker.patch("time.time", return_value=current_time - 1800.0):  # 30 min ago
+            diagnostics.record_span("recent_span", 20.0, ok=True)
+
+        # Act - calculate with current time
+        with mocker.patch("time.time", return_value=current_time):
+            metrics = diagnostics.calculate_metrics()
+
+        # Assert
+        last_hour = metrics["time_window_metrics"]["last_hour"]
+        last_24h = metrics["time_window_metrics"]["last_24h"]
+
+        # Only recent_span should be in last_hour
+        assert "recent_span" in last_hour["per_span_metrics"]
+        assert "old_span" not in last_hour["per_span_metrics"]
+
+        # Both should be in last_24h
+        assert "recent_span" in last_24h["per_span_metrics"]
+        assert "old_span" in last_24h["per_span_metrics"]
+
+    @pytest.mark.usefixtures("cleanup_test_files")
+    def test_calculate_metrics_overall_health(
+        self, diagnostics: DaemonDiagnostics
+    ) -> None:
+        """calculate_metrics calculates overall_health from last_hour success rate."""
+        # Arrange - 7 successful, 3 failed
+        for i in range(7):
+            diagnostics.record_span("span1", 10.0, ok=True)
+        for i in range(3):
+            diagnostics.record_span("span2", 20.0, ok=False)
+
+        # Act
+        metrics = diagnostics.calculate_metrics()
+
+        # Assert
+        assert metrics["overall_health"] == 0.7
