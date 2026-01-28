@@ -1226,3 +1226,248 @@ class TestDaemonDiagnosticsCalculateMetrics:
 
         # Assert
         assert metrics["overall_health"] == 0.7
+
+
+class TestDaemonDiagnosticsMetricsConfig:
+    """Tests for metrics configuration in DaemonDiagnosticsConfig."""
+
+    def test_config_includes_metrics_fields(self) -> None:
+        """Config includes metrics log configuration fields."""
+        # Arrange & Act
+        config = DaemonDiagnosticsConfig(
+            enabled=True,
+            metrics_log_path="test.metrics.jsonl",
+            metrics_log_max_bytes=2048,
+            metrics_log_backups=3,
+        )
+
+        # Assert
+        assert config.metrics_log_path == "test.metrics.jsonl"
+        assert config.metrics_log_max_bytes == 2048
+        assert config.metrics_log_backups == 3
+
+    def test_from_config_parses_metrics_fields(self) -> None:
+        """from_config parses metrics log configuration."""
+        # Arrange
+        raw = {
+            "enabled": True,
+            "metrics_log_path": "/custom/metrics.jsonl",
+            "metrics_log_max_bytes": 4096,
+            "metrics_log_backups": 5,
+        }
+
+        # Act
+        config = DaemonDiagnosticsConfig.from_config(raw, daemon_name="TestDaemon")
+
+        # Assert
+        assert config.metrics_log_path == "/custom/metrics.jsonl"
+        assert config.metrics_log_max_bytes == 4096
+        assert config.metrics_log_backups == 5
+
+    def test_from_config_uses_default_metrics_path(self) -> None:
+        """from_config uses default metrics path when not provided."""
+        # Arrange
+        raw = {"enabled": True}
+
+        # Act
+        config = DaemonDiagnosticsConfig.from_config(raw, daemon_name="TestDaemon")
+
+        # Assert
+        assert config.metrics_log_path == ".daemon_state/TestDaemon.metrics.jsonl"
+
+
+class TestDaemonDiagnosticsWriteMetricsSnapshot:
+    """Tests for DaemonDiagnostics.write_metrics_snapshot()."""
+
+    @pytest.mark.usefixtures("cleanup_state_files")
+    def test_write_metrics_snapshot_creates_file(
+        self, diagnostics: DaemonDiagnostics
+    ) -> None:
+        """write_metrics_snapshot creates metrics log file."""
+        # Arrange - update config to use metrics_log_path
+        config = DaemonDiagnosticsConfig(
+            enabled=True, metrics_log_path="test.metrics.jsonl"
+        )
+        diag = DaemonDiagnostics(
+            logger=diagnostics._logger, daemon_name="TestDaemon", config=config
+        )
+        diag.record_span("test_span", 10.0, ok=True)
+
+        # Act
+        diag.write_metrics_snapshot()
+
+        # Assert
+        log_path = Path("test.metrics.jsonl")
+        assert log_path.exists()
+
+        # Clean up
+        if log_path.exists():
+            log_path.unlink()
+
+    @pytest.mark.usefixtures("cleanup_state_files")
+    def test_write_metrics_snapshot_format(
+        self, diagnostics: DaemonDiagnostics
+    ) -> None:
+        """write_metrics_snapshot writes correct JSONL format."""
+        # Arrange
+        config = DaemonDiagnosticsConfig(
+            enabled=True, metrics_log_path="test.metrics.jsonl"
+        )
+        diag = DaemonDiagnostics(
+            logger=diagnostics._logger, daemon_name="TestDaemon", config=config
+        )
+        diag.record_span("test_span", 10.0, ok=True)
+
+        # Act
+        diag.write_metrics_snapshot()
+
+        # Assert
+        log_path = Path("test.metrics.jsonl")
+        lines = log_path.read_text().strip().split("\n")
+        assert len(lines) == 1
+
+        loaded = json.loads(lines[0])
+        assert "ts" in loaded
+        assert loaded["daemon_class"] == "TestDaemon"
+        assert loaded["diag_run_id"] == diag.run_id
+        assert "metrics" in loaded
+        assert "time_window_metrics" in loaded["metrics"]
+
+        # Clean up
+        if log_path.exists():
+            log_path.unlink()
+
+    @pytest.mark.usefixtures("cleanup_state_files")
+    def test_write_metrics_snapshot_appends_multiple(
+        self, diagnostics: DaemonDiagnostics
+    ) -> None:
+        """write_metrics_snapshot appends multiple snapshots."""
+        # Arrange
+        config = DaemonDiagnosticsConfig(
+            enabled=True, metrics_log_path="test.metrics.jsonl"
+        )
+        diag = DaemonDiagnostics(
+            logger=diagnostics._logger, daemon_name="TestDaemon", config=config
+        )
+        diag.record_span("span1", 10.0, ok=True)
+
+        # Act
+        diag.write_metrics_snapshot()
+        diag.record_span("span2", 20.0, ok=True)
+        diag.write_metrics_snapshot()
+
+        # Assert
+        log_path = Path("test.metrics.jsonl")
+        lines = log_path.read_text().strip().split("\n")
+        assert len(lines) == 2
+
+        # Both should be valid JSON
+        for line in lines:
+            loaded = json.loads(line)
+            assert "metrics" in loaded
+
+        # Clean up
+        if log_path.exists():
+            log_path.unlink()
+
+    @pytest.mark.usefixtures("cleanup_state_files")
+    def test_write_metrics_snapshot_noop_when_disabled(
+        self, disabled_diagnostics: DaemonDiagnostics
+    ) -> None:
+        """write_metrics_snapshot does nothing when disabled."""
+        # Act
+        disabled_diagnostics.write_metrics_snapshot()
+
+        # Assert
+        assert not Path("test.metrics.jsonl").exists()
+
+    @pytest.mark.usefixtures("cleanup_state_files")
+    def test_write_metrics_snapshot_noop_when_no_path(
+        self, mock_logger: MagicMock
+    ) -> None:
+        """write_metrics_snapshot does nothing when metrics_log_path is None."""
+        # Arrange
+        config = DaemonDiagnosticsConfig(enabled=True, metrics_log_path=None)
+        diag = DaemonDiagnostics(
+            logger=mock_logger, daemon_name="TestDaemon", config=config
+        )
+
+        # Act
+        diag.write_metrics_snapshot()
+
+        # Assert
+        assert not any(Path.cwd().glob("*.metrics.jsonl"))
+
+    @pytest.mark.usefixtures("cleanup_state_files")
+    def test_write_metrics_snapshot_handles_io_error_gracefully(
+        self, diagnostics: DaemonDiagnostics, mocker: MockerFixture
+    ) -> None:
+        """write_metrics_snapshot handles I/O errors gracefully."""
+        # Arrange
+        config = DaemonDiagnosticsConfig(
+            enabled=True, metrics_log_path="test.metrics.jsonl"
+        )
+        diag = DaemonDiagnostics(
+            logger=diagnostics._logger, daemon_name="TestDaemon", config=config
+        )
+        mocker.patch(
+            "cta_eta.data_collection.orchestration.diagnostics.Path.mkdir",
+            side_effect=OSError("Permission denied"),
+        )
+
+        # Act - should not raise
+        diag.write_metrics_snapshot()
+
+        # Assert - should log debug message
+        diagnostics._logger.debug.assert_called()
+
+    @pytest.mark.usefixtures("cleanup_state_files")
+    def test_write_metrics_snapshot_creates_parent_directories(
+        self, diagnostics: DaemonDiagnostics
+    ) -> None:
+        """write_metrics_snapshot creates parent directories."""
+        # Arrange
+        config = DaemonDiagnosticsConfig(
+            enabled=True, metrics_log_path="subdir/nested/test.metrics.jsonl"
+        )
+        diag = DaemonDiagnostics(
+            logger=diagnostics._logger, daemon_name="TestDaemon", config=config
+        )
+        diag.record_span("test_span", 10.0, ok=True)
+
+        # Act
+        diag.write_metrics_snapshot()
+
+        # Assert
+        log_path = Path("subdir/nested/test.metrics.jsonl")
+        assert log_path.exists()
+
+    @pytest.mark.usefixtures("cleanup_state_files")
+    def test_maybe_log_summary_writes_metrics_snapshot(
+        self, diagnostics: DaemonDiagnostics, mock_logger: MagicMock
+    ) -> None:
+        """maybe_log_summary triggers write_metrics_snapshot."""
+        # Arrange
+        config = DaemonDiagnosticsConfig(
+            enabled=True,
+            metrics_log_path="test.metrics.jsonl",
+            summary_interval_seconds=60.0,
+        )
+        diag = DaemonDiagnostics(
+            logger=mock_logger, daemon_name="TestDaemon", config=config
+        )
+        diag.record_span("test_span", 10.0, ok=True)
+
+        # Act
+        diag.maybe_log_summary(force=True)
+
+        # Assert
+        log_path = Path("test.metrics.jsonl")
+        assert log_path.exists()
+
+        lines = log_path.read_text().strip().split("\n")
+        assert len(lines) == 1
+
+        # Clean up
+        if log_path.exists():
+            log_path.unlink()

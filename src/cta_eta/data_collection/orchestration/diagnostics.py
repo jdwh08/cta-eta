@@ -54,6 +54,11 @@ class DaemonDiagnosticsConfig:
     event_log_max_bytes: int = _DEFAULT_EVENT_LOG_MAX_BYTES
     event_log_backups: int = _DEFAULT_EVENT_LOG_BACKUPS
 
+    # If set, metrics snapshots are written periodically as JSONL and rotated by size.
+    metrics_log_path: str | None = None
+    metrics_log_max_bytes: int = _DEFAULT_EVENT_LOG_MAX_BYTES
+    metrics_log_backups: int = _DEFAULT_EVENT_LOG_BACKUPS
+
     @classmethod
     def from_config(
         cls,
@@ -100,6 +105,11 @@ class DaemonDiagnosticsConfig:
             )
             event_log_path = f".daemon_state/{daemon_name}.events.jsonl"
 
+        metrics_log_path = cfg.get("metrics_log_path")
+        if metrics_log_path is None:
+            # Sensible default location when diagnostics are enabled.
+            metrics_log_path = f".daemon_state/{daemon_name}.metrics.jsonl"
+
         return cls(
             enabled=bool(cfg.get("enabled", False)),
             summary_interval_seconds=max(
@@ -114,6 +124,13 @@ class DaemonDiagnosticsConfig:
             ),
             event_log_backups=max(
                 0, _get_int("event_log_backups", _DEFAULT_EVENT_LOG_BACKUPS)
+            ),
+            metrics_log_path=str(metrics_log_path) if metrics_log_path else None,
+            metrics_log_max_bytes=max(
+                1024, _get_int("metrics_log_max_bytes", _DEFAULT_EVENT_LOG_MAX_BYTES)
+            ),
+            metrics_log_backups=max(
+                0, _get_int("metrics_log_backups", _DEFAULT_EVENT_LOG_BACKUPS)
             ),
         )
 
@@ -274,6 +291,9 @@ class DaemonDiagnostics:
             },
         )
 
+        # Write metrics snapshot to JSONL
+        self.write_metrics_snapshot()
+
     def snapshot(self) -> dict[str, object]:
         """Return an in-memory snapshot suitable for persistence/debugging."""
         return {
@@ -355,6 +375,44 @@ class DaemonDiagnostics:
             },
             "overall_health": last_hour_metrics.get("overall_success_rate", 0.0) if last_hour_metrics else 0.0,
         }
+
+    def write_metrics_snapshot(self) -> None:
+        """Write a metrics snapshot to JSONL file.
+
+        Writes current metrics calculated by calculate_metrics() to a JSONL file,
+        with rotation based on file size. Each line is a complete JSON object with
+        timestamp, run_id, and metrics.
+        """
+        path_str = self._config.metrics_log_path
+        if not self.enabled or not path_str:
+            return
+
+        path = Path(path_str)
+        metrics = self.calculate_metrics()
+
+        snapshot: dict[str, object] = {
+            "ts": time.time(),
+            "daemon_class": self._daemon,
+            "diag_run_id": self._run_id,
+            "metrics": metrics,
+        }
+
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            rotate_file_if_needed(
+                path,
+                max_bytes=self._config.metrics_log_max_bytes,
+                backups=self._config.metrics_log_backups,
+            )
+            with path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(snapshot, separators=(",", ":")) + "\n")
+        except OSError:
+            # Never let telemetry I/O take down the daemon.
+            with suppress(OSError):
+                self._logger.debug(
+                    "Metrics snapshot write failed",
+                    extra={"extra_fields": {"daemon_class": self._daemon}},
+                )
 
     def _record_event(self, *, kind: str, **fields: object) -> None:
         event: dict[str, object] = {
