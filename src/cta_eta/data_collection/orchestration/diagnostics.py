@@ -332,7 +332,7 @@ class DaemonDiagnostics:
 
             # Group by span name
             span_data: dict[str, list[tuple[bool, float]]] = defaultdict(list)
-            for ts, name, ok, duration_ms in records:
+            for _ts, name, ok, duration_ms in records:
                 span_data[name].append((ok, duration_ms))
 
             per_span: dict[str, dict[str, float | int]] = {}

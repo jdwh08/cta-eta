@@ -1098,7 +1098,7 @@ class TestDaemonDiagnosticsCalculateMetrics:
         """calculate_metrics calculates correct success_rate when all spans succeed."""
         # Arrange
         for i in range(10):
-            diagnostics.record_span("test_span", 10.0 + i, ok=True)
+            diagnostics.record_span("test_span", 10.0 + float(i), ok=True)
 
         # Act
         metrics = diagnostics.calculate_metrics()
@@ -1119,9 +1119,9 @@ class TestDaemonDiagnosticsCalculateMetrics:
         """calculate_metrics calculates correct success_rate with mixed results."""
         # Arrange - 8 successful, 2 failed
         for i in range(8):
-            diagnostics.record_span("test_span", 10.0 + i, ok=True)
+            diagnostics.record_span("test_span", 10.0 + float(i), ok=True)
         for i in range(2):
-            diagnostics.record_span("test_span", 50.0 + i, ok=False)
+            diagnostics.record_span("test_span", 50.0 + float(i), ok=False)
 
         # Act
         metrics = diagnostics.calculate_metrics()
@@ -1216,9 +1216,9 @@ class TestDaemonDiagnosticsCalculateMetrics:
     ) -> None:
         """calculate_metrics calculates overall_health from last_hour success rate."""
         # Arrange - 7 successful, 3 failed
-        for i in range(7):
+        for _ in range(7):
             diagnostics.record_span("span1", 10.0, ok=True)
-        for i in range(3):
+        for _ in range(3):
             diagnostics.record_span("span2", 20.0, ok=False)
 
         # Act
@@ -1444,7 +1444,7 @@ class TestDaemonDiagnosticsWriteMetricsSnapshot:
 
     @pytest.mark.usefixtures("cleanup_state_files")
     def test_maybe_log_summary_writes_metrics_snapshot(
-        self, diagnostics: DaemonDiagnostics, mock_logger: MagicMock
+        self, mock_logger: MagicMock
     ) -> None:
         """maybe_log_summary triggers write_metrics_snapshot."""
         # Arrange
