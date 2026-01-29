@@ -354,6 +354,127 @@ class TestCmdErrors:
         assert output[0]["daemon_name"] == "TrainPositionDaemon"
 
 
+class TestCmdGaps:
+    """Tests for cmd_gaps command."""
+
+    def test_no_dataset_dir(
+        self, daemon_state_dir: Path, capsys: pytest.CaptureFixture[str], tmp_path: Path
+    ) -> None:
+        """Test gaps command when dataset directory doesn't exist."""
+        # Set data dir to tmp_path (which won't have train_positions)
+        cli._DEFAULT_DATA_DIR = tmp_path
+        args = type("Args", (), {"dataset": "train_positions", "days": 7, "json": False})()
+        cli.cmd_gaps(args)
+
+        captured = capsys.readouterr()
+        assert "No gaps found" in captured.out
+
+    def test_no_gaps_found(
+        self, daemon_state_dir: Path, capsys: pytest.CaptureFixture[str], tmp_path: Path
+    ) -> None:
+        """Test gaps command with no gap metadata."""
+        # Create dataset directory but no Parquet files
+        dataset_dir = tmp_path / "data" / "train_positions"
+        dataset_dir.mkdir(parents=True, exist_ok=True)
+        cli._DEFAULT_DATA_DIR = tmp_path / "data"
+
+        args = type("Args", (), {"dataset": "train_positions", "days": 7, "json": False})()
+        cli.cmd_gaps(args)
+
+        captured = capsys.readouterr()
+        assert "No gaps found" in captured.out
+
+    def test_json_output(
+        self, daemon_state_dir: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Test gaps command with JSON output."""
+        args = type("Args", (), {"dataset": "train_positions", "days": 7, "json": True})()
+        cli.cmd_gaps(args)
+
+        captured = capsys.readouterr()
+        # Should output valid JSON (even if empty list)
+        output = json.loads(captured.out)
+        assert isinstance(output, list)
+
+
+class TestCmdMetrics:
+    """Tests for cmd_metrics command."""
+
+    def test_no_metrics_files(
+        self, daemon_state_dir: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Test metrics command with no metrics files."""
+        args = type("Args", (), {"window": 1, "json": False})()
+        cli.cmd_metrics(args)
+
+        captured = capsys.readouterr()
+        assert "No metrics data available" in captured.out
+
+    def test_with_metrics_data(
+        self, daemon_state_dir: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Test metrics command with mock metrics data."""
+        # Create metrics file
+        metrics_file = daemon_state_dir / "TrainPositionDaemon.metrics.jsonl"
+        metrics_snapshot = {
+            "ts": time.time(),
+            "daemon_class": "TrainPositionDaemon",
+            "diag_run_id": "test123",
+            "metrics": {
+                "time_window_metrics": {
+                    "last_hour": {
+                        "overall_success_rate": 0.95,
+                        "total_calls": 240,
+                        "per_span_metrics": {
+                            "test_span": {
+                                "success_rate": 0.95,
+                                "error_rate": 0.05,
+                                "total_calls": 240,
+                                "p50_ms": 500.0,
+                                "p95_ms": 850.0,
+                                "p99_ms": 1200.0,
+                            }
+                        },
+                    },
+                    "last_24h": {
+                        "overall_success_rate": 0.92,
+                        "total_calls": 5760,
+                        "per_span_metrics": {},
+                    },
+                }
+            },
+        }
+
+        with metrics_file.open("w", encoding="utf-8") as f:
+            f.write(json.dumps(metrics_snapshot) + "\n")
+
+        # Create daemon state file so it gets discovered
+        state_file = daemon_state_dir / "TrainPositionDaemon.json"
+        with state_file.open("w", encoding="utf-8") as f:
+            json.dump({"last_poll_timestamp": time.time()}, f)
+
+        args = type("Args", (), {"window": 1, "json": False})()
+        cli.cmd_metrics(args)
+
+        captured = capsys.readouterr()
+        assert "Metrics Summary" in captured.out
+        assert "TrainPositionDaemon" in captured.out
+        assert "95.0%" in captured.out or "95%" in captured.out
+
+    def test_json_output(
+        self, daemon_state_dir: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Test metrics command with JSON output."""
+        args = type("Args", (), {"window": 1, "json": True})()
+        cli.cmd_metrics(args)
+
+        captured = capsys.readouterr()
+        output = json.loads(captured.out)
+        assert "overall_status" in output
+        assert "daemons" in output
+        assert "alert_context" in output
+
+
 class TestMain:
     """Tests for main entry point."""
 
@@ -371,6 +492,14 @@ class TestMain:
     def test_errors_command(self, daemon_state_dir: Path) -> None:
         """Test main with errors command."""
         cli.main(["errors"])  # Should not raise
+
+    def test_gaps_command(self, daemon_state_dir: Path) -> None:
+        """Test main with gaps command."""
+        cli.main(["gaps"])  # Should not raise
+
+    def test_metrics_command(self, daemon_state_dir: Path) -> None:
+        """Test main with metrics command."""
+        cli.main(["metrics"])  # Should not raise
 
     def test_help_flag(self) -> None:
         """Test main with help flag."""

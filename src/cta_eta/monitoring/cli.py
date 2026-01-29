@@ -11,6 +11,7 @@ Provides focused commands for progressive investigation:
 # ruff: noqa: PLR2004  # magic values are clear in time duration context
 # ruff: noqa: PLR0915  # CLI commands naturally have many statements
 # ruff: noqa: C901  # CLI commands naturally have high complexity
+# ruff: noqa: PLR0912  # CLI commands naturally have many branches
 
 from __future__ import annotations
 
@@ -18,15 +19,24 @@ import argparse
 import json
 import sys
 import time
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+try:
+    import pyarrow.parquet as pq  # type: ignore[import-untyped]
+except ImportError:
+    pq = None  # type: ignore[assignment]
+
 # Constants
 _DAEMON_STATE_DIR = Path(".daemon_state")
 _STALE_THRESHOLD_SECONDS = 300.0  # 5 minutes
+_DEFAULT_DATA_DIR = Path("data")
+_DEFAULT_DATASET = "train_positions"
+_DEFAULT_DAYS_WINDOW = 7
 
 
 def _discover_daemons() -> list[str]:
@@ -334,6 +344,233 @@ def _add_status_command(subparsers: argparse._SubParsersAction) -> None:  # type
     parser.set_defaults(func=cmd_status)
 
 
+def cmd_gaps(args: argparse.Namespace) -> None:
+    """Handle 'gaps' command - show data collection gaps from Parquet metadata.
+
+    Args:
+        args: Parsed command-line arguments
+
+    """
+    dataset = args.dataset
+    days = args.days
+    json_output = args.json
+
+    # Calculate time window
+    cutoff_date = datetime.now(tz=UTC) - timedelta(days=days)
+
+    # Find Parquet files in dataset directory
+    dataset_dir = _DEFAULT_DATA_DIR / dataset
+    if not dataset_dir.exists():
+        print(f"Dataset directory not found: {dataset_dir}")
+        print(f"No gaps found for dataset '{dataset}'")
+        return
+
+    # Collect gaps from Parquet metadata
+    gaps = []
+    if pq is None:
+        print("Error: pyarrow not installed (required for gap analysis)")
+        return
+
+    for parquet_file in sorted(dataset_dir.rglob("*.parquet")):
+        try:
+            # Read schema metadata
+            metadata = pq.read_metadata(parquet_file)
+            schema_metadata = metadata.schema.metadata
+
+            if not schema_metadata or b"gap_metadata" not in schema_metadata:
+                continue
+
+            # Decode gap metadata
+            gap_data = json.loads(schema_metadata[b"gap_metadata"].decode())
+
+            # Skip if not a gap
+            if not gap_data.get("is_gap"):
+                continue
+
+            # Check if within time window
+            gap_end = gap_data.get("gap_end_timestamp")
+            if gap_end and datetime.fromtimestamp(gap_end, tz=UTC) < cutoff_date:
+                continue
+
+            gaps.append(gap_data)
+
+        except (OSError, json.JSONDecodeError, KeyError):
+            # Skip files with missing/corrupted metadata
+            continue
+
+    if json_output:
+        # JSON output for machine consumption
+        print(json.dumps(gaps, indent=2))
+        return
+
+    # Human-readable table output
+    print(f"Data Collection Gaps (last {days} days)")
+    print("=" * 80)
+    print()
+
+    if not gaps:
+        print(f"No gaps found for dataset '{dataset}'")
+        return
+
+    # Table header
+    print(f"{'Date':<20} {'Duration':<15} {'Reason':<20} {'Missed Cycles':<15}")
+    print("─" * 80)
+
+    total_duration = 0.0
+    total_cycles = 0
+
+    for gap in gaps:
+        gap_end = gap.get("gap_end_timestamp")
+        if gap_end:
+            gap_date = datetime.fromtimestamp(gap_end, tz=UTC).strftime("%Y-%m-%d %H:%M")
+        else:
+            gap_date = "Unknown"
+
+        duration = gap.get("gap_duration_seconds", 0.0)
+        duration_str = _format_duration(float(duration))
+        reason = gap.get("gap_reason", "unknown")
+        missed = gap.get("missed_poll_cycles", 0)
+
+        total_duration += duration
+        total_cycles += missed
+
+        print(f"{gap_date:<20} {duration_str:<15} {reason:<20} {missed:<15}")
+
+    print()
+    print(
+        f"Summary: {len(gaps)} gaps, {_format_duration(total_duration)} total, {total_cycles} cycles missed"
+    )
+
+
+def cmd_metrics(args: argparse.Namespace) -> None:
+    """Handle 'metrics' command - show aggregated metrics for alerting.
+
+    Args:
+        args: Parsed command-line arguments
+
+    """
+    window_hours = args.window
+    json_output = args.json
+
+    daemons = _discover_daemons()
+
+    # Collect metrics from all daemons
+    daemon_metrics = {}
+    overall_status = "healthy"
+
+    for daemon_name in daemons:
+        metrics_file = _DAEMON_STATE_DIR / f"{daemon_name}.metrics.jsonl"
+
+        if not metrics_file.exists():
+            continue
+
+        try:
+            # Read last line of metrics file
+            with metrics_file.open("r", encoding="utf-8") as f:
+                lines = f.readlines()
+                if not lines:
+                    continue
+
+                # Parse last line
+                last_line = lines[-1].strip()
+                if not last_line:
+                    continue
+
+                metrics_snapshot = json.loads(last_line)
+                metrics_data = metrics_snapshot.get("metrics", {})
+
+                # Extract metrics for requested window
+                window_key = "last_hour" if window_hours == 1 else "last_24h"
+                window_metrics = metrics_data.get("time_window_metrics", {}).get(
+                    window_key, {}
+                )
+
+                if not window_metrics:
+                    continue
+
+                # Calculate daemon-level metrics
+                overall_success = window_metrics.get("overall_success_rate", 0.0)
+                total_calls = window_metrics.get("total_calls", 0)
+
+                # Get per-span metrics for latency info
+                per_span = window_metrics.get("per_span_metrics", {})
+
+                # Find highest p95 latency across all spans
+                p95_latency = 0.0
+                for span_metrics in per_span.values():
+                    p95 = span_metrics.get("p95_ms", 0.0)
+                    p95_latency = max(p95_latency, p95)
+
+                daemon_metrics[daemon_name] = {
+                    "success_rate": overall_success,
+                    "error_rate": 1.0 - overall_success,
+                    "total_calls": total_calls,
+                    "p95_latency_ms": p95_latency,
+                }
+
+                # Update overall status
+                if overall_success < 0.5:
+                    overall_status = "critical"
+                elif overall_success < 0.9 and overall_status != "critical":
+                    overall_status = "degraded"
+
+        except (OSError, json.JSONDecodeError):
+            continue
+
+    # Prepare alert context
+    violations = []
+    for daemon_name, metrics in daemon_metrics.items():
+        if metrics["success_rate"] < 0.9:
+            severity = "critical" if metrics["success_rate"] < 0.5 else "warning"
+            violations.append(
+                {
+                    "daemon": daemon_name,
+                    "severity": severity,
+                    "message": f"{daemon_name} success rate: {metrics['success_rate']:.1%}",
+                }
+            )
+
+    if json_output:
+        # JSON output for Phase 9 consumption
+        output = {
+            "overall_status": overall_status,
+            "timestamp": time.time(),
+            "daemons": daemon_metrics,
+            "alert_context": {
+                "should_alert": bool(violations),
+                "violations": violations,
+            },
+        }
+        print(json.dumps(output, indent=2))
+        return
+
+    # Human-readable table output
+    print(f"Metrics Summary ({window_hours}h window)")
+    print("=" * 80)
+    print()
+
+    if not daemon_metrics:
+        print("No metrics data available")
+        return
+
+    # Table header
+    print(
+        f"{'Daemon':<25} {'Success Rate':<15} {'Error Rate':<12} {'Calls':<8} {'P95 Latency':<12}"
+    )
+    print("─" * 80)
+
+    for daemon_name, metrics in daemon_metrics.items():
+        success_pct = f"{metrics['success_rate']:.1%}"
+        error_pct = f"{metrics['error_rate']:.1%}"
+        calls = str(metrics["total_calls"])
+        latency = f"{metrics['p95_latency_ms']:.0f}ms"
+
+        print(f"{daemon_name:<25} {success_pct:<15} {error_pct:<12} {calls:<8} {latency:<12}")
+
+    print()
+    print(f"Overall Health: {overall_status.upper()}")
+
+
 def _add_errors_command(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
     """Add 'errors' subcommand to parser.
 
@@ -356,6 +593,57 @@ def _add_errors_command(subparsers: argparse._SubParsersAction) -> None:  # type
     parser.set_defaults(func=cmd_errors)
 
 
+def _add_gaps_command(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
+    """Add 'gaps' subcommand to parser.
+
+    Args:
+        subparsers: Subparsers object from ArgumentParser
+
+    """
+    parser = subparsers.add_parser(
+        "gaps", help="Show data collection gaps from Parquet metadata"
+    )
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default=_DEFAULT_DATASET,
+        help=f"Dataset name (default: {_DEFAULT_DATASET})",
+    )
+    parser.add_argument(
+        "--days",
+        type=int,
+        default=_DEFAULT_DAYS_WINDOW,
+        help=f"Time window in days (default: {_DEFAULT_DAYS_WINDOW})",
+    )
+    parser.add_argument(
+        "--json", action="store_true", help="Output as JSON for machine consumption"
+    )
+    parser.set_defaults(func=cmd_gaps)
+
+
+def _add_metrics_command(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
+    """Add 'metrics' subcommand to parser.
+
+    Args:
+        subparsers: Subparsers object from ArgumentParser
+
+    """
+    parser = subparsers.add_parser(
+        "metrics", help="Show aggregated metrics for alerting automation"
+    )
+    parser.add_argument(
+        "--window",
+        type=int,
+        default=1,
+        choices=[1, 24],
+        help="Time window in hours: 1 or 24 (default: 1)",
+    )
+    parser.add_argument(
+        "--json", action="store_true", help="Output as JSON for machine consumption"
+    )
+    parser.set_defaults(func=cmd_metrics)
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     """Execute CLI monitoring tool.
 
@@ -371,6 +659,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     # Add subcommands
     _add_status_command(subparsers)
     _add_errors_command(subparsers)
+    _add_gaps_command(subparsers)
+    _add_metrics_command(subparsers)
 
     args = parser.parse_args(argv)
 
