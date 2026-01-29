@@ -23,7 +23,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 5: Weather Data Collection** - Multi-source weather integration with rate limit management (Completed 2026-01-24)
 - [x] **Phase 6: Train Position Polling Daemon** - Continuous 15-second polling with retry logic (Completed 2026-01-25)
 - [x] **Phase 7: Resilience & Recovery** - Intelligent retry, gap detection, graceful shutdown (Completed 2026-01-26)
-- [ ] **Phase 8: Monitoring & Metrics** - Metrics collection, dashboard, performance tracking
+- [x] **Phase 8: Monitoring & Metrics** - Metrics collection, CLI monitoring tool, progressive investigation (Completed 2026-01-28)
 - [ ] **Phase 9: Alerting & Deployment** - Email alerts, health checks, systemd service
 
 ## Phase Details
@@ -112,8 +112,8 @@ Plans:
 
 Plans:
 - [x] 08-01: Metrics collection framework (API success rates, latency, storage)
-- [x] 08-02: Performance dashboard for monitoring collection health
-- [ ] 08-03: API health tracking and success rate reporting
+- [x] 08-02: Performance dashboard for monitoring collection health (approach revised to CLI)
+- [x] 08-03: CLI monitoring tool with status, errors, gaps, and metrics commands
 
 ### Phase 9: Alerting & Deployment
 **Goal**: Email alerting for critical failures, health checks, and systemd service setup
@@ -141,5 +141,5 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 | 5. Weather Data Collection | 3/3 | Complete | 2026-01-19 |
 | 6. Train Position Polling Daemon | 2/2 | Complete | 2026-01-25 |
 | 7. Resilience & Recovery | 3/3 | Complete | 2026-01-26 |
-| 8. Monitoring & Metrics | 2/3 | In progress | - |
+| 8. Monitoring & Metrics | 3/3 | Complete | 2026-01-28 |
 | 9. Alerting & Deployment | 0/3 | Not started | - |
