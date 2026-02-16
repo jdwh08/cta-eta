@@ -90,6 +90,7 @@ dev = [
 [project.scripts]
 # Script entry points:
 cta-monitor = "cta_eta.monitoring.cli:main"
+cta-health = "cta_eta.monitoring.health_check:main"
 
 # ---- Build system ----
 
