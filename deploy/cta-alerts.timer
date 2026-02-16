@@ -1,0 +1,11 @@
+[Unit]
+Description=CTA ETA Alert Check Timer
+Requires=cta-alerts.service
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+Unit=cta-alerts.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,23 @@
+[Unit]
+Description=CTA Train Position Collection Daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cta-eta
+WorkingDirectory=/opt/cta-eta
+EnvironmentFile=/opt/cta-eta/.env
+ExecStart=/opt/cta-eta/.venv/bin/python -m cta_eta.data_collection.orchestration.train_position_daemon
+Restart=on-failure
+RestartSec=30s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cta-train-daemon
+
+# Give SIGTERM time for graceful shutdown before SIGKILL
+TimeoutStopSec=60s
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target
