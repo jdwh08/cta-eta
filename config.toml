@@ -156,6 +156,16 @@ event_log_max_bytes = 5242880
 event_log_backups = 3
 
 
+[alerting]
+enabled = false  # Set to true to enable email alerts
+cooldown_hours = 4  # Minimum hours between repeat alerts
+last_alert_state = ".daemon_state/last_alert.json"  # Cooldown state file
+smtp_host = "smtp.gmail.com"
+smtp_port = 587
+smtp_from = "alerts@example.com"
+smtp_to = ["oncall@example.com"]  # List of recipients
+
+
 [monitoring]
 # HTTP monitoring server for daemon health and diagnostics
 enabled = true
