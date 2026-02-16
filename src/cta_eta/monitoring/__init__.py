@@ -2,4 +2,4 @@
 
 from __future__ import annotations
 
-__all__ = ["cli"]
+__all__ = ["alerting", "cli"]

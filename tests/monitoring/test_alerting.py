@@ -1,12 +1,11 @@
 """Tests for alerting module: threshold checking, cooldown, and message formatting."""
 
-# ruff: noqa: ARG002  # Pytest fixtures appear as unused arguments
+# ruff: noqa: ERA001  # Section separator comments are intentional
 
 from __future__ import annotations
 
 import json
 import time
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -14,7 +13,7 @@ import pytest
 from cta_eta.monitoring import alerting
 
 if TYPE_CHECKING:
-    pass
+    from pathlib import Path
 
 
 # ---------------------------------------------------------------------------
@@ -118,8 +117,11 @@ class TestSaveAlertTimestamp:
 
     def test_suppresses_os_error(self, tmp_path: Path) -> None:
         """Does not raise when the path is unwritable (best-effort I/O)."""
-        # Use a path inside a non-existent directory to trigger OSError
-        bad_path = tmp_path / "nonexistent_dir" / "last_alert.json"
+        # Use a path inside a non-existent directory that cannot be created
+        # by making tmp_path itself a read-only file (not a directory)
+        bad_dir = tmp_path / "not_a_dir"
+        bad_dir.write_text("blocking file", encoding="utf-8")
+        bad_path = bad_dir / "last_alert.json"
         # Should not raise — best-effort
         alerting.save_alert_timestamp(bad_path)
 
@@ -172,7 +174,7 @@ class TestShouldSendAlert:
         self, last_alert_path: Path
     ) -> None:
         """Returns False when metrics_data is missing 'should_alert' key (defensive)."""
-        metrics = {"overall_status": "healthy"}
+        metrics: dict = {"overall_status": "healthy"}
         result = alerting.should_send_alert(metrics, last_alert_path, cooldown_hours=1)
         assert result is False
 
@@ -220,9 +222,7 @@ class TestFormatAlertMessage:
         """Single violation follows '- metric: actual=X exceeds threshold=Y' format."""
         violations = [{"metric": "error_rate", "threshold": 0.1, "actual": 0.55}]
         result = alerting.format_alert_message(violations)
-        # Should contain the metric name
         assert "error_rate" in result
-        # Should contain actual and threshold values
         assert "actual=" in result
         assert "threshold=" in result
 
@@ -241,14 +241,12 @@ class TestFormatAlertMessage:
     def test_violation_missing_keys_handled_gracefully(self) -> None:
         """Violations missing some keys do not raise KeyError."""
         violations = [{"metric": "unknown_metric"}]
-        # Should not raise
         result = alerting.format_alert_message(violations)
         assert "unknown_metric" in result
 
     def test_completely_empty_violation_dict_handled(self) -> None:
         """A violation dict with no keys at all is handled gracefully."""
-        violations = [{}]
-        # Should not raise
+        violations: list[dict] = [{}]
         result = alerting.format_alert_message(violations)
         assert isinstance(result, str)
         assert len(result) > 0
