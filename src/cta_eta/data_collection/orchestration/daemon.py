@@ -22,7 +22,9 @@ Usage example:
 from __future__ import annotations
 
 import json
+import os
 import signal
+import time
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -153,6 +155,27 @@ class BaseDaemon(ABC):
         )
         self.running = False
         self._save_state()
+        self._write_heartbeat()
+
+    def _write_heartbeat(self) -> None:
+        """Write heartbeat file to .daemon_state/ for liveness monitoring.
+
+        Records current timestamp, daemon class name, and PID. Best-effort:
+        never raises, never logs at info level (too noisy).
+        """
+        try:
+            state_dir = Path(".daemon_state")
+            state_dir.mkdir(exist_ok=True)
+            heartbeat_file = state_dir / f"{self.__class__.__name__}.heartbeat.json"
+            heartbeat = {
+                "timestamp": time.time(),
+                "daemon": self.__class__.__name__,
+                "pid": os.getpid(),
+            }
+            with heartbeat_file.open("w", encoding="utf-8") as f:
+                json.dump(heartbeat, f)
+        except OSError:
+            self.logger.debug("Failed to write heartbeat")
 
     def _save_state(self) -> None:
         """Save current daemon state to JSON file.

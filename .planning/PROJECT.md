@@ -2,7 +2,7 @@
 
 ## What This Is
 
-A production-grade data collection system that captures Chicago Transit Authority (CTA) train positions every ~15 seconds and weather conditions hourly to build training datasets for spatiotemporal ETA prediction models. The system prioritizes zero data loss within API rate limits, running continuously for months on local WSL initially with cloud migration capability.
+A production-grade data collection system that captures Chicago Transit Authority (CTA) train positions every ~15 seconds and weather conditions hourly to build training datasets for spatiotemporal ETA prediction models. The system prioritizes zero data loss within API rate limits, running continuously for months on local WSL initially with cloud migration capability. v0.1 ships the complete data collection pipeline; v1.0 will ship the ETA prediction model.
 
 ## Core Value
 
@@ -17,26 +17,30 @@ Never miss a data collection cycle when APIs are healthy - bulletproof schedulin
 - ✓ Environment-based configuration via .env files — existing
 - ✓ Type-hinted modern Python 3.13+ codebase — existing
 - ✓ Linting pipeline with ruff, basedpyright, codespell — existing
+- ✓ Continuous polling daemon for train positions (~15 second intervals) — v0.1
+- ✓ Multi-source weather data collection (NWS primary, Open-Meteo supplementary, OpenWeatherMap fallback) — v0.1
+- ✓ TTL-based static data cache (stations list, track geometry, station-to-weather mappings) — v0.1
+- ✓ Intelligent retry with exponential backoff (retry transient errors, skip permanent errors) — v0.1
+- ✓ Rate limit management staying within free tiers (CTA, NWS unlimited; Open-Meteo 10k/day; OpenWeatherMap very limited) — v0.1
+- ✓ Storage abstraction supporting local Parquet files and cloud object storage (S3/GCS agnostic) — v0.1
+- ✓ Partitioned time-series storage (date-based partitions, compressed Parquet format) — v0.1
+- ✓ Zero deduplication at collection time (store all responses with request timestamps for stuck train detection) — v0.1
+- ✓ Structured logging with JSON format for parsing and analysis — v0.1
+- ✓ Metrics collection and dashboard (API success rates, latency, storage size, collection gaps) — v0.1 (CLI tool)
+- ✓ Email alerting for critical failures (missed cycles, persistent API errors, disk space issues) — v0.1
+- ✓ Graceful shutdown and restart capability with state preservation — v0.1
+- ✓ Gap detection and reporting (identify missing collection windows) — v0.1
+- ✓ Hybrid configuration (secrets in .env, operational config in TOML/YAML) — v0.1
+- ✓ Process management for 24/7 operation (systemd service or equivalent) — v0.1
+- ✓ Health check endpoint or heartbeat mechanism — v0.1 (heartbeat + cta-health CLI)
+- ✓ Local testing with easy cloud deployment (containerizable, infrastructure-agnostic design) — v0.1
 
 ### Active
 
-- [ ] Continuous polling daemon for train positions (~15 second intervals)
-- [ ] Multi-source weather data collection (NWS primary, Open-Meteo supplementary, OpenWeatherMap fallback)
-- [ ] TTL-based static data cache (stations list, track geometry, station-to-weather mappings)
-- [ ] Intelligent retry with exponential backoff (retry transient errors, skip permanent errors, queue for later if possible)
-- [ ] Rate limit management staying within free tiers (CTA, NWS unlimited; Open-Meteo 10k/day; OpenWeatherMap very limited)
-- [ ] Storage abstraction supporting local Parquet files and cloud object storage (S3/GCS agnostic)
-- [ ] Partitioned time-series storage (date-based partitions, compressed Parquet format)
-- [ ] Zero deduplication at collection time (store all responses with request timestamps for stuck train detection)
-- [ ] Structured logging with JSON format for parsing and analysis
-- [ ] Metrics collection and dashboard (API success rates, latency, storage size, collection gaps)
-- [ ] Email alerting for critical failures (missed cycles, persistent API errors, disk space issues)
-- [ ] Graceful shutdown and restart capability with state preservation
-- [ ] Gap detection and reporting (identify missing collection windows)
-- [ ] Hybrid configuration (secrets in .env, operational config in TOML/YAML)
-- [ ] Process management for 24/7 operation (systemd service or equivalent)
-- [ ] Health check endpoint or heartbeat mechanism
-- [ ] Local testing with easy cloud deployment (containerizable, infrastructure-agnostic design)
+- [ ] Accumulate months of CTA train position and weather data in production
+- [ ] ETA prediction model training (spatiotemporal GNN and baseline comparisons)
+- [ ] Model evaluation and validation pipeline
+- [ ] Feature engineering from raw Parquet data
 
 ### Out of Scope
 
@@ -51,11 +55,19 @@ Never miss a data collection cycle when APIs are healthy - bulletproof schedulin
 
 ## Context
 
+**Current State (v0.1):**
+- 22 plans across 9 phases shipped
+- ~25,581 lines of Python
+- 146 files created/modified over 30 days (2026-01-17 → 2026-02-16)
+- System ready for 24/7 production operation on WSL Debian
+- Tech stack: Python 3.13+, UV, asyncio, fsspec, pyarrow, pandas, aiometer, stamina, argparse
+
 **Existing Infrastructure:**
 - Modular API client layer with independent modules (no cross-dependencies)
-- Script-based execution model transitioning to daemon-based continuous collection
-- Early-stage ML pipeline at Phase 1: Data Collection → Phase 2: Model Training (planned)
-- Development on WSL Debian, production deployment TBD (cloud VM likely)
+- Daemon-based continuous collection (`TrainPositionDaemon`, `WeatherDaemon`)
+- CLI monitoring (`cta-monitor`, `cta-health`, `cta-alerts`)
+- systemd service units + logrotate in `deploy/` directory
+- Early-stage ML pipeline: Phase 1 (Data Collection) ✅ → Phase 2 (Model Training) planned
 
 **API Strategy:**
 - **CTA Train Tracker:** ~15 second polling across all train lines, unlimited free tier
@@ -79,7 +91,7 @@ Never miss a data collection cycle when APIs are healthy - bulletproof schedulin
 - Design for seamless cloud VM migration (AWS/GCP undecided)
 - Run 24/7 for months with minimal manual intervention
 - Email alerts for critical issues requiring human intervention
-- Metrics dashboard for monitoring health and progress
+- `cta-monitor` CLI for health monitoring and gap detection
 
 ## Constraints
 
@@ -94,13 +106,16 @@ Never miss a data collection cycle when APIs are healthy - bulletproof schedulin
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| Store all API responses without deduplication | Need every timestamp to detect stuck trains and model temporal patterns | — Pending |
-| Multi-source weather with primary/supplementary/fallback | NWS missing key variables (snow, pressure, visibility), Open-Meteo has 10k limit, OpenWeatherMap backup | — Pending |
-| Parquet over CSV for long-term storage | Better compression (~10x), columnar format for analytics, cloud-native | — Pending |
-| Station-to-weather mapping (~300 → ~50) | Preserve Open-Meteo 10k/day rate limit while getting full spatial coverage | — Pending |
-| Hybrid env + config approach | Secrets in .env (git-ignored), operational config in TOML (version controlled) | — Pending |
-| Email alerting over webhook/Slack | Simple, reliable, no external service dependencies for critical alerts | — Pending |
-| Local-first with cloud abstraction | Start WSL for testing, design for easy cloud migration without code changes | — Pending |
+| Store all API responses without deduplication | Need every timestamp to detect stuck trains and model temporal patterns | ✓ Good — Parquet metadata confirmed this works cleanly |
+| Multi-source weather with primary/supplementary/fallback | NWS missing key variables (snow, pressure, visibility), Open-Meteo has 10k limit, OpenWeatherMap backup | ✓ Good — aiometer rate limiting keeps well under limits |
+| Parquet over CSV for long-term storage | Better compression (~10x), columnar format for analytics, cloud-native | ✓ Good — fsspec backend works cleanly |
+| Station-to-weather mapping (~300 → ~50) | Preserve Open-Meteo 10k/day rate limit while getting full spatial coverage | ✓ Good — lazy discovery works, ~50 grid points confirmed |
+| Hybrid env + config approach | Secrets in .env (git-ignored), operational config in TOML (version controlled) | ✓ Good — 5 config sections, clean separation |
+| Email alerting over webhook/Slack | Simple, reliable, no external service dependencies for critical alerts | ✓ Good — SMTP_SSL + STARTTLS both supported |
+| Local-first with cloud abstraction | Start WSL for testing, design for easy cloud migration without code changes | ✓ Good — fsspec abstracts S3/GCS cleanly |
+| CLI monitoring over web dashboard | Simpler, scriptable, no server process; FastAPI server prototyped then replaced | ✓ Good — `cta-monitor` integrates with systemd health checks |
+| aiometer for all external API calls | Consistent rate limiting, diagnostic tracking, future-proofing | ✓ Good — used for CTA, NWS, Open-Meteo, OpenWeatherMap |
+| `copytruncate` log rotation | Open JSONL file handles can't be reopened without service restart | ✓ Good — logrotate.conf uses copytruncate |
 
 ---
-*Last updated: 2026-01-17 after initialization*
+*Last updated: 2026-02-16 after v0.1 milestone*

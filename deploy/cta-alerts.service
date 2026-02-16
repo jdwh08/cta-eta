@@ -1,0 +1,13 @@
+[Unit]
+Description=CTA ETA Alert Check
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=cta-eta
+WorkingDirectory=/opt/cta-eta
+EnvironmentFile=/opt/cta-eta/.env
+ExecStart=/opt/cta-eta/.venv/bin/cta-alerts
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cta-alerts

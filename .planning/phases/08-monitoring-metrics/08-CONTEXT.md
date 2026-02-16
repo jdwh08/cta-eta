@@ -1,65 +1,78 @@
 # Phase 8: Monitoring & Metrics - Context
 
-**Gathered:** 2026-01-26
+**Gathered:** 2026-01-27 (updated)
 **Status:** Ready for planning
 
 <vision>
 ## How This Should Work
 
+**Shift from web interface to CLI + metrics files approach.**
+
 The system runs continuously for months collecting ~230k train position snapshots daily. I need to know when data collection is broken - when daemons fail, when APIs are down, when we're missing data.
 
-Monitoring should provide multiple ways to check system health:
-- **Logs for deep investigation** - tail logs when something's weird
-- **Quick status checks** - simple way to see "is everything alive and healthy?"
-- **Metrics for alerting** - structured data that Phase 9 can use to notify me of critical failures
+Monitoring uses CLI commands backed by metrics files:
+- Daemons write metrics to structured files (JSON/JSONL)
+- CLI provides focused views for humans: status check, error report, gap summary
+- Metrics files include alert context for Phase 9 consumption
+- Phase 9 alerting reads metrics via CLI or directly from files
 
-The monitoring should feel like progressive investigation: start with high-level daemon status, drill into recent API call history if something looks off, check data gap summaries to verify collection completeness.
+This approach is simpler than HTTP servers - no FastAPI endpoint, no web dashboard overhead. Just files + CLI tools on a cheap VPS.
 
-Lightweight web endpoint (FastAPI) makes sense if practical - we're deploying on a cheap small VPS, so keep it simple. More important than the interface is having a clear readout of status, issues, and logs. I want to avoid metrics.jsonl if possible since it's harder to access and diagnose state or issues.
+The CLI supports progressive investigation: quick status check shows overall health, error report drills into what's failing and why, gap summary ties to Parquet data for ML training prep.
 
 </vision>
 
 <essential>
 ## What Must Be Nailed
 
-- **Immediate visibility into broken collection** - Cannot afford silent failures when collecting months of training data. If a daemon dies or an API is persistently failing, I need to know.
-- **Tied to the data** - Gap details are already stored in Parquet files (from train_positions_daemon gap_analysis functions). Keep these. Monitoring should reflect what's actually happening with data collection.
-- **Built for Phase 9 alerting** - Design metrics collection knowing it will feed the alerting system. Include context needed for alert messages, track what needs notification, make it easy for alerting to consume.
+- **Phase 9 integration is critical** - Metrics must include alert context (what failed, when, why). Design metrics format knowing Phase 9 will consume it for alerting. Each failure should capture enough detail to generate useful alert messages.
+- **Gap visibility tied to data** - Gap details stored in Parquet files (from train_positions_daemon gap_analysis). Keep these. Gap summary CLI connects monitoring to actual data collection completeness.
+- **Quick health check** - One command that shows daemon health, last collection times, overall system state. Instant "is everything working?" check.
 
 </essential>
 
 <boundaries>
 ## What's Out of Scope
 
-- Email/SMS alerting systems - that's Phase 9, this phase just collects and displays metrics
-- Complex dashboards with graphs - no fancy visualizations or historical trend charts, just current state and basic stats
-- Performance optimization analysis - track the metrics, don't analyze performance improvements or do deep profiling
-- Over-engineering - we're on a cheap VPS, keep resource usage minimal
+- **No web interfaces** - No HTTP servers, no FastAPI endpoints, no web dashboards or UIs. CLI and files only.
+- **Email/SMS alerting systems** - That's Phase 9. This phase collects metrics and makes them accessible.
+- **Complex visualizations** - No graphs, charts, or fancy formatting. Simple text output from CLI commands.
+- **Over-engineering** - Cheap VPS deployment means lightweight solutions. Keep resource usage minimal.
 
 </boundaries>
 
 <specifics>
 ## Specific Ideas
 
-- **FastAPI over Flask** - If using HTTP server for endpoints, FastAPI makes more sense (Flask feels dated)
-- **Progressive investigation interface:**
-  1. High-level daemon status - which daemons running, when last collected data, health state
-  2. Recent API call history - what succeeded, what failed, error messages for each service
-  3. Data collection gaps - summary of when we missed data, how long gaps were, which lines/datasets affected
-- **Leverage existing gap_analysis** - train_positions_daemon already has gap detection functions, build on these
-- **Gap details in Parquet** - Already storing gap metadata with the data files, keep this pattern
-- **Preference against metrics.jsonl** - Harder to access and diagnose state/issues compared to endpoints or status files
+**CLI Commands (focused views):**
+1. **Status check** - Show daemon health, last collection times, overall system state
+2. **Error report** - Recent failures, API errors, what's broken and why
+3. **Gap summary** - Data collection gaps tied to Parquet files for ML training prep
+4. **Metrics dump** - Machine-readable output for Phase 9 alerting to consume
+
+**Implementation context:**
+- Dashboard work from plan 08-02 has been reversed (deleted monitoring code and packages)
+- Tried web interface approach, realized CLI + files is the right fit
+- Metrics collection framework from 08-01 is probably okay to keep
+- No specific implementation details yet - figure out best approach during planning
+
+**Gap integration:**
+- train_positions_daemon already has gap_analysis functions
+- Gap details already stored in Parquet metadata
+- CLI gap summary should leverage these existing patterns
 
 </specifics>
 
 <notes>
 ## Additional Context
 
-The monitoring needs to support investigation when things look wrong. Quick path from "something seems off" to "here's exactly what's happening with the APIs and data collection."
+The shift happened during implementation - initially planned FastAPI endpoints but realized it was too heavy for a simple daemon monitoring setup. CLI + metrics files is more appropriate for this use case.
 
-Gap tracking is particularly important because missing data will throw off ETA labels in the later machine learning phase. We need to know where the gaps are to handle them properly during model training.
+2 of 3 plans already complete when this context was updated. The remaining work (08-03: API health tracking) should align with this new CLI-focused vision.
 
-Deploying on cheap small VPS means keeping resource overhead minimal - lightweight solutions preferred.
+Gap tracking particularly important because missing data affects ETA labels in the ML phase. Need clear visibility into where gaps are to handle them properly during model training.
+
+Deploying on cheap small VPS means keeping resource overhead minimal. No separate server process for monitoring - just files that daemons write and CLI tools that read them.
 
 </notes>
 
@@ -67,3 +80,4 @@ Deploying on cheap small VPS means keeping resource overhead minimal - lightweig
 
 *Phase: 08-monitoring-metrics*
 *Context gathered: 2026-01-26*
+*Context updated: 2026-01-27*

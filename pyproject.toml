@@ -87,9 +87,11 @@ dev = [
     "pytest-asyncio>=1.3.0",
 ]
 
-# [project.scripts]
+[project.scripts]
 # Script entry points:
-# cta-eta = "cta_eta:main"
+cta-monitor = "cta_eta.monitoring.cli:main"
+cta-health = "cta_eta.monitoring.health_check:main"
+cta-alerts = "cta_eta.monitoring.run_alerts:main"
 
 # ---- Build system ----
 

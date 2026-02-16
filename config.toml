@@ -154,3 +154,31 @@ max_recent_events = 64
 event_log_path = ".daemon_state/WeatherDaemon.events.jsonl"
 event_log_max_bytes = 5242880
 event_log_backups = 3
+
+
+[alerting]
+enabled = false  # Set to true to enable email alerts
+cooldown_hours = 4  # Minimum hours between repeat alerts
+last_alert_state = ".daemon_state/last_alert.json"  # Cooldown state file
+# API-based provider; only "mailjet" is implemented (MAILJET_API_KEY, MAILJET_API_SECRET in .env)
+email_provider = "mailjet"
+smtp_from = "alerts@example.com"  # Sender (must be verified in Mailjet)
+smtp_to = ["oncall@example.com"]  # Recipients
+
+
+[monitoring]
+# HTTP monitoring server for daemon health and diagnostics
+enabled = true
+
+# Host to bind to (127.0.0.1 for localhost only, 0.0.0.0 for external access)
+# Security note: Use localhost only until VPS firewall is configured (Phase 10)
+host = "127.0.0.1"
+
+# Port to bind to
+port = 8000
+
+# CORS allowed origins (for future web UI)
+allowed_origins = ["http://localhost:3000"]
+
+# Rate limiting (requests per minute per IP)
+rate_limit_per_minute = 60

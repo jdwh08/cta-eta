@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import signal
+import time
 from abc import ABC, abstractmethod
 from contextlib import suppress
 from pathlib import Path
@@ -415,6 +417,26 @@ class AsyncBaseDaemon(ABC):
                 },
             )
 
+    def _write_heartbeat(self) -> None:
+        """Write heartbeat file to .daemon_state/ for liveness monitoring.
+
+        Records current timestamp, daemon class name, and PID. Best-effort:
+        never raises, never logs at info level (too noisy).
+        """
+        try:
+            state_dir = Path(".daemon_state")
+            state_dir.mkdir(exist_ok=True)
+            heartbeat_file = state_dir / f"{self.__class__.__name__}.heartbeat.json"
+            heartbeat = {
+                "timestamp": time.time(),
+                "daemon": self.__class__.__name__,
+                "pid": os.getpid(),
+            }
+            with heartbeat_file.open("w", encoding="utf-8") as f:
+                json.dump(heartbeat, f)
+        except OSError:
+            self.logger.debug("Failed to write heartbeat")
+
     async def _run_diagnostics_loop(self) -> None:
         """Periodically log diagnostics summaries while running.
 
@@ -430,3 +452,4 @@ class AsyncBaseDaemon(ABC):
             with suppress(TimeoutError):
                 await asyncio.wait_for(shutdown.wait(), timeout=interval)
             self.diagnostics.maybe_log_summary()
+            self._write_heartbeat()

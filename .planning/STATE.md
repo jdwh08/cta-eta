@@ -2,75 +2,43 @@
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-01-17)
+See: .planning/PROJECT.md (updated 2026-02-16)
 
 **Core value:** Never miss a data collection cycle when APIs are healthy - bulletproof scheduling, recovery, and gap detection ensure complete temporal coverage for model training.
-**Current focus:** Phase 8 — Monitoring & Metrics
+**Current focus:** v0.1 Data Collection milestone shipped — planning next steps (data accumulation + future model training)
 
 ## Current Position
 
-Phase: 8 of 9 (Monitoring & Metrics)
-Plan: 1 of 3 in current phase
-Status: In progress
-Last activity: 2026-01-27 — Completed 08-01-PLAN.md
+Phase: All 9 phases complete (v0.1 shipped)
+Plan: N/A
+Status: Milestone complete
+Last activity: 2026-02-16 — v0.1 milestone archived, tagged
 
-Progress: █████████░ 89% (16/18 plans complete)
-
-## Performance Metrics
-
-**Velocity:**
-- Total plans completed: 16
-- Average duration: ~13 min
-- Total execution time: ~3.75 hours
-
-**By Phase:**
-
-| Phase | Plans | Total | Avg/Plan |
-|-------|-------|-------|----------|
-| 1. Foundation | 3 | ~12 min | ~4 min |
-| 2. Storage | 1 | ~4 min | ~4 min |
-| 3. Static Data | 2 | ~8 min | ~4 min |
-| 4. Static File Caching | 2 | ~2 min | ~1 min |
-| 5. Weather Data Collection | 3 | ~8 min | ~3 min |
-| 6. Train Polling | 2 | ~102 min | ~51 min |
-| 7. Resilience & Recovery | 3 | ~32 min | ~11 min |
-| 8. Monitoring & Metrics | 1 | ~45 min | ~45 min |
-
-**Recent Trend:**
-- Last 5 plans: Steady completion rate
-- Trend: Stable
-
-*Updated after each plan completion*
+Progress: ██████████ 100% (22/22 plans complete)
 
 ## Accumulated Context
 
 ### Decisions
 
-Decisions are logged in PROJECT.md Key Decisions table.
-Recent decisions affecting current work:
-
-- Phase 2: fsspec for unified S3/GCS API, 3 AM partition split for Chicago timezone
-- Phase 3: Lazy discovery weather grid mapping (avoid 300+ API calls on startup)
-- Phase 3: Module-level singleton caches for weather grid lookups
-- Phase 5: aiometer rate limiting (6 calls/min) for Open-Meteo 10k/day limit
-- Phase 5: OpenWeatherMap as fallback-only to conserve free tier quota
-- Phase 5: dataset_name parameter for organized multi-dataset Parquet storage
-- Phase 6: aiometer for CTA API calls despite single-call pattern (consistent rate limiting, diagnostic tracking, future-proofing)
+Decisions are logged in PROJECT.md Key Decisions table (all decisions with outcomes).
 
 ### Deferred Issues
 
-None yet.
+None.
 
 ### Pending Todos
 
-None yet.
+- Start production data collection (run `cta-train-daemon.service` and `cta-weather-daemon.service` via systemd)
+- Monitor for several weeks to validate data quality before model training
 
 ### Blockers/Concerns
 
-None yet.
+None.
 
 ## Session Continuity
 
-Last session: 2026-01-27
-Stopped at: Completed 08-01-PLAN.md
+Last session: 2026-02-16
+Stopped at: v0.1 milestone archived and tagged
 Resume file: None
+
+v0.1 complete. System ready for production. Next step: accumulate months of data, then plan model training milestone (v1.0).
