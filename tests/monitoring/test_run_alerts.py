@@ -27,12 +27,10 @@ def config_path(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def valid_alerting_config() -> dict[str, object]:
-    """Minimal [alerting] section with enabled=true."""
+    """Minimal [alerting] section with enabled=true (API-based email only)."""
     return {
         "enabled": True,
         "cooldown_hours": 4,
-        "smtp_host": "smtp.example.com",
-        "smtp_port": 587,
         "smtp_from": "alerts@example.com",
         "smtp_to": ["ops@example.com"],
         "last_alert_state": ".daemon_state/last_alert.json",
@@ -106,8 +104,6 @@ class TestLoadAlertingConfig:
             "[alerting]\n"
             "enabled = true\n"
             "cooldown_hours = 4\n"
-            "smtp_host = \"smtp.example.com\"\n"
-            "smtp_port = 587\n"
             "smtp_from = \"alerts@example.com\"\n"
             "smtp_to = [\"ops@example.com\"]\n"
             "last_alert_state = \".daemon_state/last_alert.json\"\n",
@@ -117,53 +113,60 @@ class TestLoadAlertingConfig:
         assert result is not None
         assert result.get("enabled") is True
         assert result.get("cooldown_hours") == 4
-        assert result.get("smtp_host") == "smtp.example.com"
         assert result.get("smtp_to") == ["ops@example.com"]
 
 
 # ---------------------------------------------------------------------------
-# Tests: _build_smtp_config
+# Tests: _build_email_config
 # ---------------------------------------------------------------------------
 
 
-class TestBuildSmtpConfig:
-    """Tests for _build_smtp_config()."""
+class TestBuildEmailConfig:
+    """Tests for _build_email_config()."""
 
-    def test_builds_config_from_alerting_section(
+    def test_builds_mailjet_config_by_default(
         self, valid_alerting_config: dict[str, object], monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """SMTP config is built from [alerting] and env for credentials."""
-        monkeypatch.setenv("SMTP_USERNAME", "user")
-        monkeypatch.setenv("SMTP_PASSWORD", "secret")
-        result = run_alerts._build_smtp_config(valid_alerting_config)
-        assert result["host"] == "smtp.example.com"
-        assert result["port"] == 587
-        assert result["username"] == "user"
-        assert result["password"] == "secret"
+        """Mailjet config is built when email_provider is default (mailjet)."""
+        monkeypatch.setenv("MAILJET_API_KEY", "mj-key")
+        monkeypatch.setenv("MAILJET_API_SECRET", "mj-secret")
+        result = run_alerts._build_email_config(valid_alerting_config)
+        assert result["provider"] == "mailjet"
+        assert result["api_key"] == "mj-key"
+        assert result["api_secret"] == "mj-secret"
         assert result["from_addr"] == "alerts@example.com"
         assert result["to_addrs"] == ["ops@example.com"]
 
-    def test_defaults_smtp_host_and_port(
-        self, monkeypatch: pytest.MonkeyPatch
+    def test_builds_mailjet_config_when_provider_mailjet(
+        self, valid_alerting_config: dict[str, object], monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Missing smtp_host/smtp_port use defaults."""
-        monkeypatch.delenv("SMTP_USERNAME", raising=False)
-        monkeypatch.delenv("SMTP_PASSWORD", raising=False)
-        cfg: dict[str, object] = {"enabled": True}
-        result = run_alerts._build_smtp_config(cfg)
-        assert result["host"] == "smtp.gmail.com"
-        assert result["port"] == 587
-        assert result["username"] == ""
-        assert result["password"] == ""
+        """Mailjet config is built when email_provider is explicitly mailjet."""
+        valid_alerting_config["email_provider"] = "mailjet"
+        monkeypatch.setenv("MAILJET_API_KEY", "mj-key")
+        monkeypatch.setenv("MAILJET_API_SECRET", "mj-secret")
+        result = run_alerts._build_email_config(valid_alerting_config)
+        assert result["provider"] == "mailjet"
+        assert result["from_addr"] == "alerts@example.com"
+        assert result["to_addrs"] == ["ops@example.com"]
+
+    def test_builds_minimal_config_for_unsupported_provider(
+        self, valid_alerting_config: dict[str, object]
+    ) -> None:
+        """Unknown provider yields minimal config (send_email_alert will return False)."""
+        valid_alerting_config["email_provider"] = "sendgrid"
+        result = run_alerts._build_email_config(valid_alerting_config)
+        assert result["provider"] == "sendgrid"
+        assert result["from_addr"] == "alerts@example.com"
+        assert result["to_addrs"] == ["ops@example.com"]
 
     def test_to_addrs_from_config_list(
         self, valid_alerting_config: dict[str, object], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """to_addrs is taken from config smtp_to list."""
-        monkeypatch.delenv("SMTP_USERNAME", raising=False)
-        monkeypatch.delenv("SMTP_PASSWORD", raising=False)
+        monkeypatch.setenv("MAILJET_API_KEY", "k")
+        monkeypatch.setenv("MAILJET_API_SECRET", "s")
         valid_alerting_config["smtp_to"] = ["a@x.com", "b@x.com"]
-        result = run_alerts._build_smtp_config(valid_alerting_config)
+        result = run_alerts._build_email_config(valid_alerting_config)
         assert result["to_addrs"] == ["a@x.com", "b@x.com"]
 
 
@@ -492,7 +495,7 @@ class TestMain:
         )
         mocker.patch("cta_eta.monitoring.run_alerts.save_alert_timestamp")
         run_alerts.main()
-        # send_email_alert(smtp_config, subject, body) — subject is second positional
+        # send_email_alert(email_config, subject, body) — subject is second positional
         subject = send_email_alert.call_args[0][1]
         assert "1 violation" in subject
 

@@ -250,3 +250,86 @@ class TestFormatAlertMessage:
         result = alerting.format_alert_message(violations)
         assert isinstance(result, str)
         assert len(result) > 0
+
+
+# ---------------------------------------------------------------------------
+# Tests: send_email_alert (Mailjet path)
+# ---------------------------------------------------------------------------
+
+
+class TestSendEmailAlertMailjet:
+    """Tests for send_email_alert() when provider is mailjet."""
+
+    def test_returns_true_when_mailjet_returns_200(
+        self, mocker: pytest.MockerFixture
+    ) -> None:
+        """send_email_alert with provider mailjet returns True when API returns 200."""
+        mock_post = mocker.patch(
+            "cta_eta.monitoring.alerting.httpx.Client",
+        )
+        mock_resp = mocker.Mock()
+        mock_resp.status_code = 200
+        mock_resp.text = "{}"
+        mock_client_instance = mocker.Mock()
+        mock_client_instance.__enter__ = mocker.Mock(return_value=mock_client_instance)
+        mock_client_instance.__exit__ = mocker.Mock(return_value=None)
+        mock_client_instance.post = mocker.Mock(return_value=mock_resp)
+        mock_post.return_value = mock_client_instance
+
+        config = {
+            "provider": "mailjet",
+            "api_key": "key",
+            "api_secret": "secret",
+            "from_addr": "alerts@example.com",
+            "to_addrs": ["ops@example.com"],
+        }
+        result = alerting.send_email_alert(config, "Test subject", "Body text")
+
+        assert result is True
+        call_kw = mock_client_instance.post.call_args[1]
+        assert call_kw["json"]["Messages"][0]["Subject"] == "[CTA ETA Alert] Test subject"
+        assert call_kw["json"]["Messages"][0]["TextPart"] == "Body text"
+        assert call_kw["json"]["Messages"][0]["From"]["Email"] == "alerts@example.com"
+        assert [t["Email"] for t in call_kw["json"]["Messages"][0]["To"]] == ["ops@example.com"]
+
+    def test_returns_false_when_mailjet_returns_non_200(
+        self, mocker: pytest.MockerFixture
+    ) -> None:
+        """send_email_alert with provider mailjet returns False when API returns error status."""
+        mock_post = mocker.patch(
+            "cta_eta.monitoring.alerting.httpx.Client",
+        )
+        mock_resp = mocker.Mock()
+        mock_resp.status_code = 401
+        mock_resp.text = "Unauthorized"
+        mock_client_instance = mocker.Mock()
+        mock_client_instance.__enter__ = mocker.Mock(return_value=mock_client_instance)
+        mock_client_instance.__exit__ = mocker.Mock(return_value=None)
+        mock_client_instance.post = mocker.Mock(return_value=mock_resp)
+        mock_post.return_value = mock_client_instance
+
+        config = {
+            "provider": "mailjet",
+            "api_key": "key",
+            "api_secret": "secret",
+            "from_addr": "a@example.com",
+            "to_addrs": ["b@example.com"],
+        }
+        result = alerting.send_email_alert(config, "Sub", "Body")
+        assert result is False
+
+    def test_returns_false_for_unsupported_provider(
+        self, mocker: pytest.MockerFixture
+    ) -> None:
+        """send_email_alert returns False and does not call HTTP when provider is unknown."""
+        mock_client = mocker.patch(
+            "cta_eta.monitoring.alerting.httpx.Client",
+        )
+        config = {
+            "provider": "sendgrid",
+            "from_addr": "a@example.com",
+            "to_addrs": ["b@example.com"],
+        }
+        result = alerting.send_email_alert(config, "Sub", "Body")
+        assert result is False
+        mock_client.assert_not_called()

@@ -42,7 +42,7 @@ Production deployment for the CTA train position and weather data collection sys
    - `NWS_APP_NAME` and `NWS_EMAIL` — National Weather Service contact info
    - `OPENWEATHERMAP_API_KEY` — fallback weather provider
    - `CHIDATA_APP_TOK` and `CHIDATA_APP_SECRET` — Chicago Data Portal credentials
-   - SMTP credentials for email alerting (see `config.toml` alerting section)
+   - Credentials for email alerting (see `config.toml` alerting section)
 
 4. **Create runtime directories**:
    ```bash

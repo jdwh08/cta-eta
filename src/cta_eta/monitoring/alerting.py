@@ -1,47 +1,26 @@
 """Alerting logic for CTA data collection monitoring.
 
 Provides threshold checking, cooldown management, violation message formatting,
-and SMTP email delivery for automated alerts based on metrics from the CLI monitoring tool.
+and email delivery via API-based providers (e.g. Mailjet) for automated alerts
+based on metrics from the CLI monitoring tool.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import smtplib
 import time
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from typing import TYPE_CHECKING, Any, TypedDict
+from typing import TYPE_CHECKING, Any
+
+import httpx
 
 if TYPE_CHECKING:
     from pathlib import Path
 
 _log = logging.getLogger(__name__)
 
-
-class AlertConfig(TypedDict):
-    """Configuration for email alerting.
-
-    Fields:
-        smtp_host: SMTP server hostname (e.g. "smtp.gmail.com").
-        smtp_port: SMTP server port (465 for SSL, 587 for STARTTLS).
-        smtp_username: SMTP login username.
-        smtp_password: SMTP login password.
-        from_addr: Sender email address.
-        to_addrs: List of recipient email addresses.
-        cooldown_hours: Minimum hours between successive alerts (default 4).
-        last_alert_path: Path to the JSON file tracking the last alert timestamp.
-    """
-
-    smtp_host: str
-    smtp_port: int
-    smtp_username: str
-    smtp_password: str
-    from_addr: str
-    to_addrs: list[str]
-    cooldown_hours: int
-    last_alert_path: Path
+MAILJET_SEND_URL = "https://api.mailjet.com/v3.1/send"
+HTTP_OK = 200
 
 
 def load_last_alert_time(last_alert_path: Path) -> float | None:
@@ -150,60 +129,65 @@ def format_alert_message(violations: list[dict[str, object]]) -> str:
     return "\n".join(lines)
 
 
+def _send_via_mailjet(config: dict[str, Any], subject: str, body: str) -> bool:
+    """Send one message via Mailjet Send API v3.1. Returns True on success."""
+    api_key = str(config["api_key"]).strip()
+    api_secret = str(config["api_secret"]).strip()
+    from_addr = str(config["from_addr"])
+    to_addrs = list(config["to_addrs"])
+    payload = {
+        "Messages": [
+            {
+                "From": {"Email": from_addr},
+                "To": [{"Email": addr} for addr in to_addrs],
+                "Subject": subject,
+                "TextPart": body,
+            }
+        ]
+    }
+    try:
+        with httpx.Client() as client:
+            resp = client.post(
+                MAILJET_SEND_URL,
+                auth=(api_key, api_secret),
+                json=payload,
+                timeout=30.0,
+            )
+    except httpx.HTTPError as exc:
+        _log.error("Mailjet request failed: %s", exc)
+        return False
+    if resp.status_code != HTTP_OK:
+        _log.error(
+            "Mailjet send failed status=%s body=%s",
+            resp.status_code,
+            resp.text[:500] if resp.text else "",
+        )
+        return False
+    _log.info("Mailjet alert sent to %s: %s", to_addrs, subject)
+    return True
+
+
 def send_email_alert(
-    smtp_config: dict[str, Any],
+    email_config: dict[str, Any],
     subject: str,
     body: str,
 ) -> bool:
-    """Send an email alert via SMTP.
+    """Send an email alert via the configured API-based provider.
 
-    Uses SMTP_SSL for port 465, and SMTP with STARTTLS for port 587 (or any
-    other port). Returns True on success, False on failure (error is logged,
-    not raised).
+    Dispatches on ``email_config["provider"]``. Currently only ``"mailjet"``
+    is implemented; add a ``_send_via_<provider>`` helper and a branch here
+    to support other services (e.g. SendGrid, Postmark). Returns True on
+    success, False on failure (error is logged, not raised).
 
-    Args:
-        smtp_config: Dictionary with SMTP connection parameters. Required keys:
-            - host (str): SMTP server hostname.
-            - port (int): SMTP server port (465 for SSL, 587 for STARTTLS).
-            - username (str): SMTP login username.
-            - password (str): SMTP login password.
-            - from_addr (str): Sender email address.
-            - to_addrs (list[str]): List of recipient email addresses.
-        subject: Subject line (will be prefixed with "[CTA ETA Alert]").
-        body: Plain-text email body.
+    Mailjet config keys: api_key, api_secret, from_addr, to_addrs.
 
-    Returns:
-        True if the email was sent successfully, False otherwise.
-
+    Subject is prefixed with "[CTA ETA Alert]".
     """
-    host: str = smtp_config["host"]
-    port: int = smtp_config["port"]
-    username: str = smtp_config["username"]
-    password: str = smtp_config["password"]
-    from_addr: str = smtp_config["from_addr"]
-    to_addrs: list[str] = smtp_config["to_addrs"]
-
     full_subject = f"[CTA ETA Alert] {subject}"
+    provider = (str(email_config.get("provider") or "mailjet")).strip().lower()
 
-    msg = MIMEMultipart()
-    msg["From"] = from_addr
-    msg["To"] = ", ".join(to_addrs)
-    msg["Subject"] = full_subject
-    msg.attach(MIMEText(body, "plain", "utf-8"))
+    if provider == "mailjet":
+        return _send_via_mailjet(email_config, full_subject, body)
 
-    try:
-        if port == 465:  # noqa: PLR2004
-            with smtplib.SMTP_SSL(host, port) as server:
-                server.login(username, password)
-                server.sendmail(from_addr, to_addrs, msg.as_string())
-        else:
-            with smtplib.SMTP(host, port) as server:
-                server.starttls()
-                server.login(username, password)
-                server.sendmail(from_addr, to_addrs, msg.as_string())
-    except smtplib.SMTPException:
-        _log.error("Failed to send email alert to %s", to_addrs)
-        return False
-
-    _log.info("Email alert sent to %s: %s", to_addrs, full_subject)
-    return True
+    _log.error("Unsupported email provider: %s", provider)
+    return False

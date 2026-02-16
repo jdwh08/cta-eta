@@ -74,28 +74,34 @@ def _load_alerting_config(config_path: Path) -> dict[str, object] | None:
     return alerting_section
 
 
-def _build_smtp_config(alerting_cfg: dict[str, object]) -> dict[str, object]:
-    """Build SMTP config dict from [alerting] section and environment variables.
+def _build_email_config(alerting_cfg: dict[str, object]) -> dict[str, object]:
+    """Build email config from [alerting] section and environment variables.
 
-    SMTP username and password are read from environment variables
-    SMTP_USERNAME and SMTP_PASSWORD (set in .env or system environment).
-
-    Args:
-        alerting_cfg: The [alerting] TOML section dict.
+    Uses ``email_provider`` (default ``"mailjet"``) to choose the backend.
+    Only ``"mailjet"`` is implemented; add branches here and in
+    ``alerting.send_email_alert`` for other API-based providers.
+    From/to addresses come from ``smtp_from`` and ``smtp_to`` for all providers.
 
     Returns:
-        Dict with keys: host, port, username, password, from_addr, to_addrs.
-
+        Dict with ``provider`` and the keys required for that provider.
     """
     load_dotenv()
+    provider = (str(alerting_cfg.get("email_provider", "mailjet")).strip().lower())
+    from_addr = str(alerting_cfg.get("smtp_from", ""))
+    to_addrs = list(alerting_cfg.get("smtp_to", []))
 
+    if provider == "mailjet":
+        return {
+            "provider": "mailjet",
+            "api_key": (os.getenv("MAILJET_API_KEY") or "").strip(),
+            "api_secret": (os.getenv("MAILJET_API_SECRET") or "").strip(),
+            "from_addr": from_addr,
+            "to_addrs": to_addrs,
+        }
     return {
-        "host": str(alerting_cfg.get("smtp_host", "smtp.gmail.com")),
-        "port": int(alerting_cfg.get("smtp_port", 587)),
-        "username": (os.getenv("SMTP_USERNAME") or "").strip(),
-        "password": (os.getenv("SMTP_PASSWORD") or "").strip(),
-        "from_addr": str(alerting_cfg.get("smtp_from", "")),
-        "to_addrs": list(alerting_cfg.get("smtp_to", [])),
+        "provider": provider,
+        "from_addr": from_addr,
+        "to_addrs": to_addrs,
     }
 
 
@@ -183,8 +189,8 @@ def main() -> None:
         violation_body + "\n\nFull metrics:\n" + json.dumps(full_metrics, indent=2)
     )
 
-    smtp_config = _build_smtp_config(alerting_cfg)
-    sent = send_email_alert(smtp_config, subject, full_body)
+    email_config = _build_email_config(alerting_cfg)
+    sent = send_email_alert(email_config, subject, full_body)
 
     if sent:
         save_alert_timestamp(last_alert_path)
