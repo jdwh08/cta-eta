@@ -1,20 +1,47 @@
 """Alerting logic for CTA data collection monitoring.
 
-Provides threshold checking, cooldown management, and violation message formatting
-for automated email alerting based on metrics from the CLI monitoring tool.
+Provides threshold checking, cooldown management, violation message formatting,
+and SMTP email delivery for automated alerts based on metrics from the CLI monitoring tool.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import smtplib
 import time
-from typing import TYPE_CHECKING
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from typing import TYPE_CHECKING, Any, TypedDict
 
 if TYPE_CHECKING:
     from pathlib import Path
 
 _log = logging.getLogger(__name__)
+
+
+class AlertConfig(TypedDict):
+    """Configuration for email alerting.
+
+    Fields:
+        smtp_host: SMTP server hostname (e.g. "smtp.gmail.com").
+        smtp_port: SMTP server port (465 for SSL, 587 for STARTTLS).
+        smtp_username: SMTP login username.
+        smtp_password: SMTP login password.
+        from_addr: Sender email address.
+        to_addrs: List of recipient email addresses.
+        cooldown_hours: Minimum hours between successive alerts (default 4).
+        last_alert_path: Path to the JSON file tracking the last alert timestamp.
+    """
+
+    smtp_host: str
+    smtp_port: int
+    smtp_username: str
+    smtp_password: str
+    from_addr: str
+    to_addrs: list[str]
+    cooldown_hours: int
+    last_alert_path: Path
 
 
 def load_last_alert_time(last_alert_path: Path) -> float | None:
@@ -121,3 +148,62 @@ def format_alert_message(violations: list[dict[str, object]]) -> str:
         lines.append(f"- {metric}: actual={actual} exceeds threshold={threshold}")
 
     return "\n".join(lines)
+
+
+def send_email_alert(
+    smtp_config: dict[str, Any],
+    subject: str,
+    body: str,
+) -> bool:
+    """Send an email alert via SMTP.
+
+    Uses SMTP_SSL for port 465, and SMTP with STARTTLS for port 587 (or any
+    other port). Returns True on success, False on failure (error is logged,
+    not raised).
+
+    Args:
+        smtp_config: Dictionary with SMTP connection parameters. Required keys:
+            - host (str): SMTP server hostname.
+            - port (int): SMTP server port (465 for SSL, 587 for STARTTLS).
+            - username (str): SMTP login username.
+            - password (str): SMTP login password.
+            - from_addr (str): Sender email address.
+            - to_addrs (list[str]): List of recipient email addresses.
+        subject: Subject line (will be prefixed with "[CTA ETA Alert]").
+        body: Plain-text email body.
+
+    Returns:
+        True if the email was sent successfully, False otherwise.
+
+    """
+    host: str = smtp_config["host"]
+    port: int = smtp_config["port"]
+    username: str = smtp_config["username"]
+    password: str = smtp_config["password"]
+    from_addr: str = smtp_config["from_addr"]
+    to_addrs: list[str] = smtp_config["to_addrs"]
+
+    full_subject = f"[CTA ETA Alert] {subject}"
+
+    msg = MIMEMultipart()
+    msg["From"] = from_addr
+    msg["To"] = ", ".join(to_addrs)
+    msg["Subject"] = full_subject
+    msg.attach(MIMEText(body, "plain", "utf-8"))
+
+    try:
+        if port == 465:  # noqa: PLR2004
+            with smtplib.SMTP_SSL(host, port) as server:
+                server.login(username, password)
+                server.sendmail(from_addr, to_addrs, msg.as_string())
+        else:
+            with smtplib.SMTP(host, port) as server:
+                server.starttls()
+                server.login(username, password)
+                server.sendmail(from_addr, to_addrs, msg.as_string())
+    except smtplib.SMTPException:
+        _log.error("Failed to send email alert to %s", to_addrs)
+        return False
+
+    _log.info("Email alert sent to %s: %s", to_addrs, full_subject)
+    return True
