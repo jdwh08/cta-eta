@@ -61,7 +61,7 @@ def load_last_alert_time(last_alert_path: Path) -> float | None:
         with last_alert_path.open("r", encoding="utf-8") as f:
             data: dict[str, object] = json.load(f)
         last_alert = data["last_alert"]
-        return float(last_alert)  # type: ignore[arg-type]
+        return float(last_alert)
     except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
         _log.debug("Could not load last alert time from %s", last_alert_path)
         return None

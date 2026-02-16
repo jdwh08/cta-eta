@@ -23,7 +23,7 @@ import sys
 import tomllib
 from pathlib import Path
 
-from dotenv import load_dotenv  # type: ignore[import-untyped]
+from dotenv import load_dotenv
 
 from cta_eta.monitoring.alerting import (
     format_alert_message,
@@ -130,7 +130,7 @@ def _fetch_metrics() -> dict[str, object] | None:
         return None
 
     try:
-        return json.loads(result.stdout)  # type: ignore[no-any-return]
+        return json.loads(result.stdout)
     except json.JSONDecodeError as exc:
         _log.warning("Could not parse metrics JSON: %s", exc)
         return None
@@ -146,7 +146,9 @@ def main() -> None:
 
     # Build paths and config values
     cooldown_hours = int(alerting_cfg.get("cooldown_hours", 4))
-    last_alert_state = str(alerting_cfg.get("last_alert_state", ".daemon_state/last_alert.json"))
+    last_alert_state = str(
+        alerting_cfg.get("last_alert_state", ".daemon_state/last_alert.json")
+    )
     last_alert_path = Path(last_alert_state)
 
     # Fetch metrics via subprocess
@@ -167,13 +169,19 @@ def main() -> None:
 
     # Extract violations for message formatting
     violations_raw = alert_context.get("violations", [])
-    violations: list[dict[str, object]] = violations_raw if isinstance(violations_raw, list) else []
+    violations: list[dict[str, object]] = (
+        violations_raw if isinstance(violations_raw, list) else []
+    )
 
     n_violations = len(violations)
-    subject = f"CTA Daemon Alert: {n_violations} violation{'s' if n_violations != 1 else ''}"
+    subject = (
+        f"CTA Daemon Alert: {n_violations} violation{'s' if n_violations != 1 else ''}"
+    )
 
     violation_body = format_alert_message(violations)
-    full_body = violation_body + "\n\nFull metrics:\n" + json.dumps(full_metrics, indent=2)
+    full_body = (
+        violation_body + "\n\nFull metrics:\n" + json.dumps(full_metrics, indent=2)
+    )
 
     smtp_config = _build_smtp_config(alerting_cfg)
     sent = send_email_alert(smtp_config, subject, full_body)

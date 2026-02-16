@@ -38,7 +38,7 @@ def _read_heartbeat(heartbeat_file: Path) -> dict[str, object] | None:
     """
     try:
         with heartbeat_file.open("r", encoding="utf-8") as f:
-            return json.load(f)  # type: ignore[no-any-return]
+            return json.load(f)
     except (OSError, json.JSONDecodeError):
         return None
 

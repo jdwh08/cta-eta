@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
 try:
-    import pyarrow.parquet as pq  # type: ignore[import-untyped]
+    import pyarrow.parquet as pq
 except ImportError:
     pq = None  # type: ignore[assignment]
 
@@ -77,7 +77,7 @@ def _read_daemon_state(daemon_name: str) -> dict[str, object] | None:
 
     try:
         with state_file.open("r", encoding="utf-8") as f:
-            return json.load(f)  # type: ignore[no-any-return]
+            return json.load(f)
     except (OSError, json.JSONDecodeError):
         return None
 
@@ -193,7 +193,9 @@ def cmd_status(args: argparse.Namespace) -> None:
         state = _read_daemon_state(daemon_name)
 
         if state is None:
-            print(f"{daemon_name:<25} {'unknown':<10} {'N/A':<20} {'N/A':<12} {'N/A':<10}")
+            print(
+                f"{daemon_name:<25} {'unknown':<10} {'N/A':<20} {'N/A':<12} {'N/A':<10}"
+            )
             unknown_count += 1
             continue
 
@@ -233,7 +235,9 @@ def cmd_status(args: argparse.Namespace) -> None:
 
     # Overall status
     if stale_count > 0:
-        print(f"Overall: DEGRADED ({stale_count} stale daemon{'s' if stale_count > 1 else ''})")
+        print(
+            f"Overall: DEGRADED ({stale_count} stale daemon{'s' if stale_count > 1 else ''})"
+        )
         sys.exit(1)
     if unknown_count > 0:
         print(
@@ -331,7 +335,7 @@ def cmd_errors(args: argparse.Namespace) -> None:
         print(f"{time_str:<18} {daemon_name:<25} {error_type:<25} {error_message:<30}")
 
 
-def _add_status_command(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
+def _add_status_command(subparsers: argparse._SubParsersAction) -> None:
     """Add 'status' subcommand to parser.
 
     Args:
@@ -422,7 +426,9 @@ def cmd_gaps(args: argparse.Namespace) -> None:
     for gap in gaps:
         gap_end = gap.get("gap_end_timestamp")
         if gap_end:
-            gap_date = datetime.fromtimestamp(gap_end, tz=UTC).strftime("%Y-%m-%d %H:%M")
+            gap_date = datetime.fromtimestamp(gap_end, tz=UTC).strftime(
+                "%Y-%m-%d %H:%M"
+            )
         else:
             gap_date = "Unknown"
 
@@ -565,22 +571,22 @@ def cmd_metrics(args: argparse.Namespace) -> None:
         calls = str(metrics["total_calls"])
         latency = f"{metrics['p95_latency_ms']:.0f}ms"
 
-        print(f"{daemon_name:<25} {success_pct:<15} {error_pct:<12} {calls:<8} {latency:<12}")
+        print(
+            f"{daemon_name:<25} {success_pct:<15} {error_pct:<12} {calls:<8} {latency:<12}"
+        )
 
     print()
     print(f"Overall Health: {overall_status.upper()}")
 
 
-def _add_errors_command(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
+def _add_errors_command(subparsers: argparse._SubParsersAction) -> None:
     """Add 'errors' subcommand to parser.
 
     Args:
         subparsers: Subparsers object from ArgumentParser
 
     """
-    parser = subparsers.add_parser(
-        "errors", help="Show recent failures and API errors"
-    )
+    parser = subparsers.add_parser("errors", help="Show recent failures and API errors")
     parser.add_argument(
         "--limit",
         type=int,
@@ -593,7 +599,7 @@ def _add_errors_command(subparsers: argparse._SubParsersAction) -> None:  # type
     parser.set_defaults(func=cmd_errors)
 
 
-def _add_gaps_command(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
+def _add_gaps_command(subparsers: argparse._SubParsersAction) -> None:
     """Add 'gaps' subcommand to parser.
 
     Args:
@@ -621,7 +627,7 @@ def _add_gaps_command(subparsers: argparse._SubParsersAction) -> None:  # type: 
     parser.set_defaults(func=cmd_gaps)
 
 
-def _add_metrics_command(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
+def _add_metrics_command(subparsers: argparse._SubParsersAction) -> None:
     """Add 'metrics' subcommand to parser.
 
     Args:
