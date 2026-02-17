@@ -11,7 +11,7 @@ None
 ## Milestones
 
 - ✅ **[v0.1 Data Collection](milestones/v0.1-data-collection.md)** — Phases 1-9 (shipped 2026-02-16)
-- 🚧 **v0.2 Data Quality & Compaction** — Phases 10-11 (in progress)
+- 🚧 **v0.2 Data Quality & Compaction** — Phases 10-12 (in progress)
 
 ## Phases
 
@@ -40,26 +40,37 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 **Milestone Goal:** Address the small-file problem (~5,760 files/day) and enforce data integrity before data volume grows, making the dataset ready for efficient cloud storage and model training.
 
-#### Phase 10: Data Compaction
+#### Phase 10: IPC Journal Writer
 
-**Goal**: Scheduled batch job that merges per-poll Parquet files into larger, efficiently-partitioned files
+**Goal**: Replace per-poll Parquet writes with Arrow IPC journal files — daemons append each poll to a local journal, rotating to a new file every 15 minutes (configurable), using hive-style directory structure
 **Depends on**: Phase 9 (v0.1 complete)
-**Research**: Unlikely (established tools — fsspec, pyarrow, systemd timer patterns already in codebase)
+**Research**: Unlikely (pyarrow IPC stream writer is established; systemd patterns already in codebase)
+**Context**: [10-CONTEXT.md](phases/10-journal-writer/10-CONTEXT.md)
 **Plans**: TBD
 
 Plans:
 - [ ] 10-01: TBD (run /gsd:plan-phase 10 to break down)
 
-#### Phase 11: Schema Enforcement
+#### Phase 11: Data Compaction
+
+**Goal**: Daily batch job (3am Chicago time) that merges yesterday's IPC journal files into a single validated, Snappy-compressed Parquet file per daemon per day, then uploads to cloud storage as immutable raw data
+**Depends on**: Phase 10
+**Research**: Likely (pyarrow IPC → Parquet conversion patterns, cloud upload integration)
+**Plans**: TBD
+
+Plans:
+- [ ] 11-01: TBD (run /gsd:plan-phase 11 to break down)
+
+#### Phase 12: Schema Enforcement
 
 **Goal**: Parquet schema registry/validation with drift detection and alerting on schema changes from CTA or weather API updates
-**Depends on**: Phase 10
+**Depends on**: Phase 11
 **Research**: Likely (pyarrow schema comparison patterns; best approach for schema registry/drift detection unclear)
 **Research topics**: pyarrow schema validation APIs, schema registry patterns for file-based storage, integration with existing cta-monitor CLI
 **Plans**: TBD
 
 Plans:
-- [ ] 11-01: TBD (run /gsd:plan-phase 11 to break down)
+- [ ] 12-01: TBD (run /gsd:plan-phase 12 to break down)
 
 ## Progress
 
@@ -74,5 +85,6 @@ Plans:
 | 7. Resilience & Recovery | v0.1 | 3/3 | Complete | 2026-01-26 |
 | 8. Monitoring & Metrics | v0.1 | 3/3 | Complete | 2026-01-28 |
 | 9. Alerting & Deployment | v0.1 | 4/4 | Complete | 2026-02-16 |
-| 10. Data Compaction | v0.2 | 0/? | Not started | - |
-| 11. Schema Enforcement | v0.2 | 0/? | Not started | - |
+| 10. IPC Journal Writer | v0.2 | 0/? | Not started | - |
+| 11. Data Compaction | v0.2 | 0/? | Not started | - |
+| 12. Schema Enforcement | v0.2 | 0/? | Not started | - |

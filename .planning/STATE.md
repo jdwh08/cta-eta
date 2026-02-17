@@ -9,10 +9,10 @@ See: .planning/PROJECT.md (updated 2026-02-16)
 
 ## Current Position
 
-Phase: 10 of 11 (Data Compaction)
+Phase: 10 of 12 (IPC Journal Writer)
 Plan: Not started
 Status: Ready to plan
-Last activity: 2026-02-16 — Milestone v0.2 created
+Last activity: 2026-02-16 — Phase 10 context gathered
 
 Progress: ░░░░░░░░░░ 0%
 
@@ -38,6 +38,7 @@ None.
 ### Roadmap Evolution
 
 - Milestone v0.2 created: data quality & compaction, 2 phases (Phase 10-11)
+- Roadmap restructured: Phase 10 → IPC Journal Writer, Phase 11 → Data Compaction, Phase 12 → Schema Enforcement (3 phases total)
 
 ## Session Continuity
 
