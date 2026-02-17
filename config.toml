@@ -83,6 +83,10 @@ compression = "snappy"
 # Maximum file size in MB before rotation
 max_file_size_mb = 128
 
+# Arrow IPC journal rotation interval in minutes (default 15)
+# After this interval, the current journal file is closed and a new one is opened
+journal_rotation_minutes = 15
+
 
 [retry]
 # Maximum retry attempts for transient API failures
