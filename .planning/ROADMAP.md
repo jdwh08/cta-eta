@@ -11,6 +11,7 @@ None
 ## Milestones
 
 - ✅ **[v0.1 Data Collection](milestones/v0.1-data-collection.md)** — Phases 1-9 (shipped 2026-02-16)
+- 🚧 **v0.2 Data Quality & Compaction** — Phases 10-11 (in progress)
 
 ## Phases
 
@@ -35,6 +36,31 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 </details>
 
+### 🚧 v0.2 Data Quality & Compaction (In Progress)
+
+**Milestone Goal:** Address the small-file problem (~5,760 files/day) and enforce data integrity before data volume grows, making the dataset ready for efficient cloud storage and model training.
+
+#### Phase 10: Data Compaction
+
+**Goal**: Scheduled batch job that merges per-poll Parquet files into larger, efficiently-partitioned files
+**Depends on**: Phase 9 (v0.1 complete)
+**Research**: Unlikely (established tools — fsspec, pyarrow, systemd timer patterns already in codebase)
+**Plans**: TBD
+
+Plans:
+- [ ] 10-01: TBD (run /gsd:plan-phase 10 to break down)
+
+#### Phase 11: Schema Enforcement
+
+**Goal**: Parquet schema registry/validation with drift detection and alerting on schema changes from CTA or weather API updates
+**Depends on**: Phase 10
+**Research**: Likely (pyarrow schema comparison patterns; best approach for schema registry/drift detection unclear)
+**Research topics**: pyarrow schema validation APIs, schema registry patterns for file-based storage, integration with existing cta-monitor CLI
+**Plans**: TBD
+
+Plans:
+- [ ] 11-01: TBD (run /gsd:plan-phase 11 to break down)
+
 ## Progress
 
 | Phase | Milestone | Plans Complete | Status | Completed |
@@ -48,3 +74,5 @@ Decimal phases appear between their surrounding integers in numeric order.
 | 7. Resilience & Recovery | v0.1 | 3/3 | Complete | 2026-01-26 |
 | 8. Monitoring & Metrics | v0.1 | 3/3 | Complete | 2026-01-28 |
 | 9. Alerting & Deployment | v0.1 | 4/4 | Complete | 2026-02-16 |
+| 10. Data Compaction | v0.2 | 0/? | Not started | - |
+| 11. Schema Enforcement | v0.2 | 0/? | Not started | - |

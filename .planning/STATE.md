@@ -5,16 +5,16 @@
 See: .planning/PROJECT.md (updated 2026-02-16)
 
 **Core value:** Never miss a data collection cycle when APIs are healthy - bulletproof scheduling, recovery, and gap detection ensure complete temporal coverage for model training.
-**Current focus:** v0.1 Data Collection milestone shipped — planning next steps (data accumulation + future model training)
+**Current focus:** v0.2 Data Quality & Compaction — address small-file problem and enforce data integrity before data volume grows
 
 ## Current Position
 
-Phase: All 9 phases complete (v0.1 shipped)
-Plan: N/A
-Status: Milestone complete
-Last activity: 2026-02-16 — v0.1 milestone archived, tagged
+Phase: 10 of 11 (Data Compaction)
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-02-16 — Milestone v0.2 created
 
-Progress: ██████████ 100% (22/22 plans complete)
+Progress: ░░░░░░░░░░ 0%
 
 ## Accumulated Context
 
@@ -35,10 +35,12 @@ None.
 
 None.
 
+### Roadmap Evolution
+
+- Milestone v0.2 created: data quality & compaction, 2 phases (Phase 10-11)
+
 ## Session Continuity
 
 Last session: 2026-02-16
-Stopped at: v0.1 milestone archived and tagged
+Stopped at: Milestone v0.2 initialization
 Resume file: None
-
-v0.1 complete. System ready for production. Next step: accumulate months of data, then plan model training milestone (v1.0).
