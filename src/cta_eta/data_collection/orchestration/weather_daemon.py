@@ -459,7 +459,7 @@ class WeatherDaemon(AsyncBaseDaemon):
         return merged_records
 
     def _store_merged_records(self, merged_records: list[dict[str, Any]]) -> None:
-        """Store merged records to Parquet, updating daemon state and logging."""
+        """Store merged records to IPC journal, updating daemon state and logging."""
         if not merged_records:
             self.logger.warning("No weather records to store this cycle")
             self.records_stored_last_cycle = 0
@@ -468,11 +468,11 @@ class WeatherDaemon(AsyncBaseDaemon):
         try:
             self.storage.append_batch(merged_records, dataset_name="weather")
         except Exception:
-            self.logger.exception("Failed to store weather records to Parquet")
+            self.logger.exception("Failed to store weather records to IPC journal")
             self.records_stored_last_cycle = 0
         else:
             self.records_stored_last_cycle = len(merged_records)
-            self.logger.info(f"Stored {len(merged_records)} weather records to Parquet")
+            self.logger.info(f"Stored {len(merged_records)} weather records to IPC journal")
 
     async def _fetch_nws_by_grid(
         self, client: httpx.AsyncClient, grid_ids: list[str]
