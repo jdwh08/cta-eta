@@ -69,7 +69,7 @@ def train_daemon(
     """Create a TrainPositionDaemon with external deps mocked."""
     storage = MagicMock()
     mocker.patch(
-        "cta_eta.data_collection.orchestration.train_position_daemon.create_parquet_writer",
+        "cta_eta.data_collection.orchestration.train_position_daemon.create_journal_writer",
         return_value=storage,
         autospec=True,
     )
@@ -110,7 +110,7 @@ class TestTrainPositionDaemonInit:
 
         # Rebuild daemon so we see get_config_section call
         create_writer = mocker.patch(
-            "cta_eta.data_collection.orchestration.train_position_daemon.create_parquet_writer",
+            "cta_eta.data_collection.orchestration.train_position_daemon.create_journal_writer",
             return_value=MagicMock(),
         )
         daemon2 = TrainPositionDaemon(daemon.logger, daemon.config)
@@ -136,7 +136,7 @@ class TestTrainPositionDaemonInit:
             "rate_limits": {"cta": {"max_per_second": 0.1, "max_at_once": 3}},
         }
         mocker.patch(
-            "cta_eta.data_collection.orchestration.train_position_daemon.create_parquet_writer",
+            "cta_eta.data_collection.orchestration.train_position_daemon.create_journal_writer",
             return_value=MagicMock(),
             autospec=True,
         )
@@ -166,7 +166,7 @@ class TestTrainPositionDaemonInit:
             "rate_limits": {"cta": {"max_per_second": 0.1, "max_at_once": 3}},
         }
         mocker.patch(
-            "cta_eta.data_collection.orchestration.train_position_daemon.create_parquet_writer",
+            "cta_eta.data_collection.orchestration.train_position_daemon.create_journal_writer",
             return_value=MagicMock(),
             autospec=True,
         )
@@ -241,7 +241,7 @@ class TestTrainPositionDaemonCollectCycle:
 
         # Assert
         storage.append_batch.assert_called_once_with(
-            records, dataset_name="train_positions", metadata=None
+            records, dataset_name="train_positions"
         )
         assert daemon.last_poll_timestamp == 1000.1
         assert daemon.total_records_collected == 1
@@ -411,7 +411,7 @@ class TestTrainPositionDaemonCollectCycle:
 
         # Assert
         storage.append_batch.assert_called_once_with(
-            [], dataset_name="train_positions", metadata=None
+            [], dataset_name="train_positions"
         )
         assert daemon.total_records_collected == 0
         assert daemon.current_poll_count == 1
@@ -952,12 +952,11 @@ class TestTrainPositionDaemonGapDetection:
         # Act
         asyncio.run(daemon._collect_train_positions_cycle(mock_client))
 
-        # Assert - gap metadata was attached to storage call (then cleared after success)
+        # Assert - gap metadata was logged (not passed to JournalWriter); cleared after success
         storage.append_batch.assert_called_once()
         call_kwargs = storage.append_batch.call_args[1]
-        assert call_kwargs["metadata"] is not None
-        assert call_kwargs["metadata"]["is_gap"] is True
-        # After successful write, metadata should be cleared
+        assert "metadata" not in call_kwargs
+        # After successful write, pending_gap_metadata should be cleared
         assert daemon.pending_gap_metadata is None
 
     @pytest.mark.usefixtures("cleanup_state_files")
@@ -996,11 +995,11 @@ class TestTrainPositionDaemonGapDetection:
         # Act
         asyncio.run(daemon._collect_train_positions_cycle(mock_client))
 
-        # Assert - no gap metadata set
+        # Assert - no gap metadata set, no metadata passed to JournalWriter
         assert daemon.pending_gap_metadata is None
         storage.append_batch.assert_called_once()
         call_kwargs = storage.append_batch.call_args[1]
-        assert call_kwargs["metadata"] is None
+        assert "metadata" not in call_kwargs
 
     @pytest.mark.usefixtures("cleanup_state_files")
     def test_collect_cycle_clears_pending_gap_metadata_after_successful_write(
@@ -1043,20 +1042,16 @@ class TestTrainPositionDaemonGapDetection:
         # Act
         asyncio.run(daemon._collect_train_positions_cycle(mock_client))
 
-        # Assert - metadata was attached and then cleared
+        # Assert - metadata not passed to JournalWriter (logged separately), then cleared
         storage.append_batch.assert_called_once()
         call_kwargs = storage.append_batch.call_args[1]
-        assert call_kwargs["metadata"] == {
-            "is_gap": True,
-            "gap_reason": "downtime",
-            "gap_duration_seconds": 60.0,
-        }
+        assert "metadata" not in call_kwargs
         assert daemon.pending_gap_metadata is None
         # Verify gap metadata was logged (check any info call contains gap metadata)
         info_calls = [
             str(call) for call in cast("MagicMock", daemon.logger).info.call_args_list
         ]
-        gap_logged = any("Gap metadata attached" in call for call in info_calls)
+        gap_logged = any("Gap metadata logged" in call for call in info_calls)
         assert gap_logged
 
     @pytest.mark.usefixtures("cleanup_state_files")
@@ -1665,7 +1660,7 @@ class TestTrainPositionDaemonProbeConfig:
             "rate_limits": {"cta": {"max_per_second": 0.1, "max_at_once": 3}},
         }
         mocker.patch(
-            "cta_eta.data_collection.orchestration.train_position_daemon.create_parquet_writer",
+            "cta_eta.data_collection.orchestration.train_position_daemon.create_journal_writer",
             return_value=MagicMock(),
             autospec=True,
         )
@@ -1700,7 +1695,7 @@ class TestTrainPositionDaemonProbeConfig:
             "rate_limits": {"cta": {"max_per_second": 0.1, "max_at_once": 3}},
         }
         mocker.patch(
-            "cta_eta.data_collection.orchestration.train_position_daemon.create_parquet_writer",
+            "cta_eta.data_collection.orchestration.train_position_daemon.create_journal_writer",
             return_value=MagicMock(),
             autospec=True,
         )
@@ -1734,7 +1729,7 @@ class TestTrainPositionDaemonProbeConfig:
             "rate_limits": {"cta": {"max_per_second": 0.1, "max_at_once": 3}},
         }
         mocker.patch(
-            "cta_eta.data_collection.orchestration.train_position_daemon.create_parquet_writer",
+            "cta_eta.data_collection.orchestration.train_position_daemon.create_journal_writer",
             return_value=MagicMock(),
             autospec=True,
         )
