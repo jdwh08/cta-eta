@@ -40,16 +40,16 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 **Milestone Goal:** Address the small-file problem (~5,760 files/day) and enforce data integrity before data volume grows, making the dataset ready for efficient cloud storage and model training.
 
-#### Phase 10: IPC Journal Writer
+#### ✅ Phase 10: IPC Journal Writer (Complete — 2026-02-17)
 
 **Goal**: Replace per-poll Parquet writes with Arrow IPC journal files — daemons append each poll to a local journal, rotating to a new file every 15 minutes (configurable), using hive-style directory structure
 **Depends on**: Phase 9 (v0.1 complete)
-**Research**: Unlikely (pyarrow IPC stream writer is established; systemd patterns already in codebase)
 **Context**: [10-CONTEXT.md](phases/10-journal-writer/10-CONTEXT.md)
-**Plans**: TBD
 
 Plans:
-- [ ] 10-01: TBD (run /gsd:plan-phase 10 to break down)
+- [x] 10-01: JournalWriter TDD implementation (Arrow IPC stream + rotation)
+- [x] 10-02: TrainPositionDaemon refactor (ParquetWriter → JournalWriter)
+- [x] 10-03: WeatherDaemon refactor (ParquetWriter → JournalWriter)
 
 #### Phase 11: Data Compaction
 
@@ -85,6 +85,6 @@ Plans:
 | 7. Resilience & Recovery | v0.1 | 3/3 | Complete | 2026-01-26 |
 | 8. Monitoring & Metrics | v0.1 | 3/3 | Complete | 2026-01-28 |
 | 9. Alerting & Deployment | v0.1 | 4/4 | Complete | 2026-02-16 |
-| 10. IPC Journal Writer | v0.2 | 0/? | Not started | - |
+| 10. IPC Journal Writer | v0.2 | 3/3 | Complete | 2026-02-17 |
 | 11. Data Compaction | v0.2 | 0/? | Not started | - |
 | 12. Schema Enforcement | v0.2 | 0/? | Not started | - |
