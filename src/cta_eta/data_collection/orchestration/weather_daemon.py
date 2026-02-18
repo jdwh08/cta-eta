@@ -47,7 +47,7 @@ from cta_eta.data_collection.orchestration.daemon_utils import (
 from cta_eta.data_collection.orchestration.weather_grid_discovery import (
     OpenMeteoWeatherGridDiscoverer,
 )
-from cta_eta.data_collection.storage_cache.storage import create_parquet_writer
+from cta_eta.data_collection.storage_cache.journal_writer import create_journal_writer
 from cta_eta.data_collection.storage_cache.weather_grid_cache import (
     get_nws_grid_cache,
     get_open_meteo_grid_cache,
@@ -57,7 +57,7 @@ if TYPE_CHECKING:
     import logging
 
     from cta_eta.data_collection.storage_cache.cache import CachedData
-    from cta_eta.data_collection.storage_cache.storage import ParquetWriter
+    from cta_eta.data_collection.storage_cache.journal_writer import JournalWriter
     from cta_eta.data_collection.storage_cache.weather_grid_cache import (
         NWSGridCache,
         OpenMeteoGridCache,
@@ -91,7 +91,7 @@ class WeatherDaemon(AsyncBaseDaemon):
         stations_cache: CachedData instance for CTA stations
         nws_grid_cache: NWSGridCache for station → NWS grid mappings
         om_grid_cache: OpenMeteoGridCache for station → Open-Meteo grid mappings
-        storage: ParquetWriter for storing unified weather records
+        storage: JournalWriter for storing unified weather records
         weather_interval: Collection interval in seconds (default: 900 = 15 minutes)
         last_collection_time: Timestamp of last successful collection cycle
         records_stored_last_cycle: Number of records stored in last cycle
@@ -101,7 +101,7 @@ class WeatherDaemon(AsyncBaseDaemon):
     stations_cache: CachedData[list[dict[str, Any]]]
     nws_grid_cache: NWSGridCache
     om_grid_cache: OpenMeteoGridCache
-    storage: ParquetWriter
+    storage: JournalWriter
     weather_interval: int
     last_collection_time: float
     records_stored_last_cycle: int
@@ -137,8 +137,8 @@ class WeatherDaemon(AsyncBaseDaemon):
         self.nws_grid_cache = get_nws_grid_cache(config)
         self.om_grid_cache = get_open_meteo_grid_cache(config)
 
-        # Initialize storage backend for Parquet writes
-        self.storage = create_parquet_writer(config)
+        # Initialize storage backend for IPC journal writes
+        self.storage = create_journal_writer(config)
 
         # Extract weather collection interval from config (convert minutes to seconds)
         collection_config = config.get("collection", {})
@@ -802,6 +802,23 @@ class WeatherDaemon(AsyncBaseDaemon):
                 }
             },
         )
+
+    @override
+    def _pre_shutdown_hook(self) -> None:
+        """Close the journal writer on daemon shutdown to flush the IPC EOS marker."""
+        try:
+            self.storage.close()
+            self.logger.debug("Closed journal writer during shutdown")
+        except Exception as e:  # noqa: BLE001
+            self.logger.warning(
+                f"Failed to close journal writer: {e}",
+                extra={
+                    "extra_fields": {
+                        "error_type": type(e).__name__,
+                        "error_message": str(e),
+                    }
+                },
+            )
 
 
 if __name__ == "__main__":
