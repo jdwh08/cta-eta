@@ -170,6 +170,21 @@ smtp_from = "alerts@example.com"  # Sender (must be verified in Mailjet)
 smtp_to = ["oncall@example.com"]  # Recipients
 
 
+[compaction]
+# Cloud storage URL prefix for compacted Parquet upload
+# Examples: s3://my-bucket/raw, gs://my-bucket/raw, /local/path/raw
+cloud_url = "s3://CHANGEME/raw"
+
+# Local directory where compacted Parquet and JSON sidecar files are staged
+compaction_dir = "data/compaction"
+
+# Local directory where source IPC journals are moved after verified upload
+archive_path = "data/archive"
+
+# Number of days to retain archived journals before deletion (default: 7)
+journal_retention_days = 7
+
+
 [monitoring]
 # HTTP monitoring server for daemon health and diagnostics
 enabled = true
