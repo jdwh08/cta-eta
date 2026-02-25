@@ -51,8 +51,8 @@ def discover_journals(
 def read_ipc_with_repair(path: Path) -> tuple[list[pa.RecordBatch], bool]:
     """Read an IPC stream file, salvaging valid batches on corruption.
 
-    Reads batches one at a time, catching ArrowInvalid to recover all batches
-    written before any corruption. Handles three cases cleanly:
+    Reads batches one at a time, catching ArrowInvalid/OSError to recover all
+    batches written before any corruption. Handles five cases:
 
     1. Normal closed file (EOS marker present): returns (all batches, True)
     2. Crash file (missing close(), no EOS): returns (all batches, True)
