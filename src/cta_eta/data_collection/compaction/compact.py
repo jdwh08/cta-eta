@@ -192,8 +192,32 @@ def _compact_one_daemon(
     upload_bytes = os.path.getsize(local_parquet)
 
     # Step 5: Upload to cloud storage (with retry and row count verification)
+    # If upload fails after all retries: return failed metrics WITHOUT archiving
+    # journals. Journals stay in place for the next run (two-phase safety invariant).
     cloud_url = f"{cloud_url_base}/{daemon_name}/date={date_str}/data.parquet"
-    upload_parquet(merged, cloud_url, reprocess=reprocess)
+    try:
+        upload_parquet(merged, cloud_url, reprocess=reprocess)
+    except Exception as upload_exc:  # noqa: BLE001
+        _log.error(
+            "Upload failed for %s on %s after all retries: %s",
+            daemon_name,
+            date_str,
+            upload_exc,
+        )
+        failed_metrics = CompactionMetrics(
+            date=date_str,
+            daemon=daemon_name,
+            status="failed",
+            journals_found=journals_found,
+            journals_repaired=journals_repaired,
+            journals_skipped=journals_skipped,
+            rows_written=rows_written,
+            upload_bytes=upload_bytes,
+            elapsed_seconds=time.monotonic() - t0,
+            error=str(upload_exc),
+        )
+        send_compaction_alert(failed_metrics, config)
+        return failed_metrics
 
     # Step 6: Archive journals ONLY after verified upload
     archive_journals(journal_files, archive_base / daemon_name, target_date)
