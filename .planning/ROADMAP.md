@@ -56,10 +56,12 @@ Plans:
 **Goal**: Daily batch job (3am Chicago time) that merges yesterday's IPC journal files into a single validated, Snappy-compressed Parquet file per daemon per day, then uploads to cloud storage as immutable raw data
 **Depends on**: Phase 10
 **Research**: Likely (pyarrow IPC → Parquet conversion patterns, cloud upload integration)
-**Plans**: TBD
+**Plans**: 3 plans
 
 Plans:
-- [ ] 11-01: TBD (run /gsd:plan-phase 11 to break down)
+- [ ] 11-01-PLAN.md — TDD implementation of IPC reader (schemas.py + ipc_reader.py: file discovery, partial repair, schema validation)
+- [ ] 11-02-PLAN.md — Compaction pipeline (uploader.py + archiver.py + compact.py CLI + config.toml [compaction] section)
+- [ ] 11-03-PLAN.md — Operational integration (systemd service + timer, cta-monitor compaction subcommand, cta-compact script)
 
 #### Phase 12: Schema Enforcement
 
@@ -86,5 +88,5 @@ Plans:
 | 8. Monitoring & Metrics | v0.1 | 3/3 | Complete | 2026-01-28 |
 | 9. Alerting & Deployment | v0.1 | 4/4 | Complete | 2026-02-16 |
 | 10. IPC Journal Writer | v0.2 | 3/3 | Complete | 2026-02-17 |
-| 11. Data Compaction | v0.2 | 0/? | Not started | - |
+| 11. Data Compaction | v0.2 | 0/3 | Not started | - |
 | 12. Schema Enforcement | v0.2 | 0/? | Not started | - |
