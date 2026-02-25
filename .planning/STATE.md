@@ -10,11 +10,11 @@ See: .planning/PROJECT.md (updated 2026-02-16)
 ## Current Position
 
 Phase: 11 of 12 (Data Validation & Cleaning)
-Plan: 1 of 3 in current phase
+Plan: 2 of 3 in current phase
 Status: In progress
-Last activity: 2026-02-25 — Completed Phase 11 Plan 01 (IPC reader: schemas + discovery + repair)
+Last activity: 2026-02-25 — Completed Phase 11 Plan 02 (compaction pipeline: uploader + archiver + compact.py CLI)
 
-Progress: ████░░░░░░ 38%
+Progress: █████░░░░░ 45%
 
 ## Accumulated Context
 
@@ -26,6 +26,10 @@ Decisions are logged in PROJECT.md Key Decisions table (all decisions with outco
 - Catch OSError in addition to ArrowInvalid in read_ipc_with_repair: pyarrow 22.0.0 raises OSError for body read failures during truncation
 - Crash files (no EOS marker) return was_clean=True: StopIteration from missing EOS is clean, not corruption
 - poll_timestamp stored as pa.timestamp('us', tz='UTC') matching pyarrow inference from Python datetime
+
+**11-02 Compaction Pipeline decisions:**
+- _compact_one_daemon catches upload exceptions and returns failed metrics rather than propagating — enables _write_sidecar finally block to always run and prevents journal archival on failure
+- send_compaction_alert called from _compact_one_daemon on upload failure (not just from main) — ensures alert fires precisely when upload fails, not on unrelated exceptions
 
 ### Deferred Issues
 
@@ -48,5 +52,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-25
-Stopped at: Completed 11-01-PLAN.md (IPC reader: schemas.py + ipc_reader.py)
+Stopped at: Completed 11-02-PLAN.md (compaction pipeline: uploader.py + archiver.py + compact.py)
 Resume file: None
