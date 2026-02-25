@@ -101,21 +101,37 @@ def _write_crash_ipc(path: Path, n_batches: int = 2, rows_per_batch: int = 3) ->
 def _write_corrupt_trailing_ipc(
     path: Path, n_batches: int = 2, rows_per_batch: int = 3
 ) -> int:
-    """Write an IPC file with corrupt trailing bytes. Returns valid row count."""
+    """Write an IPC file truncated mid-stream. Returns valid row count before truncation.
+
+    Simulates a file where the first n_batches-1 batches are complete but the
+    last batch is truncated (file cut off in the middle of a batch). pyarrow
+    raises ArrowInvalid when it tries to read the incomplete batch.
+    """
     schema = _make_schema()
+
+    # First: write the complete file
     sink = pa.OSFile(str(path), "wb")
     writer = ipc.new_stream(sink, schema)
-    total_rows = 0
     for _ in range(n_batches):
         batch = _make_batch(rows_per_batch)
         writer.write_batch(batch)
-        total_rows += rows_per_batch
     writer.close()
     sink.close()
-    # Append corrupt bytes after the EOS marker
-    with open(path, "ab") as f:
-        f.write(b"\xff\xfe\x00corrupt\x00bytes\x00here")
-    return total_rows
+
+    # Read the complete file bytes and find where the last batch starts
+    # by truncating partway through the file (past the first batch but
+    # before the end, so pyarrow encounters an incomplete batch)
+    file_data = path.read_bytes()
+    file_size = len(file_data)
+
+    # Truncate to 80% of the file — past the first batch, mid-second batch.
+    # At 80%, pyarrow reads the first complete batch then hits ArrowInvalid
+    # when attempting to read the incomplete second batch.
+    truncated_size = int(file_size * 0.8)
+    path.write_bytes(file_data[:truncated_size])
+
+    # Only the first batch is guaranteed to be salvaged
+    return rows_per_batch * (n_batches - 1)
 
 
 def _write_corrupt_header_ipc(path: Path) -> None:
