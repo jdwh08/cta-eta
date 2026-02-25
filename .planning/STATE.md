@@ -10,11 +10,11 @@ See: .planning/PROJECT.md (updated 2026-02-16)
 ## Current Position
 
 Phase: 11 of 12 (Data Validation & Cleaning)
-Plan: 2 of 3 in current phase
-Status: In progress
-Last activity: 2026-02-25 — Completed Phase 11 Plan 02 (compaction pipeline: uploader + archiver + compact.py CLI)
+Plan: 3 of 3 in current phase (phase complete)
+Status: Phase 11 complete
+Last activity: 2026-02-25 — Completed Phase 11 Plan 03 (operational integration: systemd service + timer + cta-monitor compaction subcommand)
 
-Progress: █████░░░░░ 45%
+Progress: ██████░░░░ 50%
 
 ## Accumulated Context
 
@@ -30,6 +30,11 @@ Decisions are logged in PROJECT.md Key Decisions table (all decisions with outco
 **11-02 Compaction Pipeline decisions:**
 - _compact_one_daemon catches upload exceptions and returns failed metrics rather than propagating — enables _write_sidecar finally block to always run and prevents journal archival on failure
 - send_compaction_alert called from _compact_one_daemon on upload failure (not just from main) — ensures alert fires precisely when upload fails, not on unrelated exceptions
+
+**11-03 Operational Integration decisions:**
+- No [Install] section in cta-compaction.service — timer unit owns activation, not the service itself
+- OnCalendar=America/Chicago *-*-* 03:00:00 uses timezone prefix for DST safety (systemd >= 233)
+- Exit code 1 if any run in displayed window has status=failed; partial (empty journals) does not trigger failure exit
 
 ### Deferred Issues
 
@@ -52,5 +57,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-25
-Stopped at: Completed 11-02-PLAN.md (compaction pipeline: uploader.py + archiver.py + compact.py)
+Stopped at: Completed 11-03-PLAN.md (operational integration: cta-compaction.service + cta-compaction.timer + cta-monitor compaction subcommand)
 Resume file: None
