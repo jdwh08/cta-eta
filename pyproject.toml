@@ -92,6 +92,7 @@ dev = [
 cta-monitor = "cta_eta.monitoring.cli:main"
 cta-health = "cta_eta.monitoring.health_check:main"
 cta-alerts = "cta_eta.monitoring.run_alerts:main"
+cta-compact = "cta_eta.data_collection.compaction.compact:main"
 
 # ---- Build system ----
 
