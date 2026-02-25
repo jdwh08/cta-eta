@@ -9,18 +9,23 @@ See: .planning/PROJECT.md (updated 2026-02-16)
 
 ## Current Position
 
-Phase: 10 of 12 (IPC Journal Writer)
-Plan: 3 of 3 in current phase
-Status: Phase complete
-Last activity: 2026-02-17 — Completed all Phase 10 plans (10-01, 10-02, 10-03)
+Phase: 11 of 12 (Data Validation & Cleaning)
+Plan: 1 of 3 in current phase
+Status: In progress
+Last activity: 2026-02-25 — Completed Phase 11 Plan 01 (IPC reader: schemas + discovery + repair)
 
-Progress: ███░░░░░░░ 33%
+Progress: ████░░░░░░ 38%
 
 ## Accumulated Context
 
 ### Decisions
 
 Decisions are logged in PROJECT.md Key Decisions table (all decisions with outcomes).
+
+**11-01 IPC Reader decisions:**
+- Catch OSError in addition to ArrowInvalid in read_ipc_with_repair: pyarrow 22.0.0 raises OSError for body read failures during truncation
+- Crash files (no EOS marker) return was_clean=True: StopIteration from missing EOS is clean, not corruption
+- poll_timestamp stored as pa.timestamp('us', tz='UTC') matching pyarrow inference from Python datetime
 
 ### Deferred Issues
 
@@ -42,6 +47,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-02-17
-Stopped at: Phase 10 complete — all 3 plans executed (JournalWriter + daemon refactors)
+Last session: 2026-02-25
+Stopped at: Completed 11-01-PLAN.md (IPC reader: schemas.py + ipc_reader.py)
 Resume file: None

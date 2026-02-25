@@ -88,5 +88,5 @@ Plans:
 | 8. Monitoring & Metrics | v0.1 | 3/3 | Complete | 2026-01-28 |
 | 9. Alerting & Deployment | v0.1 | 4/4 | Complete | 2026-02-16 |
 | 10. IPC Journal Writer | v0.2 | 3/3 | Complete | 2026-02-17 |
-| 11. Data Compaction | v0.2 | 0/3 | Not started | - |
+| 11. Data Compaction | 1/3 | In Progress|  | - |
 | 12. Schema Enforcement | v0.2 | 0/? | Not started | - |
