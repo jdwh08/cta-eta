@@ -69,10 +69,12 @@ Plans:
 **Depends on**: Phase 11
 **Research**: Likely (pyarrow schema comparison patterns; best approach for schema registry/drift detection unclear)
 **Research topics**: pyarrow schema validation APIs, schema registry patterns for file-based storage, integration with existing cta-monitor CLI
-**Plans**: TBD
+**Plans**: 3 plans
 
 Plans:
-- [ ] 12-01: TBD (run /gsd:plan-phase 12 to break down)
+- [ ] 12-01-PLAN.md — TDD implementation of schema_registry.py (DriftResult, classify_drift, JSON+IPC registry format, bootstrap/load/save)
+- [ ] 12-02-PLAN.md — Compaction pipeline integration (per-journal drift checking, drift alerting, Parquet file-level drift annotation)
+- [ ] 12-03-PLAN.md — Operator surface (cta-monitor Schema column, cta-compact schema update subcommand with git auto-commit)
 
 ## Progress
 
@@ -89,4 +91,4 @@ Plans:
 | 9. Alerting & Deployment | v0.1 | 4/4 | Complete | 2026-02-16 |
 | 10. IPC Journal Writer | v0.2 | 3/3 | Complete | 2026-02-17 |
 | 11. Data Compaction | 3/3 | Complete    | 2026-02-25 | - |
-| 12. Schema Enforcement | v0.2 | 0/? | Not started | - |
+| 12. Schema Enforcement | v0.2 | 0/3 | Not started | - |
