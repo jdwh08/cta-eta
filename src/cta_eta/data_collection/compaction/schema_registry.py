@@ -260,7 +260,7 @@ def load_registry(path: Path) -> pa.Schema | None:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         return registry_dict_to_schema(data)
-    except (json.JSONDecodeError, KeyError, Exception) as exc:
+    except Exception as exc:
         raise ValueError(
             f"Failed to load schema registry from {path}: {exc}"
         ) from exc
