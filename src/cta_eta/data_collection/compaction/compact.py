@@ -17,7 +17,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import subprocess
 import time
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -50,7 +49,7 @@ from cta_eta.monitoring.run_alerts import _build_email_config
 if TYPE_CHECKING:
     from cta_eta.data_collection.compaction.schema_registry import DriftResult
 
-_log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 # Maps dataset name to its expected schema
 _DATASET_SCHEMAS: dict[str, pa.Schema] = {
@@ -59,8 +58,8 @@ _DATASET_SCHEMAS: dict[str, pa.Schema] = {
 }
 
 # Registry files live in src/cta_eta/schemas/
-# parents[0]=compaction/, parents[1]=data_collection/, parents[2]=cta_eta/
-_REGISTRY_DIR = Path(__file__).resolve().parents[2] / "schemas"
+# parents[0]=compaction/, parents[1]=data_collection/
+_REGISTRY_DIR = Path(__file__).resolve().parents[1] / "schemas"
 
 
 @dataclass
@@ -85,7 +84,7 @@ def send_drift_alert(
     date_str: str,
     config: dict[str, Any],
 ) -> None:
-    """Send an email alert for breaking schema drift via Phase 9 alerting.
+    """Send an email alert for breaking schema drift via email alerting.
 
     Uses config["alerting"] section. If the section is absent or not a dict,
     logs a warning and returns without raising (graceful degradation — alerting
@@ -100,7 +99,7 @@ def send_drift_alert(
     """
     alerting_cfg = config.get("alerting", {})
     if not alerting_cfg or not isinstance(alerting_cfg, dict):
-        _log.warning(
+        logger.warning(
             "No [alerting] section in config — drift alert skipped "
             "(daemon=%s, date=%s)",
             daemon_name,
@@ -132,7 +131,7 @@ def send_drift_alert(
 
     sent = send_email_alert(email_config, subject, body)
     if not sent:
-        _log.warning(
+        logger.warning(
             "Failed to send drift alert email for %s %s",
             daemon_name,
             date_str,
@@ -192,7 +191,7 @@ def _compact_one_daemon(
     registry_schema = load_registry(registry_path)  # None if no registry yet
 
     if not journal_files:
-        _log.warning(
+        logger.warning(
             "No journal files found for %s on %s — daemon may have been down",
             daemon_name,
             date_str,
@@ -209,79 +208,20 @@ def _compact_one_daemon(
             elapsed_seconds=time.monotonic() - t0,
         )
 
-    # Step 2: Read and repair each journal
-    tables: list[pa.Table] = []
-    journals_repaired = 0
-    journals_skipped = 0
-
-    # Drift tracking across journals in this day's run
-    drift_alert_sent = False
-    day_has_drift = False
-    day_drift_result: DriftResult | None = None
-
-    # Use registry schema if available; fall back to hard-coded expected schema
+    # Step 2: Read, repair, and validate journals
     check_schema = registry_schema if registry_schema is not None else expected_schema
-
-    for journal_path in journal_files:
-        batches, was_clean = read_ipc_with_repair(journal_path)
-
-        if not batches:
-            journals_skipped += 1
-            _log.warning("Skipping corrupt journal (0 batches): %s", journal_path)
-            continue
-
-        if not was_clean:
-            journals_repaired += 1
-            _log.warning(
-                "Repaired partial journal (%d batches salvaged): %s",
-                len(batches),
-                journal_path,
-            )
-
-        table = pa.Table.from_batches(batches)
-
-        # Step 3: Drift-aware schema validation (replaces strict equality skip)
-        if check_schema is not None:
-            drift = classify_drift(check_schema, table.schema)
-            if drift.drift_type == "breaking":
-                if not drift_alert_sent:  # only alert on first breaking journal
-                    send_drift_alert(drift, daemon_name, date_str, config)
-                    drift_alert_sent = True
-                    _log.warning(
-                        "Breaking schema drift in %s (first occurrence for %s %s)",
-                        journal_path.name,
-                        daemon_name,
-                        date_str,
-                    )
-                day_has_drift = True
-                day_drift_result = drift  # keep last drift for annotation
-                # Cast breaking columns to registry/expected type before concat
-                for breaking_field in drift.breaking_fields:
-                    if breaking_field.name in table.schema.names:
-                        col_idx = table.schema.get_field_index(breaking_field.name)
-                        registry_field = check_schema.field(breaking_field.name)
-                        try:
-                            casted_col = table.column(col_idx).cast(registry_field.type)
-                            table = table.set_column(col_idx, breaking_field.name, casted_col)
-                        except pa.ArrowInvalid:
-                            _log.warning(
-                                "Cannot cast %s from %s to %s — keeping as-is",
-                                breaking_field.name,
-                                breaking_field.new_type,
-                                breaking_field.old_type,
-                            )
-            elif drift.drift_type == "additive":
-                _log.info(
-                    "Additive schema drift in %s (new fields: %s)",
-                    journal_path.name,
-                    [f.name for f in drift.added_fields],
-                )
-            # In all drift cases: still append table (continue-on-drift policy)
-
-        tables.append(table)
+    (
+        tables,
+        journals_repaired,
+        journals_skipped,
+        day_has_drift,
+        day_drift_result,
+    ) = _read_and_validate_journals(
+        journal_files, daemon_name, date_str, config, check_schema
+    )
 
     if not tables:
-        _log.warning(
+        logger.warning(
             "All journals were corrupt/skipped for %s on %s",
             daemon_name,
             date_str,
@@ -298,42 +238,15 @@ def _compact_one_daemon(
             elapsed_seconds=time.monotonic() - t0,
         )
 
-    # Step 4: Concatenate and write local staging Parquet
-    # promote_options="default" fills new fields with null for additive drift tables
-    merged = pa.concat_tables(tables, promote_options="default")
-    rows_written = len(merged)
-
-    local_staging_dir = compaction_dir_base / daemon_name / f"date={date_str}"
-    local_staging_dir.mkdir(parents=True, exist_ok=True)
-    local_parquet = local_staging_dir / "data.parquet"
-    pq.write_table(merged, local_parquet, compression="snappy")
-    upload_bytes = local_parquet.stat().st_size
-
-    # Annotate Parquet with drift metadata if any breaking drift occurred
-    if day_has_drift and day_drift_result is not None:
-        existing_meta = merged.schema.metadata or {}
-        breaking = [
-            {"name": f.name, "old_type": f.old_type, "new_type": f.new_type}
-            for f in day_drift_result.breaking_fields
-        ]
-        removed = list(day_drift_result.removed_fields)
-        nullability = [
-            {"name": f.name, "old_nullable": f.old_nullable, "new_nullable": f.new_nullable}
-            for f in day_drift_result.nullability_changes
-        ]
-        drift_summary = json.dumps({
-            "breaking_fields": breaking,
-            "removed_fields": removed,
-            "nullability_changes": nullability,
-        })
-        merged = merged.replace_schema_metadata({
-            **existing_meta,
-            b"schema_drift": b"true",
-            b"drift_summary": drift_summary.encode(),
-        })
-        # Rewrite local Parquet with drift annotation
-        pq.write_table(merged, local_parquet, compression="snappy")
-        upload_bytes = local_parquet.stat().st_size  # update after rewrite
+    # Step 4: Concatenate and write local staging Parquet (with drift metadata)
+    merged, rows_written, upload_bytes = _write_merged_parquet_with_drift(
+        tables,
+        compaction_dir_base,
+        daemon_name,
+        date_str,
+        day_has_drift,
+        day_drift_result,
+    )
 
     # Step 5: Upload to cloud storage (with retry and row count verification)
     # If upload fails after all retries: return failed metrics WITHOUT archiving
@@ -341,12 +254,11 @@ def _compact_one_daemon(
     cloud_url = f"{cloud_url_base}/{daemon_name}/date={date_str}/data.parquet"
     try:
         upload_parquet(merged, cloud_url, reprocess=reprocess)
-    except Exception as upload_exc:  # noqa: BLE001
-        _log.error(
-            "Upload failed for %s on %s after all retries: %s",
+    except Exception as upload_exc:
+        logger.exception(
+            "Upload failed for %s on %s after all retries",
             daemon_name,
             date_str,
-            upload_exc,
         )
         failed_metrics = CompactionMetrics(
             date=date_str,
@@ -372,7 +284,9 @@ def _compact_one_daemon(
     # Step 7: Prune old archives
     pruned = prune_archive(archive_base / daemon_name, retention_days)
     if pruned:
-        _log.info("Pruned %d old archive directories for %s", len(pruned), daemon_name)
+        logger.info(
+            "Pruned %d old archive directories for %s", len(pruned), daemon_name
+        )
 
     return CompactionMetrics(
         date=date_str,
@@ -385,6 +299,142 @@ def _compact_one_daemon(
         upload_bytes=upload_bytes,
         elapsed_seconds=time.monotonic() - t0,
     )
+
+
+def _read_and_validate_journals(  # noqa: C901
+    journal_files: list[Path],
+    daemon_name: str,
+    date_str: str,
+    config: dict[str, Any],
+    check_schema: pa.Schema | None,
+) -> tuple[list[pa.Table], int, int, bool, DriftResult | None]:
+    """Read IPC journals, repair, and perform drift-aware schema validation."""
+    tables: list[pa.Table] = []
+    journals_repaired = 0
+    journals_skipped = 0
+
+    drift_alert_sent = False
+    day_has_drift = False
+    day_drift_result: DriftResult | None = None
+
+    for journal_path in journal_files:
+        batches, was_clean = read_ipc_with_repair(journal_path)
+
+        if not batches:
+            journals_skipped += 1
+            logger.warning("Skipping corrupt journal (0 batches): %s", journal_path)
+            continue
+
+        if not was_clean:
+            journals_repaired += 1
+            logger.warning(
+                "Repaired partial journal (%d batches salvaged): %s",
+                len(batches),
+                journal_path,
+            )
+
+        table = pa.Table.from_batches(batches)
+
+        if check_schema is None:
+            tables.append(table)
+            continue
+
+        drift = classify_drift(check_schema, table.schema)
+        if drift.drift_type == "breaking":
+            if not drift_alert_sent:  # only alert on first breaking journal
+                send_drift_alert(drift, daemon_name, date_str, config)
+                drift_alert_sent = True
+                logger.warning(
+                    "Breaking schema drift in %s (first occurrence for %s %s)",
+                    journal_path.name,
+                    daemon_name,
+                    date_str,
+                )
+            day_has_drift = True
+            day_drift_result = drift  # keep last drift for annotation
+            # Cast breaking columns to registry/expected type before concat
+            for breaking_field in drift.breaking_fields:
+                if breaking_field.name not in table.schema.names:
+                    continue
+
+                col_idx = table.schema.get_field_index(breaking_field.name)
+                registry_field = check_schema.field(breaking_field.name)
+                try:
+                    casted_col = table.column(col_idx).cast(registry_field.type)
+                    table = table.set_column(col_idx, breaking_field.name, casted_col)
+                except pa.ArrowInvalid:
+                    logger.warning(
+                        "Cannot cast %s from %s to %s — keeping as-is",
+                        breaking_field.name,
+                        breaking_field.new_type,
+                        breaking_field.old_type,
+                    )
+        elif drift.drift_type == "additive":
+            logger.info(
+                "Additive schema drift in %s (new fields: %s)",
+                journal_path.name,
+                [f.name for f in drift.added_fields],
+            )
+        # In all drift cases: still append table (continue-on-drift policy)
+        tables.append(table)
+
+    return tables, journals_repaired, journals_skipped, day_has_drift, day_drift_result
+
+
+def _write_merged_parquet_with_drift(  # noqa: PLR0913
+    tables: list[pa.Table],
+    compaction_dir_base: Path,
+    daemon_name: str,
+    date_str: str,
+    day_has_drift: bool,
+    day_drift_result: DriftResult | None,
+) -> tuple[pa.Table, int, int]:
+    """Concatenate tables, write local Parquet, and annotate drift metadata."""
+    # promote_options="default" fills new fields with null for additive drift tables
+    merged = pa.concat_tables(tables, promote_options="default")
+    rows_written = len(merged)
+
+    local_staging_dir = compaction_dir_base / daemon_name / f"date={date_str}"
+    local_staging_dir.mkdir(parents=True, exist_ok=True)
+    local_parquet = local_staging_dir / "data.parquet"
+    pq.write_table(merged, local_parquet, compression="snappy")
+    upload_bytes = local_parquet.stat().st_size
+
+    # Annotate Parquet with drift metadata if any breaking drift occurred
+    if day_has_drift and day_drift_result is not None:
+        existing_meta = merged.schema.metadata or {}
+        breaking = [
+            {"name": f.name, "old_type": f.old_type, "new_type": f.new_type}
+            for f in day_drift_result.breaking_fields
+        ]
+        removed = list(day_drift_result.removed_fields)
+        nullability = [
+            {
+                "name": f.name,
+                "old_nullable": f.old_nullable,
+                "new_nullable": f.new_nullable,
+            }
+            for f in day_drift_result.nullability_changes
+        ]
+        drift_summary = json.dumps(
+            {
+                "breaking_fields": breaking,
+                "removed_fields": removed,
+                "nullability_changes": nullability,
+            }
+        )
+        merged = merged.replace_schema_metadata(
+            {
+                **existing_meta,
+                b"schema_drift": b"true",
+                b"drift_summary": drift_summary.encode(),
+            }
+        )
+        # Rewrite local Parquet with drift annotation
+        pq.write_table(merged, local_parquet, compression="snappy")
+        upload_bytes = local_parquet.stat().st_size  # update after rewrite
+
+    return merged, rows_written, upload_bytes
 
 
 def _write_sidecar(metrics: CompactionMetrics, compaction_dir: Path) -> None:
@@ -400,9 +450,9 @@ def _write_sidecar(metrics: CompactionMetrics, compaction_dir: Path) -> None:
     sidecar_path = compaction_dir / f"compaction-{metrics.date}-{metrics.daemon}.json"
     try:
         sidecar_path.write_text(json.dumps(asdict(metrics), indent=2))
-        _log.debug("Wrote compaction sidecar to %s", sidecar_path)
+        logger.debug("Wrote compaction sidecar to %s", sidecar_path)
     except OSError as exc:
-        _log.warning("Failed to write compaction sidecar %s: %s", sidecar_path, exc)
+        logger.warning("Failed to write compaction sidecar %s: %s", sidecar_path, exc)
 
 
 def send_compaction_alert(metrics: CompactionMetrics, config: dict[str, Any]) -> None:
@@ -419,7 +469,7 @@ def send_compaction_alert(metrics: CompactionMetrics, config: dict[str, Any]) ->
     """
     alerting_cfg = config.get("alerting", {})
     if not alerting_cfg or not isinstance(alerting_cfg, dict):
-        _log.warning(
+        logger.warning(
             "No [alerting] section in config — compaction failure alert skipped "
             "(daemon=%s, date=%s)",
             metrics.daemon,
@@ -438,7 +488,7 @@ def send_compaction_alert(metrics: CompactionMetrics, config: dict[str, Any]) ->
     )
     sent = send_email_alert(email_config, subject, body)
     if not sent:
-        _log.warning(
+        logger.warning(
             "Failed to send compaction alert email for %s %s",
             metrics.daemon,
             metrics.date,
@@ -459,7 +509,9 @@ def cmd_schema_update(args: argparse.Namespace) -> None:
     compaction_cfg = config.get("compaction", {})
     compaction_dir = Path(str(compaction_cfg.get("compaction_dir", "data/compaction")))
 
-    daemon_names = ["train_positions", "weather"] if args.daemon == "all" else [args.daemon]
+    daemon_names = (
+        ["train_positions", "weather"] if args.daemon == "all" else [args.daemon]
+    )
 
     for daemon_name in daemon_names:
         # Find most recent local Parquet for this daemon
@@ -486,21 +538,6 @@ def cmd_schema_update(args: argparse.Namespace) -> None:
         registry_path = _REGISTRY_DIR / f"{daemon_name}.json"
         save_registry(registry_path, schema, daemon_name)
         print(f"Registry updated: {registry_path}")  # noqa: T201
-
-        # Attempt git commit
-        try:
-            subprocess.run(  # noqa: S603
-                ["git", "add", str(registry_path)],  # noqa: S607
-                check=True, capture_output=True,
-            )
-            subprocess.run(  # noqa: S603
-                ["git", "commit", "-m", f"chore: update schema registry for {daemon_name}"],  # noqa: S607
-                check=True, capture_output=True,
-            )
-            print(f"Registry committed to git: {registry_path}")  # noqa: T201
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            print("Registry updated. Commit manually:")  # noqa: T201
-            print(f"  git add {registry_path} && git commit -m 'chore: update schema registry for {daemon_name}'")  # noqa: T201
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -575,9 +612,9 @@ def main(argv: list[str] | None = None) -> None:
     is_reprocess = reprocess_date is not None
 
     if is_reprocess:
-        _log.info("Reprocessing date: %s", target_date.isoformat())
+        logger.info("Reprocessing date: %s", target_date.isoformat())
     else:
-        _log.info("Compacting date: %s", target_date.isoformat())
+        logger.info("Compacting date: %s", target_date.isoformat())
 
     datasets = ["train_positions", "weather"]
     compaction_dir = Path(
@@ -593,7 +630,7 @@ def main(argv: list[str] | None = None) -> None:
                 daemon_name, target_date, config, reprocess=is_reprocess
             )
             metrics.elapsed_seconds = time.monotonic() - t0
-            _log.info(
+            logger.info(
                 "Compaction %s for %s: status=%s rows=%d elapsed=%.1fs",
                 daemon_name,
                 target_date.isoformat(),
@@ -601,13 +638,11 @@ def main(argv: list[str] | None = None) -> None:
                 metrics.rows_written,
                 metrics.elapsed_seconds,
             )
-        except Exception as exc:  # noqa: BLE001
-            _log.error(
-                "Compaction failed for %s on %s: %s",
+        except Exception as exc:
+            logger.exception(
+                "Compaction failed for %s on %s",
                 daemon_name,
                 target_date.isoformat(),
-                exc,
-                exc_info=True,
             )
             metrics = CompactionMetrics(
                 date=target_date.isoformat(),

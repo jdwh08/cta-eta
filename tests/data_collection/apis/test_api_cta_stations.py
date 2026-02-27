@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import tempfile
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -193,42 +194,43 @@ def test_get_stations_cache_wires_fetch_fn_without_network(
 ) -> None:
     """Test that get_stations_cache builds a cache wired to fetch and normalize stations."""
     # Arrange
-    cfg: dict[str, dict[str, str | int | float | bool]] = {
-        "cache": {"directory": "/tmp/does-not-matter", "stations_ttl": 3600},
-        "secrets": {"chidata_app_token": "tok", "chidata_app_secret": "sec"},
-    }
-
-    create_cached_data = mocker.patch.object(api_cta_stations, "create_cached_data")
-    create_cached_data.return_value = mocker.sentinel.cached
-
-    raw = [{"station_id": "1", "the_geom": {"coordinates": [-87.0, 41.0]}}]
-    normalized = [
-        {
-            "id": "1",
-            "name": "",
-            "address": "",
-            "lines": "",
-            "latitude": 41.0,
-            "longitude": -87.0,
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cfg: dict[str, dict[str, str | int | float | bool]] = {
+            "cache": {"directory": tmpdir, "stations_ttl": 3600},
+            "secrets": {"chidata_app_token": "tok", "chidata_app_secret": "sec"},
         }
-    ]
-    get_cta_stations = mocker.patch.object(
-        api_cta_stations, "get_cta_stations", return_value=raw
-    )
-    normalize_cta_stations = mocker.patch.object(
-        api_cta_stations, "normalize_cta_stations", return_value=normalized
-    )
 
-    # Patch httpx.Client used inside the closure so no real network happens.
-    client_cm = mocker.Mock()
-    client_cm.__enter__ = mocker.Mock(return_value=mocker.Mock(spec=httpx.Client))
-    client_cm.__exit__ = mocker.Mock(return_value=None)
-    httpx_client_ctor = mocker.patch.object(
-        api_cta_stations.httpx, "Client", return_value=client_cm
-    )
+        create_cached_data = mocker.patch.object(api_cta_stations, "create_cached_data")
+        create_cached_data.return_value = mocker.sentinel.cached
 
-    # Act
-    cache = api_cta_stations.get_stations_cache(cfg)
+        raw = [{"station_id": "1", "the_geom": {"coordinates": [-87.0, 41.0]}}]
+        normalized = [
+            {
+                "id": "1",
+                "name": "",
+                "address": "",
+                "lines": "",
+                "latitude": 41.0,
+                "longitude": -87.0,
+            }
+        ]
+        get_cta_stations = mocker.patch.object(
+            api_cta_stations, "get_cta_stations", return_value=raw
+        )
+        normalize_cta_stations = mocker.patch.object(
+            api_cta_stations, "normalize_cta_stations", return_value=normalized
+        )
+
+        # Patch httpx.Client used inside the closure so no real network happens.
+        client_cm = mocker.Mock()
+        client_cm.__enter__ = mocker.Mock(return_value=mocker.Mock(spec=httpx.Client))
+        client_cm.__exit__ = mocker.Mock(return_value=None)
+        httpx_client_ctor = mocker.patch.object(
+            api_cta_stations.httpx, "Client", return_value=client_cm
+        )
+
+        # Act
+        cache = api_cta_stations.get_stations_cache(cfg)
 
     # Assert
     assert cache is mocker.sentinel.cached

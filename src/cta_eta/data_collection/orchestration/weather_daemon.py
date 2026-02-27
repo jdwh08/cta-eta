@@ -36,7 +36,11 @@ from cta_eta.data_collection.apis.api_weather_open_meteo import get_open_meteo_c
 from cta_eta.data_collection.apis.api_weather_openweathermap import (
     get_openweathermap_current,
 )
-from cta_eta.data_collection.config import get_config_section, load_config, validate_config
+from cta_eta.data_collection.config import (
+    get_config_section,
+    load_config,
+    validate_config,
+)
 from cta_eta.data_collection.logging import log_context
 from cta_eta.data_collection.merging.weather_merger import merge_weather_sources
 from cta_eta.data_collection.orchestration.daemon_async import AsyncBaseDaemon
@@ -472,7 +476,9 @@ class WeatherDaemon(AsyncBaseDaemon):
             self.records_stored_last_cycle = 0
         else:
             self.records_stored_last_cycle = len(merged_records)
-            self.logger.info(f"Stored {len(merged_records)} weather records to IPC journal")
+            self.logger.info(
+                f"Stored {len(merged_records)} weather records to IPC journal"
+            )
 
     async def _fetch_nws_by_grid(
         self, client: httpx.AsyncClient, grid_ids: list[str]

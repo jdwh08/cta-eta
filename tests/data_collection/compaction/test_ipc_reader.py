@@ -22,13 +22,11 @@ Tests cover schema validation:
 
 from __future__ import annotations
 
-import struct
 from datetime import date
 from pathlib import Path
 
 import pyarrow as pa
-import pyarrow.ipc as ipc
-import pytest
+from pyarrow import ipc
 
 from cta_eta.data_collection.compaction.ipc_reader import (
     discover_journals,
@@ -38,7 +36,6 @@ from cta_eta.data_collection.compaction.schemas import (
     TRAIN_POSITION_SCHEMA,
     WEATHER_SCHEMA,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers: IPC file factories
@@ -253,13 +250,7 @@ class TestDiscoverJournals:
     def test_returns_sorted_list_of_journal_files(self, tmp_path: Path) -> None:
         """Returns sorted list of journal_*.ipc files when they exist."""
         target_date = date(2026, 2, 17)
-        day_dir = (
-            tmp_path
-            / "train_positions"
-            / "year=2026"
-            / "month=02"
-            / "day=17"
-        )
+        day_dir = tmp_path / "train_positions" / "year=2026" / "month=02" / "day=17"
         day_dir.mkdir(parents=True)
         # Create 3 journal files in reverse order
         (day_dir / "journal_235900_000001.ipc").touch()
@@ -283,13 +274,7 @@ class TestDiscoverJournals:
     def test_returns_empty_list_for_no_ipc_files(self, tmp_path: Path) -> None:
         """Returns empty list when directory exists but has no .ipc files."""
         target_date = date(2026, 2, 17)
-        day_dir = (
-            tmp_path
-            / "train_positions"
-            / "year=2026"
-            / "month=02"
-            / "day=17"
-        )
+        day_dir = tmp_path / "train_positions" / "year=2026" / "month=02" / "day=17"
         day_dir.mkdir(parents=True)
         # Create non-IPC files
         (day_dir / "notes.txt").touch()
@@ -301,13 +286,7 @@ class TestDiscoverJournals:
     def test_returns_only_journal_ipc_files(self, tmp_path: Path) -> None:
         """Returns only journal_*.ipc files, excluding other file types."""
         target_date = date(2026, 2, 17)
-        day_dir = (
-            tmp_path
-            / "train_positions"
-            / "year=2026"
-            / "month=02"
-            / "day=17"
-        )
+        day_dir = tmp_path / "train_positions" / "year=2026" / "month=02" / "day=17"
         day_dir.mkdir(parents=True)
         (day_dir / "journal_100000_000001.ipc").touch()
         (day_dir / "notes.txt").touch()
@@ -322,13 +301,7 @@ class TestDiscoverJournals:
     def test_returns_paths_not_strings(self, tmp_path: Path) -> None:
         """Returns list of Path objects, not strings."""
         target_date = date(2026, 2, 17)
-        day_dir = (
-            tmp_path
-            / "train_positions"
-            / "year=2026"
-            / "month=02"
-            / "day=17"
-        )
+        day_dir = tmp_path / "train_positions" / "year=2026" / "month=02" / "day=17"
         day_dir.mkdir(parents=True)
         (day_dir / "journal_100000_000001.ipc").touch()
 
@@ -340,13 +313,7 @@ class TestDiscoverJournals:
     def test_uses_correct_hive_path_structure(self, tmp_path: Path) -> None:
         """Constructs path using year=YYYY/month=MM/day=DD hive format."""
         target_date = date(2026, 3, 5)  # Single-digit month and day
-        day_dir = (
-            tmp_path
-            / "weather"
-            / "year=2026"
-            / "month=03"
-            / "day=05"
-        )
+        day_dir = tmp_path / "weather" / "year=2026" / "month=03" / "day=05"
         day_dir.mkdir(parents=True)
         (day_dir / "journal_030000_000001.ipc").touch()
 
@@ -415,9 +382,7 @@ class TestReadIpcWithRepair:
         for batch in batches:
             assert isinstance(batch, pa.RecordBatch)
 
-    def test_corrupt_header_returns_empty_list_and_false(
-        self, tmp_path: Path
-    ) -> None:
+    def test_corrupt_header_returns_empty_list_and_false(self, tmp_path: Path) -> None:
         """IPC file with corrupt header returns ([], False) without raising."""
         ipc_file = tmp_path / "corrupt_header.ipc"
         _write_corrupt_header_ipc(ipc_file)

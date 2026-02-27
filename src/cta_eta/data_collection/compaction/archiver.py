@@ -11,10 +11,13 @@ from __future__ import annotations
 
 import logging
 import shutil
-from datetime import date, timedelta
-from pathlib import Path
+from datetime import UTC, date, datetime, timedelta
+from typing import TYPE_CHECKING
 
-_log = logging.getLogger(__name__)
+if TYPE_CHECKING:
+    from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 def archive_journals(
@@ -40,7 +43,7 @@ def archive_journals(
     for journal_file in journal_files:
         dest = archive_dir / journal_file.name
         shutil.move(str(journal_file), dest)
-    _log.info(
+    logger.info(
         "Archived %d journal file(s) to %s",
         len(journal_files),
         archive_dir,
@@ -53,7 +56,7 @@ def prune_archive(archive_base: Path, retention_days: int = 7) -> list[Path]:
     Globs ``archive_base / "date=*"`` directories and removes any whose
     date is strictly before ``date.today() - retention_days``.
 
-    Silently skips directories with unparseable names (ValueError) and
+    Silently skips directories with unparsable names (ValueError) and
     suppresses OSError on deletion failures (logs at WARNING level).
 
     Args:
@@ -65,29 +68,29 @@ def prune_archive(archive_base: Path, retention_days: int = 7) -> list[Path]:
         List of archive directory Paths that were successfully pruned.
 
     """
-    cutoff = date.today() - timedelta(days=retention_days)
+    cutoff: date = (datetime.now(tz=UTC) - timedelta(days=retention_days)).date()
     pruned: list[Path] = []
 
     for archive_dir in sorted(archive_base.glob("date=*")):
-        dir_name = archive_dir.name
+        dir_name: str = archive_dir.name
         try:
-            dir_date = date.fromisoformat(dir_name.removeprefix("date="))
+            dir_date: date = date.fromisoformat(dir_name.removeprefix("date="))
         except ValueError:
-            _log.debug("Skipping archive dir with unparseable name: %s", dir_name)
+            logger.debug("Skipping archive dir with unparsable name: %s", dir_name)
             continue
 
-        if dir_date < cutoff:
-            try:
-                shutil.rmtree(archive_dir)
-                pruned.append(archive_dir)
-                _log.info(
-                    "Pruned archive directory %s (older than %d days)",
-                    archive_dir,
-                    retention_days,
-                )
-            except OSError as exc:
-                _log.warning(
-                    "Failed to prune archive directory %s: %s", archive_dir, exc
-                )
+        if dir_date >= cutoff:
+            continue
+
+        try:
+            shutil.rmtree(archive_dir)
+            pruned.append(archive_dir)
+            logger.info(
+                "Pruned archive directory %s (older than %d days)",
+                archive_dir,
+                retention_days,
+            )
+        except OSError as exc:
+            logger.warning("Failed to prune archive directory %s: %s", archive_dir, exc)
 
     return pruned

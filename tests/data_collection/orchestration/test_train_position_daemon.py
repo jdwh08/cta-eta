@@ -410,9 +410,7 @@ class TestTrainPositionDaemonCollectCycle:
         asyncio.run(daemon._collect_train_positions_cycle(mock_client))
 
         # Assert
-        storage.append_batch.assert_called_once_with(
-            [], dataset_name="train_positions"
-        )
+        storage.append_batch.assert_called_once_with([], dataset_name="train_positions")
         assert daemon.total_records_collected == 0
         assert daemon.current_poll_count == 1
 

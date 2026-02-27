@@ -11,7 +11,6 @@ import pytest
 
 from cta_eta.monitoring import health_check
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -34,7 +33,13 @@ def heartbeat_file(daemon_state_dir: Path) -> Path:
     return daemon_state_dir / "TrainPositionDaemon.heartbeat.json"
 
 
-def write_heartbeat(path: Path, *, timestamp: float, daemon: str = "TrainPositionDaemon", pid: int | None = 12345) -> None:
+def write_heartbeat(
+    path: Path,
+    *,
+    timestamp: float,
+    daemon: str = "TrainPositionDaemon",
+    pid: int | None = 12345,
+) -> None:
     """Write a valid heartbeat JSON file."""
     path.write_text(
         json.dumps({"timestamp": timestamp, "daemon": daemon, "pid": pid}),
@@ -140,7 +145,10 @@ class TestCheckDaemons:
         assert status == "degraded"
 
     def test_corrupt_file_skipped_with_warning(
-        self, daemon_state_dir: Path, mocker: pytest.MockerFixture, capsys: pytest.CaptureFixture[str]
+        self,
+        daemon_state_dir: Path,
+        mocker: pytest.MockerFixture,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         """Corrupt heartbeat file is skipped and warning printed to stderr."""
         mocker.patch("time.time", return_value=2000.0)
@@ -154,12 +162,18 @@ class TestCheckDaemons:
         assert "Bad.heartbeat.json" in err
 
     def test_invalid_timestamp_skipped_with_warning(
-        self, daemon_state_dir: Path, mocker: pytest.MockerFixture, capsys: pytest.CaptureFixture[str]
+        self,
+        daemon_state_dir: Path,
+        mocker: pytest.MockerFixture,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         """Heartbeat with non-numeric timestamp is skipped and warning printed."""
         mocker.patch("time.time", return_value=2000.0)
         path = daemon_state_dir / "NoTs.heartbeat.json"
-        path.write_text(json.dumps({"daemon": "NoTs", "timestamp": "not-a-number"}), encoding="utf-8")
+        path.write_text(
+            json.dumps({"daemon": "NoTs", "timestamp": "not-a-number"}),
+            encoding="utf-8",
+        )
         results, status = health_check._check_daemons(threshold=600)
         assert results == []
         assert status == "healthy"
@@ -171,8 +185,12 @@ class TestCheckDaemons:
     ) -> None:
         """One healthy and one stale yields degraded and both in results."""
         mocker.patch("time.time", return_value=2000.0)
-        write_heartbeat(daemon_state_dir / "A.heartbeat.json", timestamp=2000.0 - 60.0, daemon="A")
-        write_heartbeat(daemon_state_dir / "B.heartbeat.json", timestamp=2000.0 - 700.0, daemon="B")
+        write_heartbeat(
+            daemon_state_dir / "A.heartbeat.json", timestamp=2000.0 - 60.0, daemon="A"
+        )
+        write_heartbeat(
+            daemon_state_dir / "B.heartbeat.json", timestamp=2000.0 - 700.0, daemon="B"
+        )
         results, status = health_check._check_daemons(threshold=600)
         assert len(results) == 2
         by_name = {r["name"]: r for r in results}
@@ -197,7 +215,9 @@ class TestCheckDaemons:
         """Float timestamp in heartbeat is accepted."""
         mocker.patch("time.time", return_value=2000.0)
         path = daemon_state_dir / "F.heartbeat.json"
-        path.write_text(json.dumps({"timestamp": 1999.0, "daemon": "F"}), encoding="utf-8")
+        path.write_text(
+            json.dumps({"timestamp": 1999.0, "daemon": "F"}), encoding="utf-8"
+        )
         results, status = health_check._check_daemons(threshold=600)
         assert len(results) == 1
         assert results[0]["age_seconds"] == 1
@@ -257,11 +277,16 @@ class TestMain:
         assert "No heartbeat files" in out or "Daemon Health" in out
 
     def test_exit_0_when_all_healthy(
-        self, daemon_state_dir: Path, mocker: pytest.MockerFixture, capsys: pytest.CaptureFixture[str]
+        self,
+        daemon_state_dir: Path,
+        mocker: pytest.MockerFixture,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         """Exits 0 when all daemons have fresh heartbeats."""
         mocker.patch("time.time", return_value=2000.0)
-        write_heartbeat(daemon_state_dir / "A.heartbeat.json", timestamp=1999.0, daemon="A")
+        write_heartbeat(
+            daemon_state_dir / "A.heartbeat.json", timestamp=1999.0, daemon="A"
+        )
         with pytest.raises(SystemExit) as exc_info:
             health_check.main(["--threshold", "600"])
         assert exc_info.value.code == 0
@@ -269,11 +294,18 @@ class TestMain:
         assert "HEALTHY" in out
 
     def test_exit_1_when_any_stale(
-        self, daemon_state_dir: Path, mocker: pytest.MockerFixture, capsys: pytest.CaptureFixture[str]
+        self,
+        daemon_state_dir: Path,
+        mocker: pytest.MockerFixture,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         """Exits 1 when at least one daemon has stale heartbeat."""
         mocker.patch("time.time", return_value=2000.0)
-        write_heartbeat(daemon_state_dir / "Stale.heartbeat.json", timestamp=2000.0 - 700.0, daemon="Stale")
+        write_heartbeat(
+            daemon_state_dir / "Stale.heartbeat.json",
+            timestamp=2000.0 - 700.0,
+            daemon="Stale",
+        )
         with pytest.raises(SystemExit) as exc_info:
             health_check.main(["--threshold", "600"])
         assert exc_info.value.code == 1
@@ -282,11 +314,16 @@ class TestMain:
         assert "stale" in out.lower()
 
     def test_json_output_structure_when_healthy(
-        self, daemon_state_dir: Path, mocker: pytest.MockerFixture, capsys: pytest.CaptureFixture[str]
+        self,
+        daemon_state_dir: Path,
+        mocker: pytest.MockerFixture,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         """--json produces valid JSON with status, threshold_seconds, daemons."""
         mocker.patch("time.time", return_value=2000.0)
-        write_heartbeat(daemon_state_dir / "A.heartbeat.json", timestamp=1999.0, daemon="A")
+        write_heartbeat(
+            daemon_state_dir / "A.heartbeat.json", timestamp=1999.0, daemon="A"
+        )
         with pytest.raises(SystemExit) as exc_info:
             health_check.main(["--json", "--threshold", "300"])
         assert exc_info.value.code == 0
@@ -300,11 +337,16 @@ class TestMain:
         assert data["daemons"][0]["status"] == "healthy"
 
     def test_json_output_exit_1_when_degraded(
-        self, daemon_state_dir: Path, mocker: pytest.MockerFixture, capsys: pytest.CaptureFixture[str]
+        self,
+        daemon_state_dir: Path,
+        mocker: pytest.MockerFixture,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         """--json with degraded status exits 1 and JSON has status degraded."""
         mocker.patch("time.time", return_value=2000.0)
-        write_heartbeat(daemon_state_dir / "S.heartbeat.json", timestamp=2000.0 - 700.0, daemon="S")
+        write_heartbeat(
+            daemon_state_dir / "S.heartbeat.json", timestamp=2000.0 - 700.0, daemon="S"
+        )
         with pytest.raises(SystemExit) as exc_info:
             health_check.main(["--json", "--threshold", "600"])
         assert exc_info.value.code == 1
@@ -312,11 +354,16 @@ class TestMain:
         assert data["status"] == "degraded"
 
     def test_custom_threshold_passed_to_check(
-        self, daemon_state_dir: Path, mocker: pytest.MockerFixture, capsys: pytest.CaptureFixture[str]
+        self,
+        daemon_state_dir: Path,
+        mocker: pytest.MockerFixture,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         """Custom --threshold is used for staleness check."""
         mocker.patch("time.time", return_value=2000.0)
-        write_heartbeat(daemon_state_dir / "D.heartbeat.json", timestamp=2000.0 - 400.0, daemon="D")
+        write_heartbeat(
+            daemon_state_dir / "D.heartbeat.json", timestamp=2000.0 - 400.0, daemon="D"
+        )
         with pytest.raises(SystemExit) as exc_info:
             health_check.main(["--threshold", "300"])
         assert exc_info.value.code == 1
@@ -325,11 +372,16 @@ class TestMain:
         assert exc_info2.value.code == 0
 
     def test_human_table_contains_daemon_status_age(
-        self, daemon_state_dir: Path, mocker: pytest.MockerFixture, capsys: pytest.CaptureFixture[str]
+        self,
+        daemon_state_dir: Path,
+        mocker: pytest.MockerFixture,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         """Human-readable output includes table with Daemon, Status, Age, PID."""
         mocker.patch("time.time", return_value=2000.0)
-        write_heartbeat(daemon_state_dir / "T.heartbeat.json", timestamp=1990.0, daemon="T", pid=42)
+        write_heartbeat(
+            daemon_state_dir / "T.heartbeat.json", timestamp=1990.0, daemon="T", pid=42
+        )
         with pytest.raises(SystemExit):
             health_check.main(["--threshold", "600"])
         out = capsys.readouterr().out

@@ -7,7 +7,7 @@ date.today() is mocked in prune_archive tests for deterministic cutoff.
 from __future__ import annotations
 
 import shutil
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING
 
 ### OWN MODULES
@@ -166,8 +166,10 @@ class TestPruneArchive:
         boundary = archive_base / "date=2026-02-18"
         boundary.mkdir()
 
+        mock_dt = mocker.patch("cta_eta.data_collection.compaction.archiver.datetime")
+        mock_dt.now.return_value = datetime(2026, 2, 25, tzinfo=UTC)
+
         mock_d = mocker.patch("cta_eta.data_collection.compaction.archiver.date")
-        mock_d.today.return_value = date(2026, 2, 25)
         mock_d.fromisoformat = date.fromisoformat
 
         result = prune_archive(archive_base, retention_days=7)

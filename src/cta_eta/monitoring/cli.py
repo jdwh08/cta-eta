@@ -674,9 +674,10 @@ def _read_schema_drift(compaction_dir: Path, daemon: str, date_str: str) -> str:
         meta = pq.read_metadata(parquet_path)
         kv = meta.metadata or {}
         drift_val = kv.get(b"schema_drift", b"").decode()
-        return "DRIFT" if drift_val == "true" else "OK"
     except Exception:  # noqa: BLE001
         return "?"
+    else:
+        return "DRIFT" if drift_val == "true" else "OK"
 
 
 def cmd_compaction(args: argparse.Namespace) -> None:

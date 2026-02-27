@@ -36,7 +36,10 @@ class TestMakePyArrowFs:
         mock_fs = mocker.MagicMock()
         url_to_fs = mocker.patch(
             "cta_eta.data_collection.compaction.uploader.fsspec.url_to_fs",
-            return_value=(mock_fs, "my-bucket/raw/train_positions/date=2026-02-17/data.parquet"),
+            return_value=(
+                mock_fs,
+                "my-bucket/raw/train_positions/date=2026-02-17/data.parquet",
+            ),
         )
 
         pa_fs, path = make_pyarrow_fs(
@@ -49,7 +52,9 @@ class TestMakePyArrowFs:
         assert path == "my-bucket/raw/train_positions/date=2026-02-17/data.parquet"
         assert pa_fs is not None
 
-    def test_gcs_url_calls_url_to_fs_with_gs_scheme(self, mocker: MockerFixture) -> None:
+    def test_gcs_url_calls_url_to_fs_with_gs_scheme(
+        self, mocker: MockerFixture
+    ) -> None:
         mock_fs = mocker.MagicMock()
         url_to_fs = mocker.patch(
             "cta_eta.data_collection.compaction.uploader.fsspec.url_to_fs",
@@ -138,9 +143,7 @@ class TestUploadParquetSuccess:
             "cta_eta.data_collection.compaction.uploader.make_pyarrow_fs",
             return_value=(mocker.MagicMock(), "bucket/empty.parquet"),
         )
-        mocker.patch(
-            "cta_eta.data_collection.compaction.uploader.pq.write_table"
-        )
+        mocker.patch("cta_eta.data_collection.compaction.uploader.pq.write_table")
         mocker.patch(
             "cta_eta.data_collection.compaction.uploader.pq.read_metadata",
             return_value=_meta_with_rows(0),
@@ -166,9 +169,7 @@ class TestUploadParquetReprocess:
             "cta_eta.data_collection.compaction.uploader.make_pyarrow_fs",
             return_value=(mocker.MagicMock(), "bucket/key.parquet"),
         )
-        mocker.patch(
-            "cta_eta.data_collection.compaction.uploader.pq.write_table"
-        )
+        mocker.patch("cta_eta.data_collection.compaction.uploader.pq.write_table")
         read_meta = mocker.patch(
             "cta_eta.data_collection.compaction.uploader.pq.read_metadata",
             side_effect=[
@@ -197,9 +198,7 @@ class TestUploadParquetReprocess:
             "cta_eta.data_collection.compaction.uploader.make_pyarrow_fs",
             return_value=(mocker.MagicMock(), "bucket/key.parquet"),
         )
-        mocker.patch(
-            "cta_eta.data_collection.compaction.uploader.pq.write_table"
-        )
+        mocker.patch("cta_eta.data_collection.compaction.uploader.pq.write_table")
         read_meta = mocker.patch(
             "cta_eta.data_collection.compaction.uploader.pq.read_metadata",
             side_effect=[
@@ -215,7 +214,9 @@ class TestUploadParquetReprocess:
         with caplog.at_level("DEBUG"):
             upload_parquet(sample_table, "gs://bucket/key.parquet", reprocess=True)
 
-        assert "No existing file" in caplog.text or "proceeding with fresh" in caplog.text
+        assert (
+            "No existing file" in caplog.text or "proceeding with fresh" in caplog.text
+        )
         assert read_meta.call_count >= 2
 
     def test_reprocess_read_metadata_other_error_propagates(
@@ -252,9 +253,7 @@ class TestUploadParquetFailurePaths:
             "cta_eta.data_collection.compaction.uploader.make_pyarrow_fs",
             return_value=(mocker.MagicMock(), "bucket/key.parquet"),
         )
-        mocker.patch(
-            "cta_eta.data_collection.compaction.uploader.pq.write_table"
-        )
+        mocker.patch("cta_eta.data_collection.compaction.uploader.pq.write_table")
         mocker.patch(
             "cta_eta.data_collection.compaction.uploader.pq.read_metadata",
             return_value=_meta_with_rows(999),
@@ -316,7 +315,9 @@ class TestUploadParquetFailurePaths:
             side_effect=lambda **kwargs: _fake_retry_context_twice(),
         )
 
-        upload_parquet(sample_table, "abfs://container@account.dfs.core.windows.net/key.parquet")
+        upload_parquet(
+            sample_table, "abfs://container@account.dfs.core.windows.net/key.parquet"
+        )
 
         assert write_table.call_count == 2
 
@@ -334,9 +335,7 @@ class TestUploadParquetRetryContextIntegration:
             "cta_eta.data_collection.compaction.uploader.make_pyarrow_fs",
             return_value=(mocker.MagicMock(), "bucket/key.parquet"),
         )
-        mocker.patch(
-            "cta_eta.data_collection.compaction.uploader.pq.write_table"
-        )
+        mocker.patch("cta_eta.data_collection.compaction.uploader.pq.write_table")
         mocker.patch(
             "cta_eta.data_collection.compaction.uploader.pq.read_metadata",
             return_value=_meta_with_rows(len(sample_table)),

@@ -138,14 +138,18 @@ class TestShouldSendAlert:
         self, metrics_with_alert: dict, last_alert_path: Path
     ) -> None:
         """Returns True when should_alert=True and no previous alert file."""
-        result = alerting.should_send_alert(metrics_with_alert, last_alert_path, cooldown_hours=1)
+        result = alerting.should_send_alert(
+            metrics_with_alert, last_alert_path, cooldown_hours=1
+        )
         assert result is True
 
     def test_returns_false_when_should_alert_false(
         self, metrics_no_alert: dict, last_alert_path: Path
     ) -> None:
         """Returns False when should_alert is False, regardless of cooldown."""
-        result = alerting.should_send_alert(metrics_no_alert, last_alert_path, cooldown_hours=1)
+        result = alerting.should_send_alert(
+            metrics_no_alert, last_alert_path, cooldown_hours=1
+        )
         assert result is False
 
     def test_returns_false_when_in_cooldown(
@@ -154,9 +158,13 @@ class TestShouldSendAlert:
         """Returns False when last alert was within cooldown window."""
         # Last alert was 30 minutes ago, cooldown is 1 hour
         recent_ts = time.time() - 1800.0
-        last_alert_path.write_text(json.dumps({"last_alert": recent_ts}), encoding="utf-8")
+        last_alert_path.write_text(
+            json.dumps({"last_alert": recent_ts}), encoding="utf-8"
+        )
 
-        result = alerting.should_send_alert(metrics_with_alert, last_alert_path, cooldown_hours=1)
+        result = alerting.should_send_alert(
+            metrics_with_alert, last_alert_path, cooldown_hours=1
+        )
         assert result is False
 
     def test_returns_true_when_cooldown_expired(
@@ -167,7 +175,9 @@ class TestShouldSendAlert:
         old_ts = time.time() - 7200.0
         last_alert_path.write_text(json.dumps({"last_alert": old_ts}), encoding="utf-8")
 
-        result = alerting.should_send_alert(metrics_with_alert, last_alert_path, cooldown_hours=1)
+        result = alerting.should_send_alert(
+            metrics_with_alert, last_alert_path, cooldown_hours=1
+        )
         assert result is True
 
     def test_returns_false_when_missing_should_alert_key(
@@ -183,7 +193,9 @@ class TestShouldSendAlert:
     ) -> None:
         """Returns True when last_alert_path has invalid JSON (treat as no previous alert)."""
         last_alert_path.write_text("invalid json content", encoding="utf-8")
-        result = alerting.should_send_alert(metrics_with_alert, last_alert_path, cooldown_hours=1)
+        result = alerting.should_send_alert(
+            metrics_with_alert, last_alert_path, cooldown_hours=1
+        )
         assert result is True
 
     def test_returns_false_when_should_alert_false_even_with_expired_cooldown(
@@ -193,7 +205,9 @@ class TestShouldSendAlert:
         old_ts = time.time() - 7200.0
         last_alert_path.write_text(json.dumps({"last_alert": old_ts}), encoding="utf-8")
 
-        result = alerting.should_send_alert(metrics_no_alert, last_alert_path, cooldown_hours=1)
+        result = alerting.should_send_alert(
+            metrics_no_alert, last_alert_path, cooldown_hours=1
+        )
         assert result is False
 
 
@@ -287,10 +301,14 @@ class TestSendEmailAlertMailjet:
 
         assert result is True
         call_kw = mock_client_instance.post.call_args[1]
-        assert call_kw["json"]["Messages"][0]["Subject"] == "[CTA ETA Alert] Test subject"
+        assert (
+            call_kw["json"]["Messages"][0]["Subject"] == "[CTA ETA Alert] Test subject"
+        )
         assert call_kw["json"]["Messages"][0]["TextPart"] == "Body text"
         assert call_kw["json"]["Messages"][0]["From"]["Email"] == "alerts@example.com"
-        assert [t["Email"] for t in call_kw["json"]["Messages"][0]["To"]] == ["ops@example.com"]
+        assert [t["Email"] for t in call_kw["json"]["Messages"][0]["To"]] == [
+            "ops@example.com"
+        ]
 
     def test_returns_false_when_mailjet_returns_non_200(
         self, mocker: pytest.MockerFixture

@@ -20,7 +20,6 @@ import pyarrow as pa
 import pytest
 
 from cta_eta.data_collection.compaction.schema_registry import (
-    DriftResult,
     bootstrap_registry,
     classify_drift,
     load_registry,
@@ -28,7 +27,6 @@ from cta_eta.data_collection.compaction.schema_registry import (
     save_registry,
     schema_to_registry_dict,
 )
-
 
 # ---------------------------------------------------------------------------
 # classify_drift: breaking changes

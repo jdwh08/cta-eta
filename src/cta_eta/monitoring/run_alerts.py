@@ -32,7 +32,7 @@ from cta_eta.monitoring.alerting import (
     should_send_alert,
 )
 
-_log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 # Default config.toml path: project root is 4 levels above this file.
 _DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[3] / "config.toml"
@@ -84,9 +84,10 @@ def _build_email_config(alerting_cfg: dict[str, object]) -> dict[str, object]:
 
     Returns:
         Dict with ``provider`` and the keys required for that provider.
+
     """
     load_dotenv()
-    provider = (str(alerting_cfg.get("email_provider", "mailjet")).strip().lower())
+    provider = str(alerting_cfg.get("email_provider", "mailjet")).strip().lower()
     from_addr = str(alerting_cfg.get("smtp_from", ""))
     to_addrs = list(alerting_cfg.get("smtp_to", []))
 
@@ -124,11 +125,11 @@ def _fetch_metrics() -> dict[str, object] | None:
             check=False,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
-        _log.warning("Could not run cta-monitor metrics: %s", exc)
+        logger.warning("Could not run cta-monitor metrics: %s", exc)
         return None
 
     if result.returncode != 0 or not result.stdout.strip():
-        _log.warning(
+        logger.warning(
             "cta-monitor metrics --json failed (exit %d): %s",
             result.returncode,
             result.stderr.strip(),
@@ -138,7 +139,7 @@ def _fetch_metrics() -> dict[str, object] | None:
     try:
         return json.loads(result.stdout)
     except json.JSONDecodeError as exc:
-        _log.warning("Could not parse metrics JSON: %s", exc)
+        logger.warning("Could not parse metrics JSON: %s", exc)
         return None
 
 

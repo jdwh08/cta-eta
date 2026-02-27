@@ -13,7 +13,6 @@ import pytest
 
 from cta_eta.monitoring import run_alerts
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -104,9 +103,9 @@ class TestLoadAlertingConfig:
             "[alerting]\n"
             "enabled = true\n"
             "cooldown_hours = 4\n"
-            "smtp_from = \"alerts@example.com\"\n"
-            "smtp_to = [\"ops@example.com\"]\n"
-            "last_alert_state = \".daemon_state/last_alert.json\"\n",
+            'smtp_from = "alerts@example.com"\n'
+            'smtp_to = ["ops@example.com"]\n'
+            'last_alert_state = ".daemon_state/last_alert.json"\n',
             encoding="utf-8",
         )
         result = run_alerts._load_alerting_config(config_path)
@@ -178,9 +177,7 @@ class TestBuildEmailConfig:
 class TestFetchMetrics:
     """Tests for _fetch_metrics()."""
 
-    def test_returns_parsed_json_on_success(
-        self, mocker: pytest.MockerFixture
-    ) -> None:
+    def test_returns_parsed_json_on_success(self, mocker: pytest.MockerFixture) -> None:
         """Returns dict when subprocess exits 0 and stdout is valid JSON."""
         payload = {"status": "healthy", "daemons": []}
         mock_run = mocker.patch.object(
@@ -216,9 +213,7 @@ class TestFetchMetrics:
         result = run_alerts._fetch_metrics()
         assert result is None
 
-    def test_returns_none_when_stdout_empty(
-        self, mocker: pytest.MockerFixture
-    ) -> None:
+    def test_returns_none_when_stdout_empty(self, mocker: pytest.MockerFixture) -> None:
         """Returns None when subprocess stdout is empty."""
         mocker.patch.object(
             subprocess,
@@ -232,9 +227,7 @@ class TestFetchMetrics:
         result = run_alerts._fetch_metrics()
         assert result is None
 
-    def test_returns_none_on_timeout(
-        self, mocker: pytest.MockerFixture
-    ) -> None:
+    def test_returns_none_on_timeout(self, mocker: pytest.MockerFixture) -> None:
         """Returns None when subprocess times out."""
         mocker.patch.object(
             subprocess,
@@ -244,9 +237,7 @@ class TestFetchMetrics:
         result = run_alerts._fetch_metrics()
         assert result is None
 
-    def test_returns_none_on_file_not_found(
-        self, mocker: pytest.MockerFixture
-    ) -> None:
+    def test_returns_none_on_file_not_found(self, mocker: pytest.MockerFixture) -> None:
         """Returns None when cta-monitor is not found."""
         mocker.patch.object(
             subprocess,
@@ -281,9 +272,7 @@ class TestFetchMetrics:
 class TestMain:
     """Tests for main() entry point."""
 
-    def test_exit_0_when_config_disabled(
-        self, mocker: pytest.MockerFixture
-    ) -> None:
+    def test_exit_0_when_config_disabled(self, mocker: pytest.MockerFixture) -> None:
         """Exits 0 when alerting config is None (disabled or missing)."""
         mocker.patch.object(
             run_alerts,
@@ -351,7 +340,10 @@ class TestMain:
     ) -> None:
         """When alert is sent, main returns normally and save_alert_timestamp is called."""
         last_alert_path = tmp_path / "last_alert.json"
-        cfg: dict[str, Any] = {**valid_alerting_config, "last_alert_state": str(last_alert_path)}
+        cfg: dict[str, Any] = {
+            **valid_alerting_config,
+            "last_alert_state": str(last_alert_path),
+        }
         mocker.patch.object(
             run_alerts,
             "_load_alerting_config",

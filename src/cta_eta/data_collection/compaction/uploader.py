@@ -18,7 +18,7 @@ import stamina
 if TYPE_CHECKING:
     import pyarrow as pa
 
-_log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
 def make_pyarrow_fs(cloud_url: str) -> tuple[pafs.PyFileSystem, str]:
@@ -75,14 +75,14 @@ def upload_parquet(
     if reprocess:
         try:
             existing_meta = pq.read_metadata(path, filesystem=pa_fs)
-            _log.warning(
+            logger.warning(
                 "Overwriting existing file at %s with %d rows (existing: %d rows)",
                 path,
                 expected_rows,
                 existing_meta.num_rows,
             )
         except FileNotFoundError:
-            _log.debug("No existing file at %s; proceeding with fresh upload", path)
+            logger.debug("No existing file at %s; proceeding with fresh upload", path)
 
     for attempt in stamina.retry_context(
         on=Exception,
@@ -93,7 +93,7 @@ def upload_parquet(
         timeout=None,
     ):
         with attempt:
-            _log.info(
+            logger.info(
                 "Upload attempt %d: writing %d rows to %s",
                 attempt.num,
                 expected_rows,
@@ -108,7 +108,7 @@ def upload_parquet(
                     f"expected {expected_rows}, got {meta.num_rows}"
                 )
                 raise RuntimeError(msg)
-            _log.info(
+            logger.info(
                 "Upload verified: %d rows at %s (attempt %d)",
                 expected_rows,
                 path,

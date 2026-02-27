@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pyarrow as pa
-import pytest
+from pyarrow import ipc
 
 from cta_eta.data_collection.compaction.compact import (
     CompactionMetrics,
@@ -38,6 +38,7 @@ from cta_eta.data_collection.compaction.schemas import (
 )
 
 if TYPE_CHECKING:
+    import pytest
     from pytest_mock import MockerFixture
 
 
@@ -137,9 +138,7 @@ class TestCompactOneDaemonNoJournals:
         )
         config = minimal_config(tmp_path)
 
-        metrics = _compact_one_daemon(
-            "train_positions", date(2026, 2, 17), config
-        )
+        metrics = _compact_one_daemon("train_positions", date(2026, 2, 17), config)
 
         assert metrics.status == "partial"
         assert metrics.journals_found == 0
@@ -169,9 +168,7 @@ class TestCompactOneDaemonAllCorruptOrSkipped:
         )
         config = minimal_config(tmp_path)
 
-        metrics = _compact_one_daemon(
-            "train_positions", date(2026, 2, 17), config
-        )
+        metrics = _compact_one_daemon("train_positions", date(2026, 2, 17), config)
 
         assert metrics.status == "partial"
         assert metrics.journals_found == 1
@@ -216,9 +213,7 @@ class TestCompactOneDaemonAllCorruptOrSkipped:
         )
         config = minimal_config(tmp_path)
 
-        metrics = _compact_one_daemon(
-            "train_positions", date(2026, 2, 17), config
-        )
+        metrics = _compact_one_daemon("train_positions", date(2026, 2, 17), config)
 
         # Journal is NOT skipped — continue-on-drift policy merges all journals
         assert metrics.status == "success"
@@ -257,9 +252,7 @@ class TestCompactOneDaemonSuccess:
         )
         config = minimal_config(tmp_path)
 
-        metrics = _compact_one_daemon(
-            "train_positions", date(2026, 2, 17), config
-        )
+        metrics = _compact_one_daemon("train_positions", date(2026, 2, 17), config)
 
         assert metrics.status == "success"
         assert metrics.rows_written == 1
@@ -294,9 +287,7 @@ class TestCompactOneDaemonSuccess:
         )
         config = minimal_config(tmp_path)
 
-        metrics = _compact_one_daemon(
-            "train_positions", date(2026, 2, 17), config
-        )
+        metrics = _compact_one_daemon("train_positions", date(2026, 2, 17), config)
 
         assert metrics.status == "success"
         assert metrics.journals_repaired == 1
@@ -333,9 +324,7 @@ class TestCompactOneDaemonSuccess:
         )
         config = minimal_config(tmp_path)
 
-        metrics = _compact_one_daemon(
-            "train_positions", date(2026, 2, 17), config
-        )
+        metrics = _compact_one_daemon("train_positions", date(2026, 2, 17), config)
 
         assert metrics.status == "success"
         assert metrics.journals_found == 2
@@ -400,9 +389,7 @@ class TestCompactOneDaemonUploadFailure:
         )
         config = minimal_config(tmp_path)
 
-        metrics = _compact_one_daemon(
-            "train_positions", date(2026, 2, 17), config
-        )
+        metrics = _compact_one_daemon("train_positions", date(2026, 2, 17), config)
 
         mock_archive.assert_not_called()
         assert metrics.status == "failed"
@@ -450,9 +437,7 @@ class TestCompactOneDaemonUploadFailure:
 class TestWriteSidecar:
     """Sidecar JSON write and error handling."""
 
-    def test_writes_correct_filename_and_content(
-        self, tmp_path: Path
-    ) -> None:
+    def test_writes_correct_filename_and_content(self, tmp_path: Path) -> None:
         metrics = CompactionMetrics(
             date="2026-02-17",
             daemon="train_positions",
@@ -518,7 +503,10 @@ class TestWriteSidecar:
 
         _write_sidecar(metrics, nonexistent)
 
-        assert "Failed to write compaction sidecar" in caplog.text or "sidecar" in caplog.text.lower()
+        assert (
+            "Failed to write compaction sidecar" in caplog.text
+            or "sidecar" in caplog.text.lower()
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -855,7 +843,9 @@ class TestMainTargetDate:
         expected_yesterday = (fixed_now - timedelta(days=1)).date()
         call_args = discover.call_args[0]
         actual = call_args[2]
-        assert (actual.date() if hasattr(actual, "date") else actual) == expected_yesterday
+        assert (
+            actual.date() if hasattr(actual, "date") else actual
+        ) == expected_yesterday
 
 
 # ---------------------------------------------------------------------------
@@ -872,11 +862,8 @@ class TestCompactIntegrationStyle:
     def test_real_ipc_discover_read_upload_mocked(
         self, tmp_path: Path, mocker: MockerFixture
     ) -> None:
-        from pyarrow import ipc
-
         day_dir = (
-            tmp_path / "data" / "train_positions"
-            / "year=2026" / "month=02" / "day=17"
+            tmp_path / "data" / "train_positions" / "year=2026" / "month=02" / "day=17"
         )
         day_dir.mkdir(parents=True)
         journal_path = day_dir / "journal_120000_000001.ipc"
@@ -905,9 +892,7 @@ class TestCompactIntegrationStyle:
             return_value=[],
         )
 
-        metrics = _compact_one_daemon(
-            "train_positions", date(2026, 2, 17), config
-        )
+        metrics = _compact_one_daemon("train_positions", date(2026, 2, 17), config)
 
         assert metrics.status == "success"
         assert metrics.journals_found == 1
@@ -920,8 +905,7 @@ class TestCompactIntegrationStyle:
 # ---------------------------------------------------------------------------
 
 
-import pyarrow.ipc as ipc  # noqa: E402 (grouped here for locality)
-import pyarrow.parquet as pq  # noqa: E402
+import pyarrow.parquet as pq
 
 
 def _write_temp_ipc(path: Path, schema: pa.Schema, rows: int = 5) -> None:
@@ -933,7 +917,7 @@ def _write_temp_ipc(path: Path, schema: pa.Schema, rows: int = 5) -> None:
     table = pa.table(
         {
             name: pa.array([None] * rows, type=field.type)
-            for name, field in zip(schema.names, schema)
+            for name, field in zip(schema.names, schema, strict=True)
         },
         schema=schema,
     )
@@ -1005,8 +989,6 @@ class TestDriftAnnotationInParquet:
     def test_parquet_metadata_annotated_with_schema_drift(
         self, tmp_path: Path, mocker: MockerFixture
     ) -> None:
-        import json as _json
-
         # Build drifted schema: "route" changed from string to int64
         drifted_fields = [
             TRAIN_POSITION_SCHEMA.field(i)
@@ -1069,7 +1051,7 @@ class TestDriftAnnotationInParquet:
         assert b"drift_summary" in meta.metadata, (
             "Expected drift_summary in Parquet metadata"
         )
-        drift_data = _json.loads(meta.metadata[b"drift_summary"])
+        drift_data = json.loads(meta.metadata[b"drift_summary"])
         assert "breaking_fields" in drift_data
 
 
@@ -1122,7 +1104,7 @@ class TestAdditiveDriftNoAlert:
     ) -> None:
         # Add an extra field not in TRAIN_POSITION_SCHEMA
         additive_schema = pa.schema(
-            list(TRAIN_POSITION_SCHEMA) + [pa.field("extra_col", pa.string())]
+            [*list(TRAIN_POSITION_SCHEMA), pa.field("extra_col", pa.string())]
         )
         journal = tmp_path / "journal_120000_000001.ipc"
         _write_temp_ipc(journal, additive_schema)

@@ -29,14 +29,16 @@ import base64
 import json
 import logging
 from dataclasses import dataclass, field
-from datetime import date
-from pathlib import Path
-from typing import Literal
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Literal
 
 import pyarrow as pa
 import pyarrow.ipc
 
-_log = logging.getLogger(__name__)
+if TYPE_CHECKING:
+    from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -58,7 +60,7 @@ class AddedField:
     """A new field present in observed schema but not in registry."""
 
     name: str
-    type: str  # noqa: A003  (shadows builtin but matches spec)
+    type: str
 
 
 @dataclass(frozen=True)
@@ -85,7 +87,7 @@ class DriftResult:
 
 
 # ---------------------------------------------------------------------------
-# Widening pairs: safe numeric widening (from RESEARCH.md)
+# Widening pairs: safe numeric widening
 # ---------------------------------------------------------------------------
 
 # frozenset of (old_type, new_type) tuples representing allowed widenings.
@@ -156,16 +158,16 @@ def classify_drift(
         obs_field = observed_fields[name]
 
         # Type comparison
-        if reg_field.type != obs_field.type:
-            if not _is_widening(reg_field.type, obs_field.type):
-                breaking.append(
-                    BreakingFieldChange(
-                        name=name,
-                        old_type=str(reg_field.type),
-                        new_type=str(obs_field.type),
-                    )
+        if reg_field.type != obs_field.type and not _is_widening(
+            reg_field.type, obs_field.type
+        ):
+            breaking.append(
+                BreakingFieldChange(
+                    name=name,
+                    old_type=str(reg_field.type),
+                    new_type=str(obs_field.type),
                 )
-            # Widening: silent, no entry needed
+            )
 
         # Nullability comparison (independent of type)
         if reg_field.nullable != obs_field.nullable:
@@ -204,7 +206,7 @@ def classify_drift(
 # ---------------------------------------------------------------------------
 
 
-def schema_to_registry_dict(schema: pa.Schema, daemon_name: str) -> dict:  # type: ignore[type-arg]
+def schema_to_registry_dict(schema: pa.Schema, daemon_name: str) -> dict:
     """Convert a pa.Schema to a JSON-serializable registry dictionary.
 
     The dict contains:
@@ -228,13 +230,13 @@ def schema_to_registry_dict(schema: pa.Schema, daemon_name: str) -> dict:  # typ
     return {
         "version": 1,
         "daemon": daemon_name,
-        "updated": date.today().isoformat(),
+        "updated": datetime.now(UTC).date().isoformat(),
         "fields": fields_list,
         "schema_ipc_b64": ipc_b64,
     }
 
 
-def registry_dict_to_schema(data: dict) -> pa.Schema:  # type: ignore[type-arg]
+def registry_dict_to_schema(data: dict) -> pa.Schema:
     """Reconstruct a pa.Schema from a registry dictionary.
 
     Uses schema_ipc_b64 for exact reconstruction — the human-readable
@@ -261,9 +263,8 @@ def load_registry(path: Path) -> pa.Schema | None:
         data = json.loads(path.read_text(encoding="utf-8"))
         return registry_dict_to_schema(data)
     except Exception as exc:
-        raise ValueError(
-            f"Failed to load schema registry from {path}: {exc}"
-        ) from exc
+        msg = f"Failed to load schema registry from {path}: {exc}"
+        raise ValueError(msg) from exc
 
 
 def save_registry(path: Path, schema: pa.Schema, daemon_name: str) -> None:
@@ -274,7 +275,7 @@ def save_registry(path: Path, schema: pa.Schema, daemon_name: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     data = schema_to_registry_dict(schema, daemon_name)
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    _log.info("Saved schema registry to %s", path)
+    logger.info("Saved schema registry to %s", path)
 
 
 def bootstrap_registry(path: Path, schema: pa.Schema, daemon_name: str) -> bool:
@@ -286,5 +287,5 @@ def bootstrap_registry(path: Path, schema: pa.Schema, daemon_name: str) -> bool:
     if path.exists():
         return False
     save_registry(path, schema, daemon_name)
-    _log.info("Bootstrapped schema registry for %s at %s", daemon_name, path)
+    logger.info("Bootstrapped schema registry for %s at %s", daemon_name, path)
     return True
