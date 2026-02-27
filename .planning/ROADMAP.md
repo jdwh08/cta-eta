@@ -51,7 +51,7 @@ Plans:
 - [x] 10-02: TrainPositionDaemon refactor (ParquetWriter → JournalWriter)
 - [x] 10-03: WeatherDaemon refactor (ParquetWriter → JournalWriter)
 
-#### Phase 11: Data Compaction
+#### ✅ Phase 11: Data Compaction (Complete — 2026-02-25)
 
 **Goal**: Daily batch job (3am Chicago time) that merges yesterday's IPC journal files into a single validated, Snappy-compressed Parquet file per daemon per day, then uploads to cloud storage as immutable raw data
 **Depends on**: Phase 10
@@ -59,9 +59,9 @@ Plans:
 **Plans**: 3 plans
 
 Plans:
-- [ ] 11-01-PLAN.md — TDD implementation of IPC reader (schemas.py + ipc_reader.py: file discovery, partial repair, schema validation)
-- [ ] 11-02-PLAN.md — Compaction pipeline (uploader.py + archiver.py + compact.py CLI + config.toml [compaction] section)
-- [ ] 11-03-PLAN.md — Operational integration (systemd service + timer, cta-monitor compaction subcommand, cta-compact script)
+- [x] 11-01-PLAN.md — TDD implementation of IPC reader (schemas.py + ipc_reader.py: file discovery, partial repair, schema validation)
+- [x] 11-02-PLAN.md — Compaction pipeline (uploader.py + archiver.py + compact.py CLI + config.toml [compaction] section)
+- [x] 11-03-PLAN.md — Operational integration (systemd service + timer, cta-monitor compaction subcommand, cta-compact script)
 
 #### Phase 12: Schema Enforcement
 
@@ -72,7 +72,7 @@ Plans:
 **Plans**: 3 plans
 
 Plans:
-- [ ] 12-01-PLAN.md — TDD implementation of schema_registry.py (DriftResult, classify_drift, JSON+IPC registry format, bootstrap/load/save)
+- [x] 12-01-PLAN.md — TDD implementation of schema_registry.py (DriftResult, classify_drift, JSON+IPC registry format, bootstrap/load/save)
 - [ ] 12-02-PLAN.md — Compaction pipeline integration (per-journal drift checking, drift alerting, Parquet file-level drift annotation)
 - [ ] 12-03-PLAN.md — Operator surface (cta-monitor Schema column, cta-compact schema update subcommand with git auto-commit)
 
@@ -90,5 +90,5 @@ Plans:
 | 8. Monitoring & Metrics | v0.1 | 3/3 | Complete | 2026-01-28 |
 | 9. Alerting & Deployment | v0.1 | 4/4 | Complete | 2026-02-16 |
 | 10. IPC Journal Writer | v0.2 | 3/3 | Complete | 2026-02-17 |
-| 11. Data Compaction | 3/3 | Complete    | 2026-02-25 | - |
-| 12. Schema Enforcement | v0.2 | 0/3 | Not started | - |
+| 11. Data Compaction | v0.2 | 3/3 | Complete | 2026-02-25 |
+| 12. Schema Enforcement | v0.2 | 1/3 | In progress | - |

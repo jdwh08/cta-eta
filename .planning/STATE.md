@@ -9,18 +9,24 @@ See: .planning/PROJECT.md (updated 2026-02-16)
 
 ## Current Position
 
-Phase: 11 of 12 (Data Validation & Cleaning)
-Plan: 3 of 3 in current phase (phase complete)
-Status: Phase 11 complete
-Last activity: 2026-02-25 — Completed Phase 11 Plan 03 (operational integration: systemd service + timer + cta-monitor compaction subcommand)
+Phase: 12 of 12 (Schema Enforcement)
+Plan: 1 of 3 in current phase
+Status: Phase 12 in progress
+Last activity: 2026-02-27 — Completed Phase 12 Plan 01 (schema_registry module: DriftResult, classify_drift, registry load/save/bootstrap)
 
-Progress: ██████░░░░ 50%
+Progress: ███████░░░ 60%
 
 ## Accumulated Context
 
 ### Decisions
 
 Decisions are logged in PROJECT.md Key Decisions table (all decisions with outcomes).
+
+**12-01 Schema Registry decisions:**
+- WIDENING_PAIRS stored as frozenset of string tuples (str(pa.DataType)) for O(1) lookup — avoids pyarrow type object equality complexity
+- registry_dict_to_schema() ignores human-readable fields list entirely, uses schema_ipc_b64 exclusively — pa.lib.ensure_type fails on timestamp[us, tz=UTC]
+- load_registry() raises ValueError on corrupt JSON (not silent None) — corruption and absence require different operator responses
+- bootstrap_registry() checks existence before save — idempotent, safe to call on every compaction run
 
 **11-01 IPC Reader decisions:**
 - Catch OSError in addition to ArrowInvalid in read_ipc_with_repair: pyarrow 22.0.0 raises OSError for body read failures during truncation
@@ -56,6 +62,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-02-25
-Stopped at: Completed 11-03-PLAN.md (operational integration: cta-compaction.service + cta-compaction.timer + cta-monitor compaction subcommand)
+Last session: 2026-02-27
+Stopped at: Completed 12-01-PLAN.md (schema_registry module: DriftResult, classify_drift, registry load/save/bootstrap with TDD)
 Resume file: None
