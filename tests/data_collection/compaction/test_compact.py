@@ -717,7 +717,7 @@ class TestMainSidecarAlwaysWritten:
 
 
 class TestMainReprocessFlag:
-    """--reprocess threads reprocess=True to upload_parquet."""
+    """--reprocess threads reprocess=True to upload_parquet (via 'run' subcommand)."""
 
     def test_reprocess_flag_sets_reprocess_true(
         self, tmp_path: Path, mocker: MockerFixture
@@ -752,7 +752,8 @@ class TestMainReprocessFlag:
             "cta_eta.data_collection.compaction.compact._write_sidecar",
         )
 
-        main(argv=["--reprocess", "2026-02-17"])
+        # Use new 'run' subcommand form (old 'cta-compact --reprocess DATE' no longer works)
+        main(argv=["run", "--reprocess", "2026-02-17"])
 
         assert mock_upload.call_count >= 1
         for call in mock_upload.call_args_list:
@@ -820,7 +821,8 @@ class TestMainTargetDate:
             return_value=[],
         )
 
-        main(argv=["--reprocess", "2026-02-20"])
+        # Use new 'run' subcommand form (old 'cta-compact --reprocess DATE' no longer works)
+        main(argv=["run", "--reprocess", "2026-02-20"])
 
         discover.assert_called()
         call_args = discover.call_args[0]

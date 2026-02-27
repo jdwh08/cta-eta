@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from cta_eta.data_collection.compaction.compact import cmd_schema_update
 from cta_eta.monitoring import cli
 
 if TYPE_CHECKING:
@@ -1044,3 +1045,219 @@ class TestMain:
         with pytest.raises(SystemExit) as exc_info:
             cli.main(["--help"])
         assert exc_info.value.code == 0
+
+
+@pytest.mark.skipif(pa is None or pq is None, reason="pyarrow required")
+class TestCompactionSchemaColumn:
+    """Tests for the Schema column in cmd_compaction (reads schema_drift Parquet metadata)."""
+
+    def _write_sidecar(self, compaction_dir: Path, daemon: str, date_str: str) -> None:
+        """Write a minimal compaction sidecar JSON so cmd_compaction has a record to show."""
+        sidecar = compaction_dir / f"compaction-{date_str}-{daemon}.json"
+        sidecar.write_text(
+            json.dumps(
+                {
+                    "date": date_str,
+                    "daemon": daemon,
+                    "status": "success",
+                    "journals_found": 1,
+                    "journals_repaired": 0,
+                    "journals_skipped": 0,
+                    "rows_written": 100,
+                    "upload_bytes": 1000,
+                    "elapsed_seconds": 1.0,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def _make_parquet(
+        self,
+        compaction_dir: Path,
+        daemon: str,
+        date_str: str,
+        *,
+        drift: bool = False,
+    ) -> Path:
+        """Create a staging Parquet file under the expected compaction layout."""
+        parquet_dir = compaction_dir / daemon / f"date={date_str}"
+        parquet_dir.mkdir(parents=True, exist_ok=True)
+        parquet_path = parquet_dir / "data.parquet"
+        table = pa.table({"x": pa.array([1, 2, 3])})
+        if drift:
+            table = table.replace_schema_metadata({b"schema_drift": b"true"})
+        pq.write_table(table, parquet_path, compression="snappy")
+        return parquet_path
+
+    def test_schema_column_ok(
+        self, compaction_dir: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Schema column shows OK for a Parquet file with no schema_drift metadata."""
+        daemon = "train_positions"
+        date_str = "2026-02-25"
+        self._write_sidecar(compaction_dir, daemon, date_str)
+        self._make_parquet(compaction_dir, daemon, date_str, drift=False)
+
+        args = type("Args", (), {"days": 7, "json": False})()
+        cli.cmd_compaction(args)
+
+        captured = capsys.readouterr()
+        assert "OK" in captured.out
+
+    def test_schema_column_drift(
+        self, compaction_dir: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Schema column shows DRIFT for a Parquet file annotated with schema_drift=true."""
+        daemon = "train_positions"
+        date_str = "2026-02-25"
+        self._write_sidecar(compaction_dir, daemon, date_str)
+        self._make_parquet(compaction_dir, daemon, date_str, drift=True)
+
+        args = type("Args", (), {"days": 7, "json": False})()
+        cli.cmd_compaction(args)
+
+        captured = capsys.readouterr()
+        assert "DRIFT" in captured.out
+
+    def test_schema_column_missing_file(
+        self, compaction_dir: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Schema column shows ? when no local Parquet exists for the record."""
+        daemon = "train_positions"
+        date_str = "2026-02-25"
+        self._write_sidecar(compaction_dir, daemon, date_str)
+        # Do NOT create a Parquet file — only the sidecar exists
+
+        args = type("Args", (), {"days": 7, "json": False})()
+        cli.cmd_compaction(args)
+
+        captured = capsys.readouterr()
+        assert "?" in captured.out
+
+
+@pytest.mark.skipif(pa is None or pq is None, reason="pyarrow required")
+class TestSchemaUpdateCommand:
+    """Tests for cmd_schema_update (cta-compact schema update)."""
+
+    def _make_parquet(self, base_dir: Path, daemon: str, date_str: str) -> Path:
+        """Create a staging Parquet under {base_dir}/{daemon}/date={date_str}/data.parquet."""
+        parquet_dir = base_dir / daemon / f"date={date_str}"
+        parquet_dir.mkdir(parents=True, exist_ok=True)
+        parquet_path = parquet_dir / "data.parquet"
+        table = pa.table({"value": pa.array([1, 2, 3], type=pa.int64())})
+        pq.write_table(table, parquet_path, compression="snappy")
+        return parquet_path
+
+    def test_schema_update_writes_registry(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """cmd_schema_update reads latest Parquet and calls save_registry with its schema."""
+        daemon = "train_positions"
+        date_str = "2026-02-25"
+        self._make_parquet(tmp_path, daemon, date_str)
+
+        mocker.patch(
+            "cta_eta.data_collection.compaction.compact.load_config",
+            return_value={"compaction": {"compaction_dir": str(tmp_path)}},
+        )
+        mock_save = mocker.patch(
+            "cta_eta.data_collection.compaction.compact.save_registry"
+        )
+        mocker.patch("subprocess.run")
+
+        args = type("Args", (), {"daemon": daemon})()
+        cmd_schema_update(args)
+
+        assert mock_save.called
+        call_args = mock_save.call_args
+        # First positional arg is the registry path, second is schema, third is daemon_name
+        saved_schema = call_args[0][1]
+        assert isinstance(saved_schema, pa.Schema)
+        assert saved_schema.field("value").type == pa.int64()
+
+    def test_schema_update_git_commit_attempted(
+        self,
+        tmp_path: Path,
+        mocker: MockerFixture,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """cmd_schema_update calls git add and git commit when subprocess succeeds."""
+        daemon = "train_positions"
+        date_str = "2026-02-25"
+        self._make_parquet(tmp_path, daemon, date_str)
+
+        mocker.patch(
+            "cta_eta.data_collection.compaction.compact.load_config",
+            return_value={"compaction": {"compaction_dir": str(tmp_path)}},
+        )
+        mocker.patch("cta_eta.data_collection.compaction.compact.save_registry")
+        mock_subprocess = mocker.patch("subprocess.run")
+
+        args = type("Args", (), {"daemon": daemon})()
+        cmd_schema_update(args)
+
+        assert mock_subprocess.call_count == 2
+        first_call_cmd = mock_subprocess.call_args_list[0][0][0]
+        second_call_cmd = mock_subprocess.call_args_list[1][0][0]
+        assert first_call_cmd[0] == "git"
+        assert first_call_cmd[1] == "add"
+        assert second_call_cmd[0] == "git"
+        assert second_call_cmd[1] == "commit"
+
+        captured = capsys.readouterr()
+        assert "committed to git" in captured.out
+
+    def test_schema_update_git_fallback_on_failure(
+        self,
+        tmp_path: Path,
+        mocker: MockerFixture,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """cmd_schema_update prints fallback message when git subprocess fails."""
+        import subprocess
+
+        daemon = "train_positions"
+        date_str = "2026-02-25"
+        self._make_parquet(tmp_path, daemon, date_str)
+
+        mocker.patch(
+            "cta_eta.data_collection.compaction.compact.load_config",
+            return_value={"compaction": {"compaction_dir": str(tmp_path)}},
+        )
+        mocker.patch("cta_eta.data_collection.compaction.compact.save_registry")
+        mocker.patch(
+            "subprocess.run",
+            side_effect=subprocess.CalledProcessError(1, "git"),
+        )
+
+        args = type("Args", (), {"daemon": daemon})()
+        cmd_schema_update(args)
+
+        captured = capsys.readouterr()
+        assert "Commit manually" in captured.out
+
+    def test_schema_update_no_parquet_found(
+        self,
+        tmp_path: Path,
+        mocker: MockerFixture,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """cmd_schema_update prints message and does not crash when no Parquet exists."""
+        daemon = "train_positions"
+        # Create the daemon dir but no date= subdirs or data.parquet
+        (tmp_path / daemon).mkdir(parents=True, exist_ok=True)
+
+        mocker.patch(
+            "cta_eta.data_collection.compaction.compact.load_config",
+            return_value={"compaction": {"compaction_dir": str(tmp_path)}},
+        )
+
+        args = type("Args", (), {"daemon": daemon})()
+        cmd_schema_update(args)
+
+        captured = capsys.readouterr()
+        assert "No Parquet file found" in captured.out
