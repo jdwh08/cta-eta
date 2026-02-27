@@ -652,6 +652,33 @@ def _add_metrics_command(subparsers: argparse._SubParsersAction) -> None:
     parser.set_defaults(func=cmd_metrics)
 
 
+def _read_schema_drift(compaction_dir: Path, daemon: str, date_str: str) -> str:
+    """Read schema_drift metadata from local staging Parquet. Returns 'DRIFT', 'OK', or '?'.
+
+    Args:
+        compaction_dir: Base compaction directory.
+        daemon: Daemon name (e.g., "train_positions").
+        date_str: ISO date string (e.g., "2026-02-17").
+
+    Returns:
+        "DRIFT" if schema_drift metadata is "true", "OK" if metadata is absent or not "true",
+        "?" if the file does not exist or cannot be read.
+
+    """
+    parquet_path = compaction_dir / daemon / f"date={date_str}" / "data.parquet"
+    if not parquet_path.exists():
+        return "?"
+    if pq is None:
+        return "?"
+    try:
+        meta = pq.read_metadata(parquet_path)
+        kv = meta.metadata or {}
+        drift_val = kv.get(b"schema_drift", b"").decode()
+        return "DRIFT" if drift_val == "true" else "OK"
+    except Exception:  # noqa: BLE001
+        return "?"
+
+
 def cmd_compaction(args: argparse.Namespace) -> None:
     """Handle 'compaction' command - show compaction job status and metrics.
 
@@ -706,9 +733,9 @@ def cmd_compaction(args: argparse.Namespace) -> None:
     print()
     print(
         f"{'Date':<12} {'Daemon':<20} {'Status':<10} {'Journals':<16} "
-        f"{'Rows':<12} {'Upload':<10} {'Elapsed':<8}"
+        f"{'Rows':<12} {'Upload':<10} {'Elapsed':<8} {'Schema':<8}"
     )
-    print("─" * 90)
+    print("─" * 98)
 
     has_failure = False
     days_seen: set[str] = set()
@@ -757,9 +784,12 @@ def cmd_compaction(args: argparse.Namespace) -> None:
         # Elapsed
         elapsed_str = f"{elapsed:.1f}s"
 
+        # Schema drift status from local Parquet metadata
+        schema_str = _read_schema_drift(compaction_dir, daemon_val, date_val)
+
         print(
             f"{date_val:<12} {daemon_val:<20} {status_str:<10} {journals_str:<16} "
-            f"{rows_str:<12} {upload_str:<10} {elapsed_str:<8}"
+            f"{rows_str:<12} {upload_str:<10} {elapsed_str:<8} {schema_str:<8}"
         )
 
     print()
