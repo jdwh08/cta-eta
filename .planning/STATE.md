@@ -10,17 +10,22 @@ See: .planning/PROJECT.md (updated 2026-02-16)
 ## Current Position
 
 Phase: 12 of 12 (Schema Enforcement)
-Plan: 2 of 3 in current phase
-Status: Phase 12 in progress
-Last activity: 2026-02-27 — Completed Phase 12 Plan 02 (schema registry integration into compaction: drift detection loop, alert guard, Parquet annotation, bootstrap)
+Plan: 3 of 3 in current phase
+Status: Phase 12 complete
+Last activity: 2026-02-27 — Completed Phase 12 Plan 03 (schema drift surface in cta-monitor compaction view, cta-compact schema update subcommand)
 
-Progress: ████████░░ 70%
+Progress: ██████████ 100%
 
 ## Accumulated Context
 
 ### Decisions
 
 Decisions are logged in PROJECT.md Key Decisions table (all decisions with outcomes).
+
+**12-03 Schema Drift Surface decisions:**
+- cta-compact --reprocess DATE no longer works; replaced by 'cta-compact run --reprocess DATE' (intentional breaking change — systemd service unaffected)
+- Schema column reads pq.read_metadata() from local staging Parquet; returns ? for missing/unreadable files (graceful degradation)
+- subprocess noqa suppressions scoped per-line: S603 on subprocess.run() call, S607 on the list-argument line
 
 **12-02 Schema Registry Integration decisions:**
 - continue-on-drift: breaking drift journals merged (not skipped) — continue-on-drift policy with column cast + annotation
@@ -69,5 +74,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-27
-Stopped at: Completed 12-02-PLAN.md (schema registry integration into compaction: drift detection loop, Parquet annotation, bootstrap)
+Stopped at: Completed 12-03-PLAN.md (schema drift surface in cta-monitor, cta-compact schema update subcommand — Phase 12 complete)
 Resume file: None
