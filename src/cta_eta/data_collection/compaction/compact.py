@@ -6,9 +6,10 @@ cloud storage (fsspec-compatible URL), and archives source journals.
 
 Usage:
     uv run python -m cta_eta.data_collection.compaction.compact
-    uv run python -m cta_eta.data_collection.compaction.compact --reprocess 2026-02-17
-    cta-compact  # installed entry point
-    cta-compact --reprocess 2026-02-17
+    cta-compact                           # run compaction (default, backward compat)
+    cta-compact run --reprocess 2026-02-17  # explicit reprocess (replaces old --reprocess)
+    cta-compact schema update             # promote observed schema to registry
+    cta-compact schema update --daemon train_positions
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import subprocess
 import time
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -443,11 +445,76 @@ def send_compaction_alert(metrics: CompactionMetrics, config: dict[str, Any]) ->
         )
 
 
+def cmd_schema_update(args: argparse.Namespace) -> None:
+    """Promote latest observed Parquet schema to the registry.
+
+    Finds the most recent compacted Parquet, reads its schema, overwrites the
+    registry file for the given daemon, and attempts a git commit.
+
+    Args:
+        args: Parsed CLI args. Uses args.daemon (default: all daemons).
+
+    """
+    config = load_config()
+    compaction_cfg = config.get("compaction", {})
+    compaction_dir = Path(str(compaction_cfg.get("compaction_dir", "data/compaction")))
+
+    daemon_names = ["train_positions", "weather"] if args.daemon == "all" else [args.daemon]
+
+    for daemon_name in daemon_names:
+        # Find most recent local Parquet for this daemon
+        daemon_dir = compaction_dir / daemon_name
+        if not daemon_dir.exists():
+            print(f"No compaction data found for {daemon_name} in {daemon_dir}")  # noqa: T201
+            continue
+
+        # Sort date=YYYY-MM-DD dirs descending, take first with a data.parquet
+        date_dirs = sorted(daemon_dir.glob("date=*"), reverse=True)
+        latest_parquet = None
+        for date_dir in date_dirs:
+            candidate = date_dir / "data.parquet"
+            if candidate.exists():
+                latest_parquet = candidate
+                break
+
+        if latest_parquet is None:
+            print(f"No Parquet file found for {daemon_name}")  # noqa: T201
+            continue
+
+        # Read schema from latest Parquet
+        schema = pq.read_schema(latest_parquet)
+        registry_path = _REGISTRY_DIR / f"{daemon_name}.json"
+        save_registry(registry_path, schema, daemon_name)
+        print(f"Registry updated: {registry_path}")  # noqa: T201
+
+        # Attempt git commit
+        try:
+            subprocess.run(  # noqa: S603
+                ["git", "add", str(registry_path)],  # noqa: S607
+                check=True, capture_output=True,
+            )
+            subprocess.run(  # noqa: S603
+                ["git", "commit", "-m", f"chore: update schema registry for {daemon_name}"],  # noqa: S607
+                check=True, capture_output=True,
+            )
+            print(f"Registry committed to git: {registry_path}")  # noqa: T201
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            print("Registry updated. Commit manually:")  # noqa: T201
+            print(f"  git add {registry_path} && git commit -m 'chore: update schema registry for {daemon_name}'")  # noqa: T201
+
+
 def main(argv: list[str] | None = None) -> None:
     """Run the daily compaction job for all daemon datasets.
 
     Args:
         argv: Argument list for CLI parsing. Defaults to sys.argv[1:] if None.
+
+    Subcommands:
+        (no subcommand): Run daily compaction. Backward compatible with systemd service.
+        run [--reprocess YYYY-MM-DD]: Explicitly run compaction. Replaces old top-level
+            --reprocess flag. NOTE: 'cta-compact --reprocess DATE' no longer works;
+            use 'cta-compact run --reprocess DATE' for manual reprocessing.
+        schema update [--daemon DAEMON]: Promote observed schema to registry.
 
     """
     logging.basicConfig(
@@ -458,16 +525,52 @@ def main(argv: list[str] | None = None) -> None:
         prog="cta-compact",
         description="Compact IPC journal files into daily Parquet for cloud upload.",
     )
-    parser.add_argument(
+    subparsers = parser.add_subparsers(dest="subcommand")
+
+    # "run" subcommand (explicit, replaces old top-level --reprocess)
+    # NOTE: 'cta-compact --reprocess DATE' no longer works; use 'cta-compact run --reprocess DATE'
+    run_parser = subparsers.add_parser(
+        "run",
+        help="Run daily compaction (default when no subcommand given)",
+    )
+    run_parser.add_argument(
         "--reprocess",
         type=date.fromisoformat,
         metavar="YYYY-MM-DD",
         help="Re-compact a specific past date (default: yesterday).",
     )
+
+    # "schema" subcommand
+    schema_parser = subparsers.add_parser(
+        "schema",
+        help="Schema registry management",
+    )
+    schema_sub = schema_parser.add_subparsers(dest="schema_command")
+    update_parser = schema_sub.add_parser(
+        "update",
+        help="Promote observed schema to registry",
+    )
+    update_parser.add_argument(
+        "--daemon",
+        default="all",
+        choices=["all", "train_positions", "weather"],
+        help="Daemon to update (default: all)",
+    )
+    update_parser.set_defaults(func=cmd_schema_update)
+
     args = parser.parse_args(argv)
 
+    if args.subcommand == "schema":
+        if not hasattr(args, "func"):
+            schema_parser.print_help()
+            return
+        args.func(args)
+        return
+
+    # Default behavior: no subcommand or "run" subcommand → run compaction
+    # (systemd service uses 'cta-compact' with no args — backward compatible)
     config = load_config()
-    reprocess_date: date | None = args.reprocess
+    reprocess_date: date | None = getattr(args, "reprocess", None)
     target_date = reprocess_date or (datetime.now(tz=UTC) - timedelta(days=1))
     is_reprocess = reprocess_date is not None
 
