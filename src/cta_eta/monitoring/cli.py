@@ -379,9 +379,9 @@ def cmd_gaps(args: argparse.Namespace) -> None:
 
     for parquet_file in sorted(dataset_dir.rglob("*.parquet")):
         try:
-            # Read schema metadata
-            metadata = pq.read_metadata(parquet_file)
-            schema_metadata = metadata.schema.metadata
+            # Schema metadata (e.g. gap_metadata) is on the Arrow schema, not ParquetSchema
+            with pq.ParquetFile(parquet_file) as pf:
+                schema_metadata = pf.schema_arrow.metadata or {}
 
             if not schema_metadata or b"gap_metadata" not in schema_metadata:
                 continue
@@ -671,8 +671,8 @@ def cmd_compaction(args: argparse.Namespace) -> None:
         reverse=True,
     )
 
-    # Apply --days filter
-    cutoff = datetime.now(tz=UTC) - timedelta(days=days)
+    # Apply --days filter: include records on or after cutoff date (date-level comparison)
+    cutoff_date = (datetime.now(tz=UTC) - timedelta(days=days)).date()
     filtered: list[dict[str, object]] = []
     for sidecar_path in sidecars:
         try:
@@ -681,8 +681,8 @@ def cmd_compaction(args: argparse.Namespace) -> None:
             # Parse date from metrics (format: "2026-02-17")
             date_str = str(data.get("date", ""))
             if date_str:
-                sidecar_date = datetime.fromisoformat(date_str).replace(tzinfo=UTC)
-                if sidecar_date < cutoff:
+                sidecar_date = datetime.fromisoformat(date_str).date()
+                if sidecar_date < cutoff_date:
                     continue
             filtered.append(data)
         except (OSError, json.JSONDecodeError, ValueError):
