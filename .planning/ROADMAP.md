@@ -91,4 +91,4 @@ Plans:
 | 9. Alerting & Deployment | v0.1 | 4/4 | Complete | 2026-02-16 |
 | 10. IPC Journal Writer | v0.2 | 3/3 | Complete | 2026-02-17 |
 | 11. Data Compaction | v0.2 | 3/3 | Complete | 2026-02-25 |
-| 12. Schema Enforcement | 3/3 | Complete   | 2026-02-27 | - |
+| 12. Schema Enforcement | 3/3 | Complete    | 2026-02-27 | - |
