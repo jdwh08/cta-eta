@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "daemon": "train_positions",
+  "updated": "2026-02-26",
+  "fields": [
+    {
+      "name": "poll_timestamp",
+      "type": "timestamp[us, tz=UTC]",
+      "nullable": true
+    },
+    {
+      "name": "api_timestamp",
+      "type": "string",
+      "nullable": true
+    },
+    {
+      "name": "route",
+      "type": "string",
+      "nullable": true
+    },
+    {
+      "name": "train_id",
+      "type": "string",
+      "nullable": true
+    },
+    {
+      "name": "lat",
+      "type": "double",
+      "nullable": true
+    },
+    {
+      "name": "lon",
+      "type": "double",
+      "nullable": true
+    },
+    {
+      "name": "heading",
+      "type": "int64",
+      "nullable": true
+    },
+    {
+      "name": "next_station_id",
+      "type": "string",
+      "nullable": true
+    },
+    {
+      "name": "next_station_name",
+      "type": "string",
+      "nullable": true
+    },
+    {
+      "name": "destination_id",
+      "type": "string",
+      "nullable": true
+    },
+    {
+      "name": "destination_name",
+      "type": "string",
+      "nullable": true
+    },
+    {
+      "name": "prediction_time",
+      "type": "string",
+      "nullable": true
+    },
+    {
+      "name": "predicted_arrival_time",
+      "type": "string",
+      "nullable": true
+    },
+    {
+      "name": "is_approaching",
+      "type": "bool",
+      "nullable": true
+    },
+    {
+      "name": "is_delayed",
+      "type": "bool",
+      "nullable": true
+    }
+  ],
+  "schema_ipc_b64": "/////2gDAAAQAAAAAAAKAAwABgAFAAgACgAAAAABBAAMAAAACAAIAAAABAAIAAAABAAAAA8AAADwAgAAqAIAAHwCAABMAgAAGAIAAOwBAACwAQAAfAEAAEQBAAAQAQAA2AAAAKQAAABoAAAANAAAAAQAAABc/f//AAABBhAAAAAcAAAABAAAAAAAAAAKAAAAaXNfZGVsYXllZAAAjP3//4j9//8AAAEGEAAAACAAAAAEAAAAAAAAAA4AAABpc19hcHByb2FjaGluZwAAvP3//7j9//8AAAEFEAAAACgAAAAEAAAAAAAAABYAAABwcmVkaWN0ZWRfYXJyaXZhbF90aW1lAAD0/f//8P3//wAAAQUQAAAAIAAAAAQAAAAAAAAADwAAAHByZWRpY3Rpb25fdGltZQAk/v//IP7//wAAAQUQAAAAJAAAAAQAAAAAAAAAEAAAAGRlc3RpbmF0aW9uX25hbWUAAAAAWP7//1T+//8AAAEFEAAAACAAAAAEAAAAAAAAAA4AAABkZXN0aW5hdGlvbl9pZAAAiP7//4T+//8AAAEFEAAAACQAAAAEAAAAAAAAABEAAABuZXh0X3N0YXRpb25fbmFtZQAAALz+//+4/v//AAABBRAAAAAgAAAABAAAAAAAAAAPAAAAbmV4dF9zdGF0aW9uX2lkAOz+///o/v//AAABAhAAAAAgAAAABAAAAAAAAAAHAAAAaGVhZGluZwAIAAwACAAHAAgAAAAAAAABQAAAACD///8AAAEDEAAAABQAAAAEAAAAAAAAAAMAAABsb24A1v///wAAAgBI////AAABAxAAAAAcAAAABAAAAAAAAAADAAAAbGF0AAAABgAIAAYABgAAAAAAAgB4////AAABBRAAAAAcAAAABAAAAAAAAAAIAAAAdHJhaW5faWQAAAAAqP///6T///8AAAEFEAAAABgAAAAEAAAAAAAAAAUAAAByb3V0ZQAAAND////M////AAABBRAAAAAkAAAABAAAAAAAAAANAAAAYXBpX3RpbWVzdGFtcAAAAAQABAAEAAAAEAAUAAgABgAHAAwAAAAQABAAAAAAAAEKEAAAACgAAAAEAAAAAAAAAA4AAABwb2xsX3RpbWVzdGFtcAAACAAMAAYACAAIAAAAAAACAAQAAAADAAAAVVRDAA=="
+}

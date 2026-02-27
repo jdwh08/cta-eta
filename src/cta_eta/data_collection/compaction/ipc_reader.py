@@ -14,7 +14,7 @@ from datetime import date
 from pathlib import Path
 
 import pyarrow as pa
-import pyarrow.ipc as ipc
+from pyarrow import ipc
 
 
 def discover_journals(

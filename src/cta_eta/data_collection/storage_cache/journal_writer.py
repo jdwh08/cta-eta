@@ -51,7 +51,7 @@ class JournalWriter:
         self._rotation_interval_seconds = rotation_interval_seconds
         self._timezone = ZoneInfo(timezone)
 
-        self._writer: pa.ipc.RecordBatchWriter | None = None
+        self._writer: pa.ipc.RecordBatchFileWriter | None = None
         self._sink: pa.OSFile | None = None
         self._current_file: Path | None = None
         self._journal_start_time: datetime | None = None
@@ -176,4 +176,6 @@ def create_journal_writer(config: dict[str, dict[str, Any]]) -> JournalWriter:
     data_path: str = storage_config.get("data_path", "data")
     rotation_minutes: int = storage_config.get("journal_rotation_minutes", 15)
     rotation_seconds = rotation_minutes * 60
-    return JournalWriter(data_path=data_path, rotation_interval_seconds=rotation_seconds)
+    return JournalWriter(
+        data_path=data_path, rotation_interval_seconds=rotation_seconds
+    )

@@ -64,7 +64,9 @@ class TestJournalWriterAppendBatch:
 
         # Assert: file must exist under hive path
         assert writer._current_file is not None or True  # file was created
-        ipc_files = list(tmp_path.glob("train_positions/year=*/month=*/day=*/journal_*.ipc"))
+        ipc_files = list(
+            tmp_path.glob("train_positions/year=*/month=*/day=*/journal_*.ipc")
+        )
         assert len(ipc_files) == 1
         # Verify hive path structure
         ipc_path = ipc_files[0]
@@ -98,7 +100,9 @@ class TestJournalWriterAppendBatch:
         assert "a" in table.column_names
         assert table["a"].to_pylist() == [1, 2]
 
-    def test_append_batch_same_file_within_rotation_window(self, tmp_path: Path) -> None:
+    def test_append_batch_same_file_within_rotation_window(
+        self, tmp_path: Path
+    ) -> None:
         """Test two append_batch calls within rotation window use same file."""
         # Arrange
         writer = JournalWriter(data_path=tmp_path, rotation_interval_seconds=900)
@@ -117,7 +121,9 @@ class TestJournalWriterAppendBatch:
         # Assert: both writes use the same file
         assert file_after_first == file_after_second
 
-    def test_append_batch_new_file_after_rotation_interval(self, tmp_path: Path) -> None:
+    def test_append_batch_new_file_after_rotation_interval(
+        self, tmp_path: Path
+    ) -> None:
         """Test new journal file is created after rotation interval elapses."""
         # Arrange
         writer = JournalWriter(data_path=tmp_path, rotation_interval_seconds=1)
@@ -140,7 +146,9 @@ class TestJournalWriterAppendBatch:
         ipc_files = list(tmp_path.glob("test_data/year=*/month=*/day=*/journal_*.ipc"))
         assert len(ipc_files) == 2
 
-    def test_append_batch_empty_records_raises_value_error(self, tmp_path: Path) -> None:
+    def test_append_batch_empty_records_raises_value_error(
+        self, tmp_path: Path
+    ) -> None:
         """Test append_batch raises ValueError for empty records list."""
         # Arrange
         writer = JournalWriter(data_path=tmp_path)
@@ -161,6 +169,8 @@ class TestJournalWriterAppendBatch:
         file_first = writer._current_file
         writer.close()
 
+        time.sleep(2)
+
         # After close, _writer is None → next append opens a new journal
         records2 = [{"a": 2}]
         writer.append_batch(records2, dataset_name="test_data")
@@ -170,9 +180,10 @@ class TestJournalWriterAppendBatch:
         # Assert: two files exist (second may have same timestamp if <1s apart;
         # but they could be the same name — the key guarantee is that close+append
         # succeeded without error and a valid file was created)
+        assert file_first is not None
         assert file_second is not None
         ipc_files = list(tmp_path.glob("test_data/year=*/month=*/day=*/journal_*.ipc"))
-        assert len(ipc_files) >= 1
+        assert len(ipc_files) == 2
 
 
 class TestJournalWriterClose:
@@ -208,7 +219,9 @@ class TestJournalWriterClose:
 class TestJournalWriterRotate:
     """Test cases for JournalWriter.rotate()."""
 
-    def test_rotate_closes_current_and_next_append_opens_new(self, tmp_path: Path) -> None:
+    def test_rotate_closes_current_and_next_append_opens_new(
+        self, tmp_path: Path
+    ) -> None:
         """Test rotate() closes current file and next append opens a new file."""
         # Arrange
         writer = JournalWriter(data_path=tmp_path)

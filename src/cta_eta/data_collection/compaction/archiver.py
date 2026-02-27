@@ -80,8 +80,14 @@ def prune_archive(archive_base: Path, retention_days: int = 7) -> list[Path]:
             try:
                 shutil.rmtree(archive_dir)
                 pruned.append(archive_dir)
-                _log.info("Pruned archive directory %s (older than %d days)", archive_dir, retention_days)
+                _log.info(
+                    "Pruned archive directory %s (older than %d days)",
+                    archive_dir,
+                    retention_days,
+                )
             except OSError as exc:
-                _log.warning("Failed to prune archive directory %s: %s", archive_dir, exc)
+                _log.warning(
+                    "Failed to prune archive directory %s: %s", archive_dir, exc
+                )
 
     return pruned
