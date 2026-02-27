@@ -10,17 +10,23 @@ See: .planning/PROJECT.md (updated 2026-02-16)
 ## Current Position
 
 Phase: 12 of 12 (Schema Enforcement)
-Plan: 1 of 3 in current phase
+Plan: 2 of 3 in current phase
 Status: Phase 12 in progress
-Last activity: 2026-02-27 — Completed Phase 12 Plan 01 (schema_registry module: DriftResult, classify_drift, registry load/save/bootstrap)
+Last activity: 2026-02-27 — Completed Phase 12 Plan 02 (schema registry integration into compaction: drift detection loop, alert guard, Parquet annotation, bootstrap)
 
-Progress: ███████░░░ 60%
+Progress: ████████░░ 70%
 
 ## Accumulated Context
 
 ### Decisions
 
 Decisions are logged in PROJECT.md Key Decisions table (all decisions with outcomes).
+
+**12-02 Schema Registry Integration decisions:**
+- continue-on-drift: breaking drift journals merged (not skipped) — continue-on-drift policy with column cast + annotation
+- cast breaking columns to registry type before concat; ArrowInvalid cast failures log warning and keep as-is
+- promote_options="default" in concat_tables handles additive drift (new fields filled with null)
+- IPC test files use ipc.new_stream (not ipc.new_file) to match read_ipc_with_repair's ipc.open_stream reader
 
 **12-01 Schema Registry decisions:**
 - WIDENING_PAIRS stored as frozenset of string tuples (str(pa.DataType)) for O(1) lookup — avoids pyarrow type object equality complexity
@@ -63,5 +69,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-27
-Stopped at: Completed 12-01-PLAN.md (schema_registry module: DriftResult, classify_drift, registry load/save/bootstrap with TDD)
+Stopped at: Completed 12-02-PLAN.md (schema registry integration into compaction: drift detection loop, Parquet annotation, bootstrap)
 Resume file: None
