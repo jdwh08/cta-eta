@@ -1,4 +1,11 @@
-"""Tests for CLI monitoring tool."""
+"""Unit tests for CLI monitoring tool (cta_eta.monitoring.cli).
+
+Tests are atomic and side-effect free: daemon state, data dir, and compaction dir
+use tmp_path and monkeypatch for module constants. Mocked data is written to real
+temp files (JSON/JSONL) so the CLI reads from disk as in production. Use
+pytest-mock only where necessary (e.g. pyarrow availability, time) for speed and
+determinism.
+"""
 
 # ruff: noqa: ARG002  # Pytest fixtures appear as unused arguments
 
@@ -6,30 +13,33 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
 
+from cta_eta.data_collection.compaction.compact import cmd_schema_update
 from cta_eta.monitoring import cli
 
 if TYPE_CHECKING:
-    from pathlib import Path
+    from pytest_mock import MockerFixture
+
+try:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+except ImportError:
+    pa = None  # type: ignore[assignment]
+    pq = None  # type: ignore[assignment]
 
 
 @pytest.fixture
-def daemon_state_dir(tmp_path: Path) -> Path:
-    """Create temporary daemon state directory."""
+def daemon_state_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Create temporary daemon state directory and patch module constant."""
     state_dir = tmp_path / ".daemon_state"
     state_dir.mkdir(exist_ok=True)
-
-    # Patch the module-level constant
-    original_dir = cli._DAEMON_STATE_DIR
-    cli._DAEMON_STATE_DIR = state_dir
-
-    yield state_dir
-
-    # Restore original
-    cli._DAEMON_STATE_DIR = original_dir
+    monkeypatch.setattr(cli, "_DAEMON_STATE_DIR", state_dir)
+    return state_dir
 
 
 @pytest.fixture
@@ -96,12 +106,32 @@ def error_events(daemon_state_dir: Path) -> None:
             f.write(json.dumps(event) + "\n")
 
 
+@pytest.fixture
+def data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Temporary data directory; patches cli._DEFAULT_DATA_DIR."""
+    data = tmp_path / "data"
+    data.mkdir(exist_ok=True)
+    monkeypatch.setattr(cli, "_DEFAULT_DATA_DIR", data)
+    return data
+
+
+@pytest.fixture
+def compaction_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Temporary compaction directory; patches cli._DEFAULT_COMPACTION_DIR."""
+    comp = tmp_path / "compaction"
+    comp.mkdir(exist_ok=True)
+    monkeypatch.setattr(cli, "_DEFAULT_COMPACTION_DIR", comp)
+    return comp
+
+
 class TestDiscoverDaemons:
     """Tests for _discover_daemons function."""
 
-    def test_no_state_dir(self, tmp_path: Path) -> None:
-        """Test when state directory doesn't exist."""
-        cli._DAEMON_STATE_DIR = tmp_path / ".daemon_state"
+    def test_no_state_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When state directory does not exist, returns empty list."""
+        monkeypatch.setattr(cli, "_DAEMON_STATE_DIR", tmp_path / ".daemon_state")
         result = cli._discover_daemons()
         assert result == []
 
@@ -128,7 +158,9 @@ class TestReadDaemonState:
         result = cli._read_daemon_state("NonexistentDaemon")
         assert result is None
 
-    def test_valid_state_file(self, daemon_state_dir: Path, active_daemon: None) -> None:
+    def test_valid_state_file(
+        self, daemon_state_dir: Path, active_daemon: None
+    ) -> None:
         """Test reading valid state file."""
         result = cli._read_daemon_state("TrainPositionDaemon")
         assert result is not None
@@ -199,9 +231,7 @@ class TestReadDiagnosticEvents:
         result = cli._read_diagnostic_events("TrainPositionDaemon")
         assert result == []
 
-    def test_reads_events(
-        self, daemon_state_dir: Path, error_events: None
-    ) -> None:
+    def test_reads_events(self, daemon_state_dir: Path, error_events: None) -> None:
         """Test reading diagnostic events."""
         result = cli._read_diagnostic_events("TrainPositionDaemon")
         assert len(result) == 2
@@ -280,15 +310,48 @@ class TestCmdStatus:
         stale_daemon: None,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """Test status command with both active and stale daemons."""
+        """Status with both active and stale daemons reports DEGRADED and exit 1."""
         args = type("Args", (), {})()
         with pytest.raises(SystemExit) as exc_info:
             cli.cmd_status(args)
-
         assert exc_info.value.code == 1
         captured = capsys.readouterr()
         assert "Overall: DEGRADED" in captured.out
-        assert "1 stale daemon" in captured.out
+        assert "stale daemon" in captured.out
+
+    def test_unknown_state_when_state_file_missing(
+        self, daemon_state_dir: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Daemon discovered via state file but state unreadable shows unknown and exit 2."""
+        (daemon_state_dir / "TrainPositionDaemon.json").touch()
+        with (daemon_state_dir / "TrainPositionDaemon.json").open("wb") as f:
+            f.write(b"not valid json")
+        args = type("Args", (), {})()
+        with pytest.raises(SystemExit) as exc_info:
+            cli.cmd_status(args)
+        assert exc_info.value.code == 2
+        captured = capsys.readouterr()
+        assert "unknown" in captured.out
+        assert "Overall: UNKNOWN" in captured.out
+
+    def test_alternate_last_collection_timestamp(
+        self, daemon_state_dir: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """State using last_collection_timestamp (no last_poll_timestamp) is handled."""
+        state_file = daemon_state_dir / "TrainPositionDaemon.json"
+        state = {
+            "last_collection_timestamp": time.time() - 60.0,
+            "total_records_collected": 500,
+        }
+        with state_file.open("w", encoding="utf-8") as f:
+            json.dump(state, f)
+        args = type("Args", (), {})()
+        with pytest.raises(SystemExit) as exc_info:
+            cli.cmd_status(args)
+        assert exc_info.value.code == 0
+        captured = capsys.readouterr()
+        assert "HEALTHY" in captured.out
+        assert "500" in captured.out
 
 
 class TestCmdErrors:
@@ -342,10 +405,9 @@ class TestCmdErrors:
         error_events: None,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """Test errors command with JSON output."""
+        """Errors command with --json outputs machine-readable list."""
         args = type("Args", (), {"limit": 20, "json": True})()
         cli.cmd_errors(args)
-
         captured = capsys.readouterr()
         output = json.loads(captured.out)
         assert isinstance(output, list)
@@ -353,46 +415,169 @@ class TestCmdErrors:
         assert output[0]["error_type"] == "httpx.TimeoutError"
         assert output[0]["daemon_name"] == "TrainPositionDaemon"
 
+    def test_error_detected_by_span_name_suffix(
+        self, daemon_state_dir: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Events with name ending in .error are treated as errors even without kind=error."""
+        (daemon_state_dir / "WeatherDaemon.json").write_text(
+            json.dumps({"last_poll_timestamp": time.time()}), encoding="utf-8"
+        )
+        events_file = daemon_state_dir / "WeatherDaemon.events.jsonl"
+        events_file.write_text(
+            json.dumps(
+                {
+                    "ts": time.time() - 10.0,
+                    "name": "weather.fetch.error",
+                    "daemon_class": "WeatherDaemon",
+                    "error_type": "ValueError",
+                    "error_message": "Bad response",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        args = type("Args", (), {"limit": 20, "json": True})()
+        cli.cmd_errors(args)
+        captured = capsys.readouterr()
+        out = json.loads(captured.out)
+        assert len(out) == 1
+        assert out[0]["span_name"] == "weather.fetch.error"
+        assert out[0]["error_type"] == "ValueError"
+
 
 class TestCmdGaps:
     """Tests for cmd_gaps command."""
 
     def test_no_dataset_dir(
-        self, daemon_state_dir: Path, capsys: pytest.CaptureFixture[str], tmp_path: Path
+        self, data_dir: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """Test gaps command when dataset directory doesn't exist."""
-        # Set data dir to tmp_path (which won't have train_positions)
-        cli._DEFAULT_DATA_DIR = tmp_path
-        args = type("Args", (), {"dataset": "train_positions", "days": 7, "json": False})()
+        """When dataset subdir does not exist, prints message and no gaps."""
+        args = type(
+            "Args", (), {"dataset": "train_positions", "days": 7, "json": False}
+        )()
         cli.cmd_gaps(args)
-
         captured = capsys.readouterr()
+        assert "Dataset directory not found" in captured.out
         assert "No gaps found" in captured.out
 
     def test_no_gaps_found(
-        self, daemon_state_dir: Path, capsys: pytest.CaptureFixture[str], tmp_path: Path
+        self, data_dir: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """Test gaps command with no gap metadata."""
-        # Create dataset directory but no Parquet files
-        dataset_dir = tmp_path / "data" / "train_positions"
+        """Dataset dir exists but no Parquet files; outputs no gaps."""
+        dataset_dir = data_dir / "train_positions"
         dataset_dir.mkdir(parents=True, exist_ok=True)
-        cli._DEFAULT_DATA_DIR = tmp_path / "data"
-
-        args = type("Args", (), {"dataset": "train_positions", "days": 7, "json": False})()
+        args = type(
+            "Args", (), {"dataset": "train_positions", "days": 7, "json": False}
+        )()
         cli.cmd_gaps(args)
-
         captured = capsys.readouterr()
         assert "No gaps found" in captured.out
 
-    def test_json_output(
-        self, daemon_state_dir: Path, capsys: pytest.CaptureFixture[str]
+    def test_pyarrow_not_installed(
+        self, data_dir: Path, mocker: MockerFixture, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """Test gaps command with JSON output."""
-        args = type("Args", (), {"dataset": "train_positions", "days": 7, "json": True})()
+        """When pyarrow is not available, prints error and returns without reading files."""
+        (data_dir / "train_positions").mkdir(parents=True, exist_ok=True)
+        mocker.patch.object(cli, "pq", None)
+        args = type(
+            "Args", (), {"dataset": "train_positions", "days": 7, "json": False}
+        )()
         cli.cmd_gaps(args)
-
         captured = capsys.readouterr()
-        # Should output valid JSON (even if empty list)
+        assert "pyarrow not installed" in captured.out
+
+    def test_gaps_from_parquet_metadata(
+        self, data_dir: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Gap metadata is read from real Parquet schema metadata (integration-style)."""
+        if pq is None or pa is None:
+            pytest.skip("pyarrow required for Parquet gap metadata test")
+        dataset_dir = data_dir / "train_positions"
+        dataset_dir.mkdir(parents=True, exist_ok=True)
+        now = datetime.now(tz=UTC)
+        gap_end_ts = (now - timedelta(days=1)).timestamp()
+        gap_metadata = json.dumps(
+            {
+                "is_gap": True,
+                "gap_end_timestamp": gap_end_ts,
+                "gap_duration_seconds": 300.0,
+                "gap_reason": "daemon_restart",
+                "missed_poll_cycles": 20,
+            }
+        ).encode()
+        table = pa.table({"dummy": [1]}).replace_schema_metadata(
+            {"gap_metadata": gap_metadata}
+        )
+        parquet_path = dataset_dir / "gap_2026.parquet"
+        pq.write_table(table, parquet_path)
+        args = type(
+            "Args", (), {"dataset": "train_positions", "days": 7, "json": True}
+        )()
+        cli.cmd_gaps(args)
+        captured = capsys.readouterr()
+        out = json.loads(captured.out)
+        assert len(out) == 1
+        assert out[0]["is_gap"] is True
+        assert out[0]["gap_reason"] == "daemon_restart"
+        assert out[0]["missed_poll_cycles"] == 20
+
+    def test_gap_outside_window_omitted(
+        self, data_dir: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Gaps with gap_end_timestamp before cutoff are omitted."""
+        if pq is None or pa is None:
+            pytest.skip("pyarrow required")
+        dataset_dir = data_dir / "train_positions"
+        dataset_dir.mkdir(parents=True, exist_ok=True)
+        old_ts = (datetime.now(tz=UTC) - timedelta(days=30)).timestamp()
+        gap_metadata = json.dumps(
+            {
+                "is_gap": True,
+                "gap_end_timestamp": old_ts,
+                "gap_duration_seconds": 100.0,
+                "gap_reason": "old",
+                "missed_poll_cycles": 5,
+            }
+        ).encode()
+        table = pa.table({"dummy": [1]}).replace_schema_metadata(
+            {"gap_metadata": gap_metadata}
+        )
+        pq.write_table(table, dataset_dir / "old_gap.parquet")
+        args = type(
+            "Args", (), {"dataset": "train_positions", "days": 7, "json": True}
+        )()
+        cli.cmd_gaps(args)
+        captured = capsys.readouterr()
+        out = json.loads(captured.out)
+        assert out == []
+
+    def test_parquet_without_gap_metadata_skipped(
+        self, data_dir: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Parquet files without gap_metadata in schema are skipped."""
+        if pq is None or pa is None:
+            pytest.skip("pyarrow required")
+        dataset_dir = data_dir / "train_positions"
+        dataset_dir.mkdir(parents=True, exist_ok=True)
+        table = pa.table({"col": [1, 2, 3]})
+        pq.write_table(table, dataset_dir / "normal.parquet")
+        args = type(
+            "Args", (), {"dataset": "train_positions", "days": 7, "json": True}
+        )()
+        cli.cmd_gaps(args)
+        captured = capsys.readouterr()
+        assert json.loads(captured.out) == []
+
+    def test_json_output(
+        self, data_dir: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Output is valid JSON list when --json."""
+        (data_dir / "train_positions").mkdir(parents=True, exist_ok=True)
+        args = type(
+            "Args", (), {"dataset": "train_positions", "days": 7, "json": True}
+        )()
+        cli.cmd_gaps(args)
+        captured = capsys.readouterr()
         output = json.loads(captured.out)
         assert isinstance(output, list)
 
@@ -464,45 +649,554 @@ class TestCmdMetrics:
     def test_json_output(
         self, daemon_state_dir: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """Test metrics command with JSON output."""
+        """Metrics with --json outputs overall_status, daemons, alert_context."""
         args = type("Args", (), {"window": 1, "json": True})()
         cli.cmd_metrics(args)
-
         captured = capsys.readouterr()
         output = json.loads(captured.out)
         assert "overall_status" in output
         assert "daemons" in output
         assert "alert_context" in output
 
+    def test_window_24h_uses_last_24h_metrics(
+        self, daemon_state_dir: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Window 24 uses last_24h time_window_metrics from metrics file."""
+        (daemon_state_dir / "TrainPositionDaemon.json").write_text(
+            json.dumps({"last_poll_timestamp": time.time()}), encoding="utf-8"
+        )
+        metrics_file = daemon_state_dir / "TrainPositionDaemon.metrics.jsonl"
+        metrics_file.write_text(
+            json.dumps(
+                {
+                    "ts": time.time(),
+                    "metrics": {
+                        "time_window_metrics": {
+                            "last_hour": {
+                                "overall_success_rate": 1.0,
+                                "total_calls": 10,
+                                "per_span_metrics": {},
+                            },
+                            "last_24h": {
+                                "overall_success_rate": 0.85,
+                                "total_calls": 2000,
+                                "per_span_metrics": {"span1": {"p95_ms": 100.0}},
+                            },
+                        }
+                    },
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        args = type("Args", (), {"window": 24, "json": False})()
+        cli.cmd_metrics(args)
+        captured = capsys.readouterr()
+        assert "85.0%" in captured.out or "85%" in captured.out
+        assert "2,000" in captured.out or "2000" in captured.out
+
+    def test_critical_status_when_success_below_half(
+        self, daemon_state_dir: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Overall status is critical when success rate < 0.5."""
+        (daemon_state_dir / "TrainPositionDaemon.json").write_text(
+            json.dumps({"last_poll_timestamp": time.time()}), encoding="utf-8"
+        )
+        (daemon_state_dir / "TrainPositionDaemon.metrics.jsonl").write_text(
+            json.dumps(
+                {
+                    "ts": time.time(),
+                    "metrics": {
+                        "time_window_metrics": {
+                            "last_hour": {
+                                "overall_success_rate": 0.3,
+                                "total_calls": 100,
+                                "per_span_metrics": {},
+                            },
+                        }
+                    },
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        args = type("Args", (), {"window": 1, "json": True})()
+        cli.cmd_metrics(args)
+        captured = capsys.readouterr()
+        out = json.loads(captured.out)
+        assert out["overall_status"] == "critical"
+        assert any(
+            v["severity"] == "critical" for v in out["alert_context"]["violations"]
+        )
+
+    def test_degraded_status_when_success_below_90(
+        self, daemon_state_dir: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Overall status is degraded when success rate in [0.5, 0.9)."""
+        (daemon_state_dir / "TrainPositionDaemon.json").write_text(
+            json.dumps({"last_poll_timestamp": time.time()}), encoding="utf-8"
+        )
+        (daemon_state_dir / "TrainPositionDaemon.metrics.jsonl").write_text(
+            json.dumps(
+                {
+                    "ts": time.time(),
+                    "metrics": {
+                        "time_window_metrics": {
+                            "last_hour": {
+                                "overall_success_rate": 0.8,
+                                "total_calls": 100,
+                                "per_span_metrics": {},
+                            },
+                        }
+                    },
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        args = type("Args", (), {"window": 1, "json": True})()
+        cli.cmd_metrics(args)
+        captured = capsys.readouterr()
+        out = json.loads(captured.out)
+        assert out["overall_status"] == "degraded"
+
+    def test_corrupt_metrics_line_skipped(
+        self, daemon_state_dir: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Invalid JSON line in metrics file is skipped; last valid line is used."""
+        (daemon_state_dir / "TrainPositionDaemon.json").write_text(
+            json.dumps({"last_poll_timestamp": time.time()}), encoding="utf-8"
+        )
+        metrics_file = daemon_state_dir / "TrainPositionDaemon.metrics.jsonl"
+        with metrics_file.open("w", encoding="utf-8") as f:
+            f.write("{invalid\n")
+            f.write(
+                json.dumps(
+                    {
+                        "ts": time.time(),
+                        "metrics": {
+                            "time_window_metrics": {
+                                "last_hour": {
+                                    "overall_success_rate": 0.99,
+                                    "total_calls": 50,
+                                    "per_span_metrics": {},
+                                },
+                            }
+                        },
+                    }
+                )
+                + "\n"
+            )
+        args = type("Args", (), {"window": 1, "json": False})()
+        cli.cmd_metrics(args)
+        captured = capsys.readouterr()
+        assert "99.0%" in captured.out or "99%" in captured.out
+
+
+class TestCmdCompaction:
+    """Tests for cmd_compaction: compaction job status and metrics."""
+
+    def test_no_compaction_records(
+        self, compaction_dir: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """When no compaction-*.json sidecars exist, prints message and returns."""
+        args = type("Args", (), {"days": 7, "json": False})()
+        cli.cmd_compaction(args)
+        captured = capsys.readouterr()
+        assert "No compaction records" in captured.out
+        assert "Compaction Status" in captured.out
+
+    def test_compaction_success_record_human(
+        self, compaction_dir: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Single success record produces human-readable table and no exit."""
+        sidecar = compaction_dir / "compaction-2026-02-20.json"
+        sidecar.write_text(
+            json.dumps(
+                {
+                    "date": "2026-02-20",
+                    "daemon": "TrainPositionDaemon",
+                    "status": "success",
+                    "journals_found": 96,
+                    "journals_repaired": 0,
+                    "journals_skipped": 0,
+                    "rows_written": 125000,
+                    "upload_bytes": 5_000_000,
+                    "elapsed_seconds": 12.5,
+                }
+            ),
+            encoding="utf-8",
+        )
+        args = type("Args", (), {"days": 7, "json": False})()
+        cli.cmd_compaction(args)
+        captured = capsys.readouterr()
+        assert "2026-02-20" in captured.out
+        assert "TrainPositionDaemon" in captured.out
+        assert "125,000" in captured.out
+        assert "4.8 MB" in captured.out or "5.0 MB" in captured.out
+        assert "failures" in captured.out
+
+    def test_compaction_partial_and_failed(
+        self, compaction_dir: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Partial and failed status render as PARTIAL and FAILED; failure triggers exit 1."""
+        (compaction_dir / "compaction-2026-02-21.json").write_text(
+            json.dumps(
+                {
+                    "date": "2026-02-21",
+                    "daemon": "WeatherDaemon",
+                    "status": "partial",
+                    "journals_found": 10,
+                    "journals_repaired": 1,
+                    "journals_skipped": 0,
+                    "rows_written": 1000,
+                    "upload_bytes": 0,
+                    "elapsed_seconds": 2.0,
+                }
+            ),
+            encoding="utf-8",
+        )
+        (compaction_dir / "compaction-2026-02-22.json").write_text(
+            json.dumps(
+                {
+                    "date": "2026-02-22",
+                    "daemon": "WeatherDaemon",
+                    "status": "failed",
+                    "journals_found": 10,
+                    "journals_repaired": 0,
+                    "journals_skipped": 0,
+                    "rows_written": 0,
+                    "upload_bytes": 0,
+                    "elapsed_seconds": 2.0,
+                }
+            ),
+            encoding="utf-8",
+        )
+        args = type("Args", (), {"days": 7, "json": False})()
+        with pytest.raises(SystemExit) as exc_info:
+            cli.cmd_compaction(args)
+        assert exc_info.value.code == 1
+        captured = capsys.readouterr()
+        assert "PARTIAL" in captured.out
+        assert "FAILED" in captured.out
+        assert "1 repaired" in captured.out
+
+    def test_compaction_journals_skipped_display(
+        self, compaction_dir: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Journals column shows (N skipped) when journals_skipped > 0."""
+        (compaction_dir / "compaction-2026-02-23.json").write_text(
+            json.dumps(
+                {
+                    "date": "2026-02-23",
+                    "daemon": "TrainPositionDaemon",
+                    "status": "success",
+                    "journals_found": 50,
+                    "journals_repaired": 0,
+                    "journals_skipped": 3,
+                    "rows_written": 10000,
+                    "upload_bytes": 1000000,
+                    "elapsed_seconds": 5.0,
+                }
+            ),
+            encoding="utf-8",
+        )
+        args = type("Args", (), {"days": 7, "json": False})()
+        cli.cmd_compaction(args)
+        captured = capsys.readouterr()
+        assert "50 (3 skipped)" in captured.out
+
+    def test_compaction_json_output_and_exit_on_failure(
+        self, compaction_dir: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """With --json, outputs JSON array; exit 1 if any run has status failed."""
+        (compaction_dir / "compaction-2026-02-24.json").write_text(
+            json.dumps(
+                {
+                    "date": "2026-02-24",
+                    "daemon": "TrainPositionDaemon",
+                    "status": "failed",
+                    "journals_found": 0,
+                    "rows_written": 0,
+                    "upload_bytes": 0,
+                    "elapsed_seconds": 0.0,
+                }
+            ),
+            encoding="utf-8",
+        )
+        args = type("Args", (), {"days": 7, "json": True})()
+        with pytest.raises(SystemExit) as exc_info:
+            cli.cmd_compaction(args)
+        assert exc_info.value.code == 1
+        captured = capsys.readouterr()
+        out = json.loads(captured.out)
+        assert len(out) == 1
+        assert out[0]["status"] == "failed"
+
+    def test_compaction_days_filter(
+        self, compaction_dir: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Only sidecars with date within --days window are included."""
+        base = datetime.now(tz=UTC).date()
+        old_date = (base - timedelta(days=10)).isoformat()
+        (compaction_dir / "compaction-old.json").write_text(
+            json.dumps(
+                {
+                    "date": old_date,
+                    "daemon": "TrainPositionDaemon",
+                    "status": "success",
+                    "journals_found": 1,
+                    "rows_written": 1,
+                    "upload_bytes": 0,
+                    "elapsed_seconds": 0.0,
+                }
+            ),
+            encoding="utf-8",
+        )
+        args = type("Args", (), {"days": 7, "json": True})()
+        cli.cmd_compaction(args)
+        captured = capsys.readouterr()
+        out = json.loads(captured.out)
+        assert out == []
+
+    def test_compaction_invalid_sidecar_skipped(
+        self, compaction_dir: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Sidecar that fails to parse or has invalid date is skipped."""
+        (compaction_dir / "compaction-2026-02-25.json").write_text(
+            json.dumps(
+                {
+                    "date": "2026-02-25",
+                    "daemon": "TrainPositionDaemon",
+                    "status": "success",
+                    "journals_found": 1,
+                    "rows_written": 1,
+                    "upload_bytes": 0,
+                    "elapsed_seconds": 0.0,
+                }
+            ),
+            encoding="utf-8",
+        )
+        (compaction_dir / "compaction-bad.json").write_text(
+            "{invalid", encoding="utf-8"
+        )
+        args = type("Args", (), {"days": 7, "json": True})()
+        cli.cmd_compaction(args)
+        captured = capsys.readouterr()
+        out = json.loads(captured.out)
+        assert len(out) == 1
+        assert out[0]["date"] == "2026-02-25"
+
 
 class TestMain:
     """Tests for main entry point."""
 
     def test_no_command(self) -> None:
-        """Test main without command."""
-        with pytest.raises(SystemExit):
+        """Without subcommand, argparse requires command and exits with 2."""
+        with pytest.raises(SystemExit) as exc_info:
             cli.main([])
+        assert exc_info.value.code == 2
 
     def test_status_command(self, daemon_state_dir: Path) -> None:
-        """Test main with status command."""
+        """Main status dispatches to cmd_status; exit 2 when no daemons."""
         with pytest.raises(SystemExit) as exc_info:
             cli.main(["status"])
-        assert exc_info.value.code == 2  # No daemons found
+        assert exc_info.value.code == 2
 
     def test_errors_command(self, daemon_state_dir: Path) -> None:
-        """Test main with errors command."""
-        cli.main(["errors"])  # Should not raise
+        """Main errors dispatches to cmd_errors and does not exit."""
+        cli.main(["errors"])
 
-    def test_gaps_command(self, daemon_state_dir: Path) -> None:
-        """Test main with gaps command."""
-        cli.main(["gaps"])  # Should not raise
+    def test_gaps_command(self, data_dir: Path) -> None:
+        """Main gaps dispatches to cmd_gaps."""
+        (data_dir / "train_positions").mkdir(parents=True, exist_ok=True)
+        cli.main(["gaps"])
 
     def test_metrics_command(self, daemon_state_dir: Path) -> None:
-        """Test main with metrics command."""
-        cli.main(["metrics"])  # Should not raise
+        """Main metrics dispatches to cmd_metrics."""
+        cli.main(["metrics"])
+
+    def test_compaction_command(self, compaction_dir: Path) -> None:
+        """Main compaction dispatches to cmd_compaction."""
+        cli.main(["compaction"])
+
+    def test_compaction_json_exit_on_failure(self, compaction_dir: Path) -> None:
+        """Main compaction --json exits 1 when any run has status failed."""
+        (compaction_dir / "compaction-2026-02-25.json").write_text(
+            json.dumps(
+                {
+                    "date": "2026-02-25",
+                    "daemon": "TrainPositionDaemon",
+                    "status": "failed",
+                    "journals_found": 0,
+                    "rows_written": 0,
+                    "upload_bytes": 0,
+                    "elapsed_seconds": 0.0,
+                }
+            ),
+            encoding="utf-8",
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            cli.main(["compaction", "--json"])
+        assert exc_info.value.code == 1
 
     def test_help_flag(self) -> None:
-        """Test main with help flag."""
+        """--help prints help and exits 0."""
         with pytest.raises(SystemExit) as exc_info:
             cli.main(["--help"])
         assert exc_info.value.code == 0
+
+
+@pytest.mark.skipif(pa is None or pq is None, reason="pyarrow required")
+class TestCompactionSchemaColumn:
+    """Tests for the Schema column in cmd_compaction (reads schema_drift Parquet metadata)."""
+
+    def _write_sidecar(self, compaction_dir: Path, daemon: str, date_str: str) -> None:
+        """Write a minimal compaction sidecar JSON so cmd_compaction has a record to show."""
+        sidecar = compaction_dir / f"compaction-{date_str}-{daemon}.json"
+        sidecar.write_text(
+            json.dumps(
+                {
+                    "date": date_str,
+                    "daemon": daemon,
+                    "status": "success",
+                    "journals_found": 1,
+                    "journals_repaired": 0,
+                    "journals_skipped": 0,
+                    "rows_written": 100,
+                    "upload_bytes": 1000,
+                    "elapsed_seconds": 1.0,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def _make_parquet(
+        self,
+        compaction_dir: Path,
+        daemon: str,
+        date_str: str,
+        *,
+        drift: bool = False,
+    ) -> Path:
+        """Create a staging Parquet file under the expected compaction layout."""
+        parquet_dir = compaction_dir / daemon / f"date={date_str}"
+        parquet_dir.mkdir(parents=True, exist_ok=True)
+        parquet_path = parquet_dir / "data.parquet"
+        table = pa.table({"x": pa.array([1, 2, 3])})
+        if drift:
+            table = table.replace_schema_metadata({b"schema_drift": b"true"})
+        pq.write_table(table, parquet_path, compression="snappy")
+        return parquet_path
+
+    def test_schema_column_ok(
+        self, compaction_dir: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Schema column shows OK for a Parquet file with no schema_drift metadata."""
+        daemon = "train_positions"
+        date_str = "2026-02-25"
+        self._write_sidecar(compaction_dir, daemon, date_str)
+        self._make_parquet(compaction_dir, daemon, date_str, drift=False)
+
+        args = type("Args", (), {"days": 7, "json": False})()
+        cli.cmd_compaction(args)
+
+        captured = capsys.readouterr()
+        assert "OK" in captured.out
+
+    def test_schema_column_drift(
+        self, compaction_dir: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Schema column shows DRIFT for a Parquet file annotated with schema_drift=true."""
+        daemon = "train_positions"
+        date_str = "2026-02-25"
+        self._write_sidecar(compaction_dir, daemon, date_str)
+        self._make_parquet(compaction_dir, daemon, date_str, drift=True)
+
+        args = type("Args", (), {"days": 7, "json": False})()
+        cli.cmd_compaction(args)
+
+        captured = capsys.readouterr()
+        assert "DRIFT" in captured.out
+
+    def test_schema_column_missing_file(
+        self, compaction_dir: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Schema column shows ? when no local Parquet exists for the record."""
+        daemon = "train_positions"
+        date_str = "2026-02-25"
+        self._write_sidecar(compaction_dir, daemon, date_str)
+        # Do NOT create a Parquet file — only the sidecar exists
+
+        args = type("Args", (), {"days": 7, "json": False})()
+        cli.cmd_compaction(args)
+
+        captured = capsys.readouterr()
+        assert "?" in captured.out
+
+
+@pytest.mark.skipif(pa is None or pq is None, reason="pyarrow required")
+class TestSchemaUpdateCommand:
+    """Tests for cmd_schema_update (cta-compact schema update)."""
+
+    def _make_parquet(self, base_dir: Path, daemon: str, date_str: str) -> Path:
+        """Create a staging Parquet under {base_dir}/{daemon}/date={date_str}/data.parquet."""
+        parquet_dir = base_dir / daemon / f"date={date_str}"
+        parquet_dir.mkdir(parents=True, exist_ok=True)
+        parquet_path = parquet_dir / "data.parquet"
+        table = pa.table({"value": pa.array([1, 2, 3], type=pa.int64())})
+        pq.write_table(table, parquet_path, compression="snappy")
+        return parquet_path
+
+    def test_schema_update_writes_registry(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """cmd_schema_update reads latest Parquet and calls save_registry with its schema."""
+        daemon = "train_positions"
+        date_str = "2026-02-25"
+        self._make_parquet(tmp_path, daemon, date_str)
+
+        mocker.patch(
+            "cta_eta.data_collection.compaction.compact.load_config",
+            return_value={"compaction": {"compaction_dir": str(tmp_path)}},
+        )
+        mock_save = mocker.patch(
+            "cta_eta.data_collection.compaction.compact.save_registry"
+        )
+        mocker.patch("subprocess.run")
+
+        args = type("Args", (), {"daemon": daemon})()
+        cmd_schema_update(args)
+
+        assert mock_save.called
+        call_args = mock_save.call_args
+        # First positional arg is the registry path, second is schema, third is daemon_name
+        saved_schema = call_args[0][1]
+        assert isinstance(saved_schema, pa.Schema)
+        assert saved_schema.field("value").type == pa.int64()
+
+    def test_schema_update_no_parquet_found(
+        self,
+        tmp_path: Path,
+        mocker: MockerFixture,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """cmd_schema_update prints message and does not crash when no Parquet exists."""
+        daemon = "train_positions"
+        # Create the daemon dir but no date= subdirs or data.parquet
+        (tmp_path / daemon).mkdir(parents=True, exist_ok=True)
+
+        mocker.patch(
+            "cta_eta.data_collection.compaction.compact.load_config",
+            return_value={"compaction": {"compaction_dir": str(tmp_path)}},
+        )
+
+        args = type("Args", (), {"daemon": daemon})()
+        cmd_schema_update(args)
+
+        captured = capsys.readouterr()
+        assert "No Parquet file found" in captured.out

@@ -92,6 +92,7 @@ dev = [
 cta-monitor = "cta_eta.monitoring.cli:main"
 cta-health = "cta_eta.monitoring.health_check:main"
 cta-alerts = "cta_eta.monitoring.run_alerts:main"
+cta-compact = "cta_eta.data_collection.compaction.compact:main"
 
 # ---- Build system ----
 
@@ -160,10 +161,11 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = [
+    "D102",  # Missing docstring in public method
+    "INP001",  # Implicit Namespace
     "PLR2004",  # Magic Value used in Comparison (meh)
     "S101",  # Use of Assert Detected (This is fine for tests)
     "SLF001",  # Private method access
-    "INP001",  # Implicit Namespace
 ]
 
 [tool.ruff.format]

@@ -5,6 +5,7 @@ Provides focused commands for progressive investigation:
 - errors: Recent failures and API errors
 - gaps: Data collection gaps from Parquet metadata
 - metrics: Aggregated metrics for alerting automation
+- compaction: Show compaction job status and metrics
 """
 
 # ruff: noqa: T201  # print statements are expected in CLI
@@ -37,6 +38,7 @@ _STALE_THRESHOLD_SECONDS = 300.0  # 5 minutes
 _DEFAULT_DATA_DIR = Path("data")
 _DEFAULT_DATASET = "train_positions"
 _DEFAULT_DAYS_WINDOW = 7
+_DEFAULT_COMPACTION_DIR = Path("data/compaction")
 
 
 def _discover_daemons() -> list[str]:
@@ -377,9 +379,9 @@ def cmd_gaps(args: argparse.Namespace) -> None:
 
     for parquet_file in sorted(dataset_dir.rglob("*.parquet")):
         try:
-            # Read schema metadata
-            metadata = pq.read_metadata(parquet_file)
-            schema_metadata = metadata.schema.metadata
+            # Schema metadata (e.g. gap_metadata) is on the Arrow schema, not ParquetSchema
+            with pq.ParquetFile(parquet_file) as pf:
+                schema_metadata = pf.schema_arrow.metadata or {}
 
             if not schema_metadata or b"gap_metadata" not in schema_metadata:
                 continue
@@ -650,6 +652,176 @@ def _add_metrics_command(subparsers: argparse._SubParsersAction) -> None:
     parser.set_defaults(func=cmd_metrics)
 
 
+def _read_schema_drift(compaction_dir: Path, daemon: str, date_str: str) -> str:
+    """Read schema_drift metadata from local staging Parquet. Returns 'DRIFT', 'OK', or '?'.
+
+    Args:
+        compaction_dir: Base compaction directory.
+        daemon: Daemon name (e.g., "train_positions").
+        date_str: ISO date string (e.g., "2026-02-17").
+
+    Returns:
+        "DRIFT" if schema_drift metadata is "true", "OK" if metadata is absent or not "true",
+        "?" if the file does not exist or cannot be read.
+
+    """
+    parquet_path = compaction_dir / daemon / f"date={date_str}" / "data.parquet"
+    if not parquet_path.exists():
+        return "?"
+    if pq is None:
+        return "?"
+    try:
+        meta = pq.read_metadata(parquet_path)
+        kv = meta.metadata or {}
+        drift_val = kv.get(b"schema_drift", b"").decode()
+    except Exception:  # noqa: BLE001
+        return "?"
+    else:
+        return "DRIFT" if drift_val == "true" else "OK"
+
+
+def cmd_compaction(args: argparse.Namespace) -> None:
+    """Handle 'compaction' command - show compaction job status and metrics.
+
+    Args:
+        args: Parsed command-line arguments
+
+    """
+    days = args.days
+    json_output = args.json
+
+    compaction_dir = _DEFAULT_COMPACTION_DIR
+
+    # Glob all sidecar JSON files, most recent first
+    sidecars = sorted(
+        compaction_dir.glob("compaction-*.json"),
+        key=lambda p: p.name,
+        reverse=True,
+    )
+
+    # Apply --days filter: include records on or after cutoff date (date-level comparison)
+    cutoff_date = (datetime.now(tz=UTC) - timedelta(days=days)).date()
+    filtered: list[dict[str, object]] = []
+    for sidecar_path in sidecars:
+        try:
+            with sidecar_path.open("r", encoding="utf-8") as f:
+                data: dict[str, object] = json.load(f)
+            # Parse date from metrics (format: "2026-02-17")
+            date_str = str(data.get("date", ""))
+            if date_str:
+                sidecar_date = datetime.fromisoformat(date_str).date()
+                if sidecar_date < cutoff_date:
+                    continue
+            filtered.append(data)
+        except (OSError, json.JSONDecodeError, ValueError):
+            continue
+
+    if json_output:
+        print(json.dumps(filtered, indent=2))
+        # Exit 1 if any run in window has status="failed"
+        if any(str(r.get("status", "")) == "failed" for r in filtered):
+            sys.exit(1)
+        return
+
+    # Human-readable output
+    print(f"Compaction Status (last {days} days)")
+    print("=" * 77)
+
+    if not filtered:
+        print(f"No compaction records found in {compaction_dir}")
+        return
+
+    print()
+    print(
+        f"{'Date':<12} {'Daemon':<20} {'Status':<10} {'Journals':<16} "
+        f"{'Rows':<12} {'Upload':<10} {'Elapsed':<8} {'Schema':<8}"
+    )
+    print("─" * 98)
+
+    has_failure = False
+    days_seen: set[str] = set()
+    runs_count = 0
+    failures_count = 0
+
+    for record in filtered:
+        date_val = str(record.get("date", "N/A"))
+        daemon_val = str(record.get("daemon", "N/A"))
+        raw_status = str(record.get("status", "unknown"))
+        journals_found = int(record.get("journals_found", 0))
+        journals_repaired = int(record.get("journals_repaired", 0))
+        rows_written = int(record.get("rows_written", 0))
+        upload_bytes = int(record.get("upload_bytes", 0))
+        elapsed = float(record.get("elapsed_seconds", 0.0))
+
+        days_seen.add(date_val)
+        runs_count += 1
+
+        # Status formatting
+        if raw_status == "partial":
+            status_str = "PARTIAL"
+        elif raw_status == "failed":
+            status_str = "FAILED"
+            has_failure = True
+            failures_count += 1
+        else:
+            status_str = raw_status  # "success"
+
+        # Journals column: "96" or "96 (1 repaired)" or "96 (2 skipped)"
+        journals_skipped = int(record.get("journals_skipped", 0))
+        if journals_repaired > 0:
+            journals_str = f"{journals_found} ({journals_repaired} repaired)"
+        elif journals_skipped > 0:
+            journals_str = f"{journals_found} ({journals_skipped} skipped)"
+        else:
+            journals_str = str(journals_found)
+
+        # Rows with commas
+        rows_str = f"{rows_written:,}"
+
+        # Upload in MB
+        upload_mb = upload_bytes / (1024 * 1024)
+        upload_str = f"{upload_mb:.1f} MB"
+
+        # Elapsed
+        elapsed_str = f"{elapsed:.1f}s"
+
+        # Schema drift status from local Parquet metadata
+        schema_str = _read_schema_drift(compaction_dir, daemon_val, date_val)
+
+        print(
+            f"{date_val:<12} {daemon_val:<20} {status_str:<10} {journals_str:<16} "
+            f"{rows_str:<12} {upload_str:<10} {elapsed_str:<8} {schema_str:<8}"
+        )
+
+    print()
+    print(
+        f"Summary: {len(days_seen)} days, {runs_count} runs, {failures_count} failures"
+    )
+
+    if has_failure:
+        sys.exit(1)
+
+
+def _add_compaction_command(subparsers: argparse._SubParsersAction) -> None:
+    """Add 'compaction' subcommand to parser.
+
+    Args:
+        subparsers: Subparsers object from ArgumentParser
+
+    """
+    parser = subparsers.add_parser(
+        "compaction", help="Show compaction job status and metrics"
+    )
+    parser.add_argument(
+        "--days",
+        type=int,
+        default=_DEFAULT_DAYS_WINDOW,
+        help=f"Time window in days (default: {_DEFAULT_DAYS_WINDOW})",
+    )
+    parser.add_argument("--json", action="store_true", help="Output as JSON")
+    parser.set_defaults(func=cmd_compaction)
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     """Execute CLI monitoring tool.
 
@@ -667,6 +839,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     _add_errors_command(subparsers)
     _add_gaps_command(subparsers)
     _add_metrics_command(subparsers)
+    _add_compaction_command(subparsers)
 
     args = parser.parse_args(argv)
 

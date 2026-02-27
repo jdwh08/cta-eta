@@ -1,0 +1,128 @@
+{
+  "version": 1,
+  "daemon": "weather",
+  "updated": "2026-02-26",
+  "fields": [
+    {
+      "name": "station_id",
+      "type": "string",
+      "nullable": true
+    },
+    {
+      "name": "nws_grid_id",
+      "type": "string",
+      "nullable": true
+    },
+    {
+      "name": "open_meteo_grid_id",
+      "type": "string",
+      "nullable": true
+    },
+    {
+      "name": "latitude",
+      "type": "double",
+      "nullable": true
+    },
+    {
+      "name": "longitude",
+      "type": "double",
+      "nullable": true
+    },
+    {
+      "name": "collection_timestamp",
+      "type": "double",
+      "nullable": true
+    },
+    {
+      "name": "start_time",
+      "type": "string",
+      "nullable": true
+    },
+    {
+      "name": "end_time",
+      "type": "string",
+      "nullable": true
+    },
+    {
+      "name": "temperature_f",
+      "type": "double",
+      "nullable": true
+    },
+    {
+      "name": "prob_precip_pct",
+      "type": "double",
+      "nullable": true
+    },
+    {
+      "name": "dewpoint_f",
+      "type": "double",
+      "nullable": true
+    },
+    {
+      "name": "humidity_pct",
+      "type": "double",
+      "nullable": true
+    },
+    {
+      "name": "wind_speed_mph",
+      "type": "double",
+      "nullable": true
+    },
+    {
+      "name": "wind_direction",
+      "type": "string",
+      "nullable": true
+    },
+    {
+      "name": "forecast_desc",
+      "type": "string",
+      "nullable": true
+    },
+    {
+      "name": "timestamp",
+      "type": "string",
+      "nullable": true
+    },
+    {
+      "name": "visibility_mi",
+      "type": "double",
+      "nullable": true
+    },
+    {
+      "name": "snow_depth_in",
+      "type": "double",
+      "nullable": true
+    },
+    {
+      "name": "surface_pressure_hpa",
+      "type": "double",
+      "nullable": true
+    },
+    {
+      "name": "wind_gusts_mph",
+      "type": "double",
+      "nullable": true
+    },
+    {
+      "name": "apparent_temp_f",
+      "type": "double",
+      "nullable": true
+    },
+    {
+      "name": "rain_in",
+      "type": "double",
+      "nullable": true
+    },
+    {
+      "name": "showers_in",
+      "type": "double",
+      "nullable": true
+    },
+    {
+      "name": "snowfall_in",
+      "type": "double",
+      "nullable": true
+    }
+  ],
+  "schema_ipc_b64": "/////1AFAAAQAAAAAAAKAAwABgAFAAgACgAAAAABBAAMAAAACAAIAAAABAAIAAAABAAAABgAAADsBAAArAQAAHQEAAA8BAAACAQAAMgDAACYAwAAaAMAADADAAD4AgAAxAIAAIwCAABUAgAAIAIAAOwBAAC8AQAAhAEAAEwBAAAMAQAA1AAAAJwAAABsAAAAOAAAAAQAAACE+///AAABAxAAAAAcAAAABAAAAAAAAAALAAAAc25vd2ZhbGxfaW4AGvz//wAAAgC0+///AAABAxAAAAAcAAAABAAAAAAAAAAKAAAAc2hvd2Vyc19pbgAASvz//wAAAgDk+///AAABAxAAAAAYAAAABAAAAAAAAAAHAAAAcmFpbl9pbgB2/P//AAACABD8//8AAAEDEAAAACAAAAAEAAAAAAAAAA8AAABhcHBhcmVudF90ZW1wX2YAqvz//wAAAgBE/P//AAABAxAAAAAgAAAABAAAAAAAAAAOAAAAd2luZF9ndXN0c19tcGgAAN78//8AAAIAePz//wAAAQMQAAAAKAAAAAQAAAAAAAAAFAAAAHN1cmZhY2VfcHJlc3N1cmVfaHBhAAAAABr9//8AAAIAtPz//wAAAQMQAAAAIAAAAAQAAAAAAAAADQAAAHNub3dfZGVwdGhfaW4AAABO/f//AAACAOj8//8AAAEDEAAAACAAAAAEAAAAAAAAAA0AAAB2aXNpYmlsaXR5X21pAAAAgv3//wAAAgAc/f//AAABBRAAAAAcAAAABAAAAAAAAAAJAAAAdGltZXN0YW1wAAAADP3//0j9//8AAAEFEAAAACAAAAAEAAAAAAAAAA0AAABmb3JlY2FzdF9kZXNjAAAAPP3//3j9//8AAAEFEAAAACAAAAAEAAAAAAAAAA4AAAB3aW5kX2RpcmVjdGlvbgAAbP3//6j9//8AAAEDEAAAACAAAAAEAAAAAAAAAA4AAAB3aW5kX3NwZWVkX21waAAAQv7//wAAAgDc/f//AAABAxAAAAAgAAAABAAAAAAAAAAMAAAAaHVtaWRpdHlfcGN0AAAAAHb+//8AAAIAEP7//wAAAQMQAAAAHAAAAAQAAAAAAAAACgAAAGRld3BvaW50X2YAAKb+//8AAAIAQP7//wAAAQMQAAAAIAAAAAQAAAAAAAAADwAAAHByb2JfcHJlY2lwX3BjdADa/v//AAACAHT+//8AAAEDEAAAACAAAAAEAAAAAAAAAA0AAAB0ZW1wZXJhdHVyZV9mAAAADv///wAAAgCo/v//AAABBRAAAAAcAAAABAAAAAAAAAAIAAAAZW5kX3RpbWUAAAAAmP7//9T+//8AAAEFEAAAABwAAAAEAAAAAAAAAAoAAABzdGFydF90aW1lAADE/v//AP///wAAAQMQAAAAKAAAAAQAAAAAAAAAFAAAAGNvbGxlY3Rpb25fdGltZXN0YW1wAAAAAKL///8AAAIAPP///wAAAQMQAAAAHAAAAAQAAAAAAAAACQAAAGxvbmdpdHVkZQAAANL///8AAAIAbP///wAAAQMQAAAAIAAAAAQAAAAAAAAACAAAAGxhdGl0dWRlAAAGAAgABgAGAAAAAAACAKD///8AAAEFEAAAACQAAAAEAAAAAAAAABIAAABvcGVuX21ldGVvX2dyaWRfaWQAAJj////U////AAABBRAAAAAcAAAABAAAAAAAAAALAAAAbndzX2dyaWRfaWQAxP///xAAFAAIAAYABwAMAAAAEAAQAAAAAAABBRAAAAAgAAAABAAAAAAAAAAKAAAAc3RhdGlvbl9pZAAABAAEAAQAAAAAAAAA"
+}

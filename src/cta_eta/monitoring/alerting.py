@@ -17,7 +17,7 @@ import httpx
 if TYPE_CHECKING:
     from pathlib import Path
 
-_log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 MAILJET_SEND_URL = "https://api.mailjet.com/v3.1/send"
 HTTP_OK = 200
@@ -42,7 +42,7 @@ def load_last_alert_time(last_alert_path: Path) -> float | None:
         last_alert = data["last_alert"]
         return float(last_alert)
     except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
-        _log.debug("Could not load last alert time from %s", last_alert_path)
+        logger.debug("Could not load last alert time from %s", last_alert_path)
         return None
 
 
@@ -60,7 +60,7 @@ def save_alert_timestamp(last_alert_path: Path) -> None:
         with last_alert_path.open("w", encoding="utf-8") as f:
             json.dump({"last_alert": time.time()}, f)
     except OSError:
-        _log.debug("Could not save alert timestamp to %s", last_alert_path)
+        logger.debug("Could not save alert timestamp to %s", last_alert_path)
 
 
 def should_send_alert(
@@ -153,17 +153,17 @@ def _send_via_mailjet(config: dict[str, Any], subject: str, body: str) -> bool:
                 json=payload,
                 timeout=30.0,
             )
-    except httpx.HTTPError as exc:
-        _log.error("Mailjet request failed: %s", exc)
+    except httpx.HTTPError:
+        logger.exception("Mailjet request failed")
         return False
     if resp.status_code != HTTP_OK:
-        _log.error(
+        logger.error(
             "Mailjet send failed status=%s body=%s",
             resp.status_code,
             resp.text[:500] if resp.text else "",
         )
         return False
-    _log.info("Mailjet alert sent to %s: %s", to_addrs, subject)
+    logger.info("Mailjet alert sent to %s: %s", to_addrs, subject)
     return True
 
 
@@ -189,5 +189,5 @@ def send_email_alert(
     if provider == "mailjet":
         return _send_via_mailjet(email_config, full_subject, body)
 
-    _log.error("Unsupported email provider: %s", provider)
+    logger.error("Unsupported email provider: %s", provider)
     return False

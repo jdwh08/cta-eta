@@ -1,0 +1,14 @@
+[Unit]
+Description=CTA Data Compaction Job
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=cta-eta
+WorkingDirectory=/opt/cta-eta
+EnvironmentFile=/opt/cta-eta/.env
+ExecStart=/opt/cta-eta/.venv/bin/python -m cta_eta.data_collection.compaction.compact
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cta-compaction

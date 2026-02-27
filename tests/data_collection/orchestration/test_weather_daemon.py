@@ -90,7 +90,7 @@ def weather_daemon(
         autospec=True,
     )
     mocker.patch(
-        "cta_eta.data_collection.orchestration.weather_daemon.create_parquet_writer",
+        "cta_eta.data_collection.orchestration.weather_daemon.create_journal_writer",
         return_value=storage,
         autospec=True,
     )

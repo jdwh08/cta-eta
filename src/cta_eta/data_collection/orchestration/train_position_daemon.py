@@ -11,7 +11,7 @@ The daemon:
 - Polls train positions every 15 seconds (configurable)
 - Fetches all 8 CTA lines in one API call (efficient batch)
 - Normalizes nested route/train structure to flat records
-- Stores to Parquet with dataset_name="train_positions"
+- Stores to IPC journal with dataset_name="train_positions"
 - Persists state across restarts for monitoring and debugging
 """
 
@@ -39,12 +39,12 @@ from cta_eta.data_collection.orchestration.daemon_utils import (
     classify_error,
 )
 from cta_eta.data_collection.orchestration.gap_detection import detect_gap
-from cta_eta.data_collection.storage_cache.storage import create_parquet_writer
+from cta_eta.data_collection.storage_cache.journal_writer import create_journal_writer
 
 if TYPE_CHECKING:
     import logging
 
-    from cta_eta.data_collection.storage_cache.storage import ParquetWriter
+    from cta_eta.data_collection.storage_cache.journal_writer import JournalWriter
 
 
 class TrainPositionDaemon(AsyncBaseDaemon):
@@ -56,13 +56,13 @@ class TrainPositionDaemon(AsyncBaseDaemon):
     2. Runs async polling loop collecting positions every 15 seconds
     3. Fetches all 8 CTA lines in one API call (~0.58 req/sec sustained)
     4. Normalizes nested route/train responses to flat records
-    5. Stores to Parquet with daily partitions (Hive-style at 3 AM Chicago time)
+    5. Stores to IPC journal with hive-style partitions (rotated every 15 minutes)
 
     Attributes:
         config: Configuration dictionary from config.toml
         logger: Structured logger instance
         running: Boolean flag controlling main loop execution
-        storage: ParquetWriter for storing train position records
+        storage: JournalWriter for storing train position records
         train_poll_interval: Collection interval in seconds (default: 15)
         last_poll_timestamp: Timestamp of last successful poll
         total_records_collected: Total number of train records stored across all cycles
@@ -72,7 +72,7 @@ class TrainPositionDaemon(AsyncBaseDaemon):
 
     """
 
-    storage: ParquetWriter
+    storage: JournalWriter
     train_poll_interval: int
     last_poll_timestamp: float
     total_records_collected: int
@@ -104,8 +104,8 @@ class TrainPositionDaemon(AsyncBaseDaemon):
             config = load_config()
         super().__init__(config, logger)
 
-        # Initialize storage backend for Parquet writes
-        self.storage = create_parquet_writer(config)
+        # Initialize storage backend for IPC journal writes
+        self.storage = create_journal_writer(config)
 
         # Extract train polling interval from config
         collection_config = config.get("collection", {})
@@ -408,12 +408,11 @@ class TrainPositionDaemon(AsyncBaseDaemon):
         cycle_start_time: float,
         poll_timestamp: float,
     ) -> None:
-        """Store records to Parquet, update daemon state on success, log and record diagnostics."""
+        """Store records to IPC journal, update daemon state on success, log and record diagnostics."""
         try:
             self.storage.append_batch(
                 records,
                 dataset_name="train_positions",
-                metadata=self.pending_gap_metadata,
             )
         except Exception:
             self.storage_failure_count += 1
@@ -447,7 +446,7 @@ class TrainPositionDaemon(AsyncBaseDaemon):
         # Clear pending gap metadata after successful write
         if self.pending_gap_metadata is not None:
             self.logger.info(
-                "Gap metadata attached to Parquet file",
+                "Gap metadata logged (not passed to JournalWriter)",
                 extra={
                     "extra_fields": {
                         "cycle_id": cycle_id,
@@ -471,7 +470,7 @@ class TrainPositionDaemon(AsyncBaseDaemon):
 
         cycle_duration_ms = (time.time() - cycle_start_time) * 1000
         self.logger.info(
-            f"Stored {len(records)} train position records to Parquet",
+            f"Stored {len(records)} train position records to IPC journal",
             extra={
                 "extra_fields": {
                     "cycle_id": cycle_id,
@@ -849,6 +848,28 @@ class TrainPositionDaemon(AsyncBaseDaemon):
             self.logger.info(
                 f"Restart gap check: no gap detected (last poll {current_timestamp - self.last_poll_timestamp:.1f}s ago, "
                 f"within threshold {self.train_poll_interval * 2.0:.1f}s)"
+            )
+
+    @override
+    def _pre_shutdown_hook(self) -> None:
+        """Close the journal writer cleanly on daemon shutdown.
+
+        Overrides the base class hook to call JournalWriter.close() instead of
+        the generic flush() lookup, ensuring the IPC EOS marker is written and
+        the current journal file is properly finalized before exit.
+        """
+        try:
+            self.storage.close()
+            self.logger.debug("Closed JournalWriter during shutdown")
+        except Exception as e:  # noqa: BLE001
+            self.logger.warning(
+                f"Failed to close JournalWriter: {e}",
+                extra={
+                    "extra_fields": {
+                        "error_type": type(e).__name__,
+                        "error_message": str(e),
+                    }
+                },
             )
 
 

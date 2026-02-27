@@ -1,0 +1,11 @@
+[Unit]
+Description=CTA Data Compaction Timer
+Requires=cta-compaction.service
+
+[Timer]
+OnCalendar=America/Chicago *-*-* 03:00:00
+Persistent=true
+Unit=cta-compaction.service
+
+[Install]
+WantedBy=timers.target

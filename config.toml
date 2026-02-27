@@ -83,6 +83,10 @@ compression = "snappy"
 # Maximum file size in MB before rotation
 max_file_size_mb = 128
 
+# Arrow IPC journal rotation interval in minutes (default 15)
+# After this interval, the current journal file is closed and a new one is opened
+journal_rotation_minutes = 15
+
 
 [retry]
 # Maximum retry attempts for transient API failures
@@ -164,6 +168,21 @@ last_alert_state = ".daemon_state/last_alert.json"  # Cooldown state file
 email_provider = "mailjet"
 smtp_from = "alerts@example.com"  # Sender (must be verified in Mailjet)
 smtp_to = ["oncall@example.com"]  # Recipients
+
+
+[compaction]
+# Cloud storage URL prefix for compacted Parquet upload
+# Examples: s3://my-bucket/raw, gs://my-bucket/raw, /local/path/raw
+cloud_url = "s3://CHANGEME/raw"
+
+# Local directory where compacted Parquet and JSON sidecar files are staged
+compaction_dir = "data/compaction"
+
+# Local directory where source IPC journals are moved after verified upload
+archive_path = "data/archive"
+
+# Number of days to retain archived journals before deletion (default: 7)
+journal_retention_days = 7
 
 
 [monitoring]
