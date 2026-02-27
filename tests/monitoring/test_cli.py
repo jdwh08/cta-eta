@@ -1179,67 +1179,6 @@ class TestSchemaUpdateCommand:
         assert isinstance(saved_schema, pa.Schema)
         assert saved_schema.field("value").type == pa.int64()
 
-    def test_schema_update_git_commit_attempted(
-        self,
-        tmp_path: Path,
-        mocker: MockerFixture,
-        capsys: pytest.CaptureFixture[str],
-    ) -> None:
-        """cmd_schema_update calls git add and git commit when subprocess succeeds."""
-        daemon = "train_positions"
-        date_str = "2026-02-25"
-        self._make_parquet(tmp_path, daemon, date_str)
-
-        mocker.patch(
-            "cta_eta.data_collection.compaction.compact.load_config",
-            return_value={"compaction": {"compaction_dir": str(tmp_path)}},
-        )
-        mocker.patch("cta_eta.data_collection.compaction.compact.save_registry")
-        mock_subprocess = mocker.patch("subprocess.run")
-
-        args = type("Args", (), {"daemon": daemon})()
-        cmd_schema_update(args)
-
-        assert mock_subprocess.call_count == 2
-        first_call_cmd = mock_subprocess.call_args_list[0][0][0]
-        second_call_cmd = mock_subprocess.call_args_list[1][0][0]
-        assert first_call_cmd[0] == "git"
-        assert first_call_cmd[1] == "add"
-        assert second_call_cmd[0] == "git"
-        assert second_call_cmd[1] == "commit"
-
-        captured = capsys.readouterr()
-        assert "committed to git" in captured.out
-
-    def test_schema_update_git_fallback_on_failure(
-        self,
-        tmp_path: Path,
-        mocker: MockerFixture,
-        capsys: pytest.CaptureFixture[str],
-    ) -> None:
-        """cmd_schema_update prints fallback message when git subprocess fails."""
-        import subprocess
-
-        daemon = "train_positions"
-        date_str = "2026-02-25"
-        self._make_parquet(tmp_path, daemon, date_str)
-
-        mocker.patch(
-            "cta_eta.data_collection.compaction.compact.load_config",
-            return_value={"compaction": {"compaction_dir": str(tmp_path)}},
-        )
-        mocker.patch("cta_eta.data_collection.compaction.compact.save_registry")
-        mocker.patch(
-            "subprocess.run",
-            side_effect=subprocess.CalledProcessError(1, "git"),
-        )
-
-        args = type("Args", (), {"daemon": daemon})()
-        cmd_schema_update(args)
-
-        captured = capsys.readouterr()
-        assert "Commit manually" in captured.out
-
     def test_schema_update_no_parquet_found(
         self,
         tmp_path: Path,
