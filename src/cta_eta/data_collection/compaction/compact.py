@@ -571,7 +571,7 @@ def main(argv: list[str] | None = None) -> None:
     # (systemd service uses 'cta-compact' with no args — backward compatible)
     config = load_config()
     reprocess_date: date | None = getattr(args, "reprocess", None)
-    target_date = reprocess_date or (datetime.now(tz=UTC) - timedelta(days=1))
+    target_date = reprocess_date or (datetime.now(tz=UTC) - timedelta(days=1)).date()
     is_reprocess = reprocess_date is not None
 
     if is_reprocess:

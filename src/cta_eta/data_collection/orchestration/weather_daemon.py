@@ -36,7 +36,7 @@ from cta_eta.data_collection.apis.api_weather_open_meteo import get_open_meteo_c
 from cta_eta.data_collection.apis.api_weather_openweathermap import (
     get_openweathermap_current,
 )
-from cta_eta.data_collection.config import get_config_section, validate_config
+from cta_eta.data_collection.config import get_config_section, load_config, validate_config
 from cta_eta.data_collection.logging import log_context
 from cta_eta.data_collection.merging.weather_merger import merge_weather_sources
 from cta_eta.data_collection.orchestration.daemon_async import AsyncBaseDaemon
@@ -822,7 +822,6 @@ class WeatherDaemon(AsyncBaseDaemon):
 
 
 if __name__ == "__main__":
-    from cta_eta.data_collection.config import load_config
     from cta_eta.data_collection.logging import get_logger
 
     config = load_config()
