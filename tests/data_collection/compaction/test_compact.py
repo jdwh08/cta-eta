@@ -911,3 +911,249 @@ class TestCompactIntegrationStyle:
         assert metrics.journals_found == 1
         assert metrics.rows_written == 3
         assert metrics.journals_skipped == 0
+
+
+# ---------------------------------------------------------------------------
+# Drift detection integration tests
+# ---------------------------------------------------------------------------
+
+
+import pyarrow.ipc as ipc  # noqa: E402 (grouped here for locality)
+import pyarrow.parquet as pq  # noqa: E402
+
+
+def _write_temp_ipc(path: Path, schema: pa.Schema, rows: int = 5) -> None:
+    """Write a minimal IPC stream file with null-filled rows for the given schema.
+
+    Uses ipc.new_stream (IPC stream format) to match read_ipc_with_repair's
+    ipc.open_stream reader.
+    """
+    table = pa.table(
+        {
+            name: pa.array([None] * rows, type=field.type)
+            for name, field in zip(schema.names, schema)
+        },
+        schema=schema,
+    )
+    sink = pa.OSFile(str(path), "wb")
+    writer = ipc.new_stream(sink, schema)
+    for batch in table.to_batches():
+        writer.write_batch(batch)
+    writer.close()
+    sink.close()
+
+
+class TestDriftAlertOnBreakingDrift:
+    """Breaking drift triggers send_drift_alert exactly once per day."""
+
+    def test_alert_sent_once_not_twice_for_two_breaking_journals(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        # Build drifted schema: "route" changed from string to int64
+        drifted_fields = [
+            TRAIN_POSITION_SCHEMA.field(i)
+            if TRAIN_POSITION_SCHEMA.field(i).name != "route"
+            else pa.field("route", pa.int64())
+            for i in range(len(TRAIN_POSITION_SCHEMA))
+        ]
+        drifted_schema = pa.schema(drifted_fields)
+
+        journal_1 = tmp_path / "journal_000000_000001.ipc"
+        journal_2 = tmp_path / "journal_120000_000001.ipc"
+        _write_temp_ipc(journal_1, TRAIN_POSITION_SCHEMA)
+        _write_temp_ipc(journal_2, drifted_schema)
+
+        mocker.patch(
+            "cta_eta.data_collection.compaction.compact.discover_journals",
+            return_value=[journal_1, journal_2],
+        )
+        mocker.patch(
+            "cta_eta.data_collection.compaction.compact.load_registry",
+            return_value=TRAIN_POSITION_SCHEMA,
+        )
+        mocker.patch(
+            "cta_eta.data_collection.compaction.compact.upload_parquet",
+        )
+        mocker.patch(
+            "cta_eta.data_collection.compaction.compact.archive_journals",
+        )
+        mocker.patch(
+            "cta_eta.data_collection.compaction.compact.prune_archive",
+            return_value=[],
+        )
+        mocker.patch(
+            "cta_eta.data_collection.compaction.compact.bootstrap_registry",
+        )
+        mock_alert = mocker.patch(
+            "cta_eta.data_collection.compaction.compact.send_drift_alert",
+        )
+        config = minimal_config(tmp_path)
+
+        metrics = _compact_one_daemon("train_positions", date(2026, 2, 17), config)
+
+        # Alert fires exactly once (not twice — only first breaking journal alerts)
+        mock_alert.assert_called_once()
+        # Compaction continues despite breaking drift
+        assert metrics.status == "success"
+
+
+class TestDriftAnnotationInParquet:
+    """Merged Parquet has schema_drift=true metadata on breaking drift."""
+
+    def test_parquet_metadata_annotated_with_schema_drift(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        import json as _json
+
+        # Build drifted schema: "route" changed from string to int64
+        drifted_fields = [
+            TRAIN_POSITION_SCHEMA.field(i)
+            if TRAIN_POSITION_SCHEMA.field(i).name != "route"
+            else pa.field("route", pa.int64())
+            for i in range(len(TRAIN_POSITION_SCHEMA))
+        ]
+        drifted_schema = pa.schema(drifted_fields)
+
+        journal_1 = tmp_path / "journal_000000_000001.ipc"
+        journal_2 = tmp_path / "journal_120000_000001.ipc"
+        _write_temp_ipc(journal_1, TRAIN_POSITION_SCHEMA)
+        _write_temp_ipc(journal_2, drifted_schema)
+
+        mocker.patch(
+            "cta_eta.data_collection.compaction.compact.discover_journals",
+            return_value=[journal_1, journal_2],
+        )
+        mocker.patch(
+            "cta_eta.data_collection.compaction.compact.load_registry",
+            return_value=TRAIN_POSITION_SCHEMA,
+        )
+        mocker.patch(
+            "cta_eta.data_collection.compaction.compact.upload_parquet",
+        )
+        mocker.patch(
+            "cta_eta.data_collection.compaction.compact.archive_journals",
+        )
+        mocker.patch(
+            "cta_eta.data_collection.compaction.compact.prune_archive",
+            return_value=[],
+        )
+        mocker.patch(
+            "cta_eta.data_collection.compaction.compact.bootstrap_registry",
+        )
+        # Allow send_drift_alert to run but suppress actual email sending
+        mocker.patch(
+            "cta_eta.data_collection.compaction.compact.send_email_alert",
+            return_value=True,
+        )
+        config = minimal_config(tmp_path)
+        config["alerting"] = {"smtp_from": "a@b.com", "smtp_to": ["c@d.com"]}
+
+        metrics = _compact_one_daemon("train_positions", date(2026, 2, 17), config)
+
+        assert metrics.status == "success"
+
+        # Locate the local staging Parquet and verify drift metadata
+        local_parquet = (
+            Path(config["compaction"]["compaction_dir"])
+            / "train_positions"
+            / "date=2026-02-17"
+            / "data.parquet"
+        )
+        assert local_parquet.exists(), f"Parquet not found at {local_parquet}"
+        meta = pq.read_metadata(local_parquet)
+        assert meta.metadata.get(b"schema_drift") == b"true", (
+            "Expected schema_drift=true in Parquet metadata"
+        )
+        assert b"drift_summary" in meta.metadata, (
+            "Expected drift_summary in Parquet metadata"
+        )
+        drift_data = _json.loads(meta.metadata[b"drift_summary"])
+        assert "breaking_fields" in drift_data
+
+
+class TestBootstrapOnFirstRun:
+    """bootstrap_registry called after first successful compaction."""
+
+    def test_bootstrap_called_when_registry_missing(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        journal = tmp_path / "journal_120000_000001.ipc"
+        _write_temp_ipc(journal, TRAIN_POSITION_SCHEMA)
+
+        mocker.patch(
+            "cta_eta.data_collection.compaction.compact.discover_journals",
+            return_value=[journal],
+        )
+        mocker.patch(
+            "cta_eta.data_collection.compaction.compact.load_registry",
+            return_value=None,  # no registry yet
+        )
+        mocker.patch(
+            "cta_eta.data_collection.compaction.compact.upload_parquet",
+        )
+        mocker.patch(
+            "cta_eta.data_collection.compaction.compact.archive_journals",
+        )
+        mocker.patch(
+            "cta_eta.data_collection.compaction.compact.prune_archive",
+            return_value=[],
+        )
+        mock_bootstrap = mocker.patch(
+            "cta_eta.data_collection.compaction.compact.bootstrap_registry",
+        )
+        config = minimal_config(tmp_path)
+
+        _compact_one_daemon("train_positions", date(2026, 2, 17), config)
+
+        mock_bootstrap.assert_called_once()
+        call_args = mock_bootstrap.call_args
+        # First arg is registry_path (a Path), second is schema (pa.Schema)
+        assert isinstance(call_args.args[0], Path)
+        assert isinstance(call_args.args[1], pa.Schema)
+
+
+class TestAdditiveDriftNoAlert:
+    """Additive drift (new field) does not trigger send_drift_alert."""
+
+    def test_no_alert_for_additive_drift(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        # Add an extra field not in TRAIN_POSITION_SCHEMA
+        additive_schema = pa.schema(
+            list(TRAIN_POSITION_SCHEMA) + [pa.field("extra_col", pa.string())]
+        )
+        journal = tmp_path / "journal_120000_000001.ipc"
+        _write_temp_ipc(journal, additive_schema)
+
+        mocker.patch(
+            "cta_eta.data_collection.compaction.compact.discover_journals",
+            return_value=[journal],
+        )
+        mocker.patch(
+            "cta_eta.data_collection.compaction.compact.load_registry",
+            return_value=TRAIN_POSITION_SCHEMA,  # extra_col not in registry
+        )
+        mocker.patch(
+            "cta_eta.data_collection.compaction.compact.upload_parquet",
+        )
+        mocker.patch(
+            "cta_eta.data_collection.compaction.compact.archive_journals",
+        )
+        mocker.patch(
+            "cta_eta.data_collection.compaction.compact.prune_archive",
+            return_value=[],
+        )
+        mocker.patch(
+            "cta_eta.data_collection.compaction.compact.bootstrap_registry",
+        )
+        mock_alert = mocker.patch(
+            "cta_eta.data_collection.compaction.compact.send_drift_alert",
+        )
+        config = minimal_config(tmp_path)
+
+        metrics = _compact_one_daemon("train_positions", date(2026, 2, 17), config)
+
+        # Additive drift does NOT trigger alert
+        mock_alert.assert_not_called()
+        # Compaction succeeds without error
+        assert metrics.status == "success"
