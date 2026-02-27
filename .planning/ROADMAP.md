@@ -73,8 +73,17 @@ Plans:
 
 Plans:
 - [x] 12-01-PLAN.md — TDD implementation of schema_registry.py (DriftResult, classify_drift, JSON+IPC registry format, bootstrap/load/save)
-- [ ] 12-02-PLAN.md — Compaction pipeline integration (per-journal drift checking, drift alerting, Parquet file-level drift annotation)
-- [ ] 12-03-PLAN.md — Operator surface (cta-monitor Schema column, cta-compact schema update subcommand with git auto-commit)
+- [x] 12-02-PLAN.md — Compaction pipeline integration (per-journal drift checking, drift alerting, Parquet file-level drift annotation)
+- [x] 12-03-PLAN.md — Operator surface (cta-monitor Schema column, cta-compact schema update subcommand with git auto-commit)
+
+#### Phase 12.2: v0.2 Procedural Cleanup
+
+**Goal**: Close procedural gaps from the v0.2 audit — write Phase 10 VERIFICATION.md (the implementation was verified through Phase 11 but no formal verification document was written), and update `deploy/cta-compaction.service` to invoke the `cta-compact` installed entry point instead of `python -m`
+**Depends on**: Phase 12
+**Gap Closure**: Closes procedural gaps from v0.2 audit (phase-10-unverified, INT-3)
+
+Plans:
+- [ ] 12.2-01-PLAN.md — Write Phase 10 VERIFICATION.md and update cta-compaction.service entry point
 
 ## Progress
 
@@ -91,4 +100,5 @@ Plans:
 | 9. Alerting & Deployment | v0.1 | 4/4 | Complete | 2026-02-16 |
 | 10. IPC Journal Writer | v0.2 | 3/3 | Complete | 2026-02-17 |
 | 11. Data Compaction | v0.2 | 3/3 | Complete | 2026-02-25 |
-| 12. Schema Enforcement | 3/3 | Complete    | 2026-02-27 | - |
+| 12. Schema Enforcement | v0.2 | 3/3 | Complete | 2026-02-27 |
+| 12.2. v0.2 Procedural Cleanup | v0.2 | 0/1 | Pending | — |
