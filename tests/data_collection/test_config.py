@@ -50,9 +50,17 @@ weather_interval_minutes = 30
 max_retry_attempts = 10
 initial_backoff_seconds = 1
 
-[storage]
-data_path = "data"
-partition_by = "daily"
+[storage.immediate]
+data_path = "data/journals"
+journal_rotation_minutes = 15
+partition_hour = 3
+
+[storage.compaction]
+backend = "local"
+staging_path = "data/compaction"
+upload_prefix = "raw"
+archive_path = "data/archive"
+journal_retention_days = 7
 """
     config_file.write_text(config_content)
     return config_file
@@ -91,6 +99,20 @@ def _make_valid_full_config() -> dict[str, dict[str, Any]]:
         "rate_limits": {
             "nws": {"max_per_second": 5, "max_at_once": 5},
             "openweathermap": {"max_per_second": 60, "max_at_once": 60},
+        },
+        "storage": {
+            "immediate": {
+                "data_path": "data/journals",
+                "journal_rotation_minutes": 15,
+                "partition_hour": 3,
+            },
+            "compaction": {
+                "backend": "local",
+                "staging_path": "data/compaction",
+                "upload_prefix": "raw",
+                "archive_path": "data/archive",
+                "journal_retention_days": 7,
+            },
         },
     }
 
@@ -193,7 +215,10 @@ class TestSanitizeConfigForLogging:
 
     def test_sanitize_section_not_dict_copied_as_is(self) -> None:
         # Arrange
-        config = {"str_section": "string_val", "int_section": 42}
+        config: dict[str, object] = {
+            "str_section": "string_val",
+            "int_section": 42,
+        }
 
         # Act
         out = _sanitize_config_for_logging(config)
@@ -211,6 +236,31 @@ class TestSanitizeConfigForLogging:
 
         # Assert
         assert out == {}
+
+    def test_sanitize_redacts_storage_keys(self) -> None:
+        # Arrange: bucket names under storage.compaction are redacted in logs
+        config = {
+            "storage": {
+                "immediate": {"data_path": "data/journals"},
+                "compaction": {
+                    "s3_bucket": "my-bucket",
+                    "gcs_bucket": "other",
+                    "backend": "local",
+                    "upload_prefix": "raw",
+                    "archive_path": "data/archive",
+                },
+            },
+        }
+
+        # Act
+        out = _sanitize_config_for_logging(config)
+
+        # Assert
+        assert out["storage"]["compaction"]["s3_bucket"] == "<REDACTED>"
+        assert out["storage"]["compaction"]["gcs_bucket"] == "<REDACTED>"
+        assert out["storage"]["compaction"]["backend"] == "local"
+        assert out["storage"]["compaction"]["upload_prefix"] == "raw"
+        assert out["storage"]["compaction"]["archive_path"] == "data/archive"
 
 
 class TestLoadConfigFromPath:
@@ -246,6 +296,18 @@ max_at_once = 5
 [rate_limits.openweathermap]
 max_per_second = 60
 max_at_once = 60
+
+[storage.immediate]
+data_path = "data/journals"
+journal_rotation_minutes = 15
+partition_hour = 3
+
+[storage.compaction]
+backend = "local"
+staging_path = "data/compaction"
+upload_prefix = "raw"
+archive_path = "data/archive"
+journal_retention_days = 7
 """
         config_file = tmp_path / "config.toml"
         config_file.write_text(toml_content)
@@ -266,7 +328,7 @@ max_at_once = 60
         assert "cta_api_key" in creds
         assert "openweathermap_api_key" in creds
         assert config["cache"]["stations_ttl"] == 604800
-        assert config["collection"]["rate_limits"]["cta"]["max_per_second"] == 0.1
+        assert config["collection"]["rate_limits"]["cta"]["max_per_second"] == 0.1  # ty:ignore[invalid-argument-type, not-subscriptable]
 
     def test_load_config_success(
         self, temp_config_file: Path, monkeypatch: pytest.MonkeyPatch
@@ -478,6 +540,41 @@ quoted = 'world'
 
             # Assert
             assert config["secrets"]["cta_api_key"] == "key_with_spaces"
+
+    def test_load_config_injects_storage_from_env(
+        self, temp_config_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Storage bucket names and S3 endpoint URL are injected from env."""
+        monkeypatch.setenv("S3_BUCKET", "my-s3-bucket")
+        monkeypatch.setenv("GCS_BUCKET", "my-gcs-bucket")
+        monkeypatch.setenv("AZURE_BUCKET", "my-azure-container")
+        monkeypatch.setenv("S3_ENDPOINT_URL", "https://minio.example.com")
+        with patch("cta_eta.data_collection.config.load_dotenv"):
+            config = _load_config_from_path(temp_config_file)
+
+        assert config["storage"]["compaction"]["s3_bucket"] == "my-s3-bucket"
+        assert config["storage"]["compaction"]["gcs_bucket"] == "my-gcs-bucket"
+        assert config["storage"]["compaction"]["azure_bucket"] == "my-azure-container"
+        assert (
+            config["storage"]["compaction"]["s3_endpoint_url"]
+            == "https://minio.example.com"
+        )
+
+    def test_load_config_storage_empty_when_env_unset(
+        self, temp_config_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When bucket and S3 endpoint env vars are unset, config gets empty strings."""
+        monkeypatch.delenv("S3_BUCKET", raising=False)
+        monkeypatch.delenv("GCS_BUCKET", raising=False)
+        monkeypatch.delenv("AZURE_BUCKET", raising=False)
+        monkeypatch.delenv("S3_ENDPOINT_URL", raising=False)
+        with patch("cta_eta.data_collection.config.load_dotenv"):
+            config = _load_config_from_path(temp_config_file)
+
+        assert config["storage"]["compaction"]["s3_bucket"] == ""
+        assert config["storage"]["compaction"]["gcs_bucket"] == ""
+        assert config["storage"]["compaction"]["azure_bucket"] == ""
+        assert config["storage"]["compaction"]["s3_endpoint_url"] == ""
 
 
 class TestGetRequiredCredentials:
@@ -816,10 +913,10 @@ class TestValidateConfigFileSettings:
     def test_station_data_cache_not_dict(self) -> None:
         # Arrange
         config = _make_valid_full_config()
-        config["cache"] = "not a dict"
+        config["cache"] = "not a dict"  # ty:ignore[invalid-assignment]
 
         # Act & Assert
-        with pytest.raises(TypeError, match="cache.*must be a dictionary"):
+        with pytest.raises(TypeError, match=r"cache.*must be a dictionary"):
             validate_config_file_settings(config, required_features=["station_data"])
 
     def test_station_data_missing_stations_ttl(self) -> None:
@@ -837,7 +934,7 @@ class TestValidateConfigFileSettings:
         config["cache"]["stations_ttl"] = "3600"
 
         # Act & Assert
-        with pytest.raises(ValueError, match="stations_ttl.*integer"):
+        with pytest.raises(ValueError, match=r"stations_ttl.*integer"):
             validate_config_file_settings(config, required_features=["station_data"])
 
     def test_station_data_missing_track_geometry_ttl(self) -> None:
@@ -846,7 +943,7 @@ class TestValidateConfigFileSettings:
         del config["cache"]["track_geometry_ttl"]
 
         # Act & Assert
-        with pytest.raises(ValueError, match="track_geometry_ttl"):
+        with pytest.raises(ValueError, match=r"track_geometry_ttl"):
             validate_config_file_settings(config, required_features=["station_data"])
 
     def test_station_data_missing_weather_mapping_ttl(self) -> None:
@@ -855,7 +952,7 @@ class TestValidateConfigFileSettings:
         del config["cache"]["weather_mapping_ttl"]
 
         # Act & Assert
-        with pytest.raises(ValueError, match="weather_mapping_ttl"):
+        with pytest.raises(ValueError, match=r"weather_mapping_ttl"):
             validate_config_file_settings(config, required_features=["station_data"])
 
     def test_train_positions_missing_collection(self) -> None:
@@ -864,16 +961,16 @@ class TestValidateConfigFileSettings:
         del config["collection"]
 
         # Act & Assert
-        with pytest.raises(ValueError, match="train_interval_seconds"):
+        with pytest.raises(ValueError, match=r"train_interval_seconds"):
             validate_config_file_settings(config, required_features=["train_positions"])
 
     def test_train_positions_collection_not_dict(self) -> None:
         # Arrange
         config = _make_valid_full_config()
-        config["collection"] = "not a dict"
+        config["collection"] = "not a dict"  # ty:ignore[invalid-assignment]
 
         # Act & Assert
-        with pytest.raises(TypeError, match="collection.*must be a dictionary"):
+        with pytest.raises(TypeError, match=r"collection.*must be a dictionary"):
             validate_config_file_settings(config, required_features=["train_positions"])
 
     def test_train_positions_missing_train_interval_seconds(self) -> None:
@@ -882,7 +979,7 @@ class TestValidateConfigFileSettings:
         del config["collection"]["train_interval_seconds"]
 
         # Act & Assert
-        with pytest.raises(ValueError, match="train_interval_seconds"):
+        with pytest.raises(ValueError, match=r"train_interval_seconds"):
             validate_config_file_settings(config, required_features=["train_positions"])
 
     def test_train_positions_train_interval_not_int(self) -> None:
@@ -891,7 +988,7 @@ class TestValidateConfigFileSettings:
         config["collection"]["train_interval_seconds"] = 15.5
 
         # Act & Assert
-        with pytest.raises(ValueError, match="train_interval_seconds.*integer"):
+        with pytest.raises(ValueError, match=r"train_interval_seconds.*integer"):
             validate_config_file_settings(config, required_features=["train_positions"])
 
     def test_train_positions_missing_rate_limits(self) -> None:
@@ -900,7 +997,7 @@ class TestValidateConfigFileSettings:
         del config["collection"]["rate_limits"]
 
         # Act & Assert
-        with pytest.raises(ValueError, match="rate_limits"):
+        with pytest.raises(ValueError, match=r"rate_limits"):
             validate_config_file_settings(config, required_features=["train_positions"])
 
     def test_train_positions_rate_limits_not_dict(self) -> None:
@@ -909,7 +1006,7 @@ class TestValidateConfigFileSettings:
         config["collection"]["rate_limits"] = []
 
         # Act & Assert
-        with pytest.raises(ValueError, match="rate_limits.*dictionary"):
+        with pytest.raises(ValueError, match=r"rate_limits.*dictionary"):
             validate_config_file_settings(config, required_features=["train_positions"])
 
     def test_train_positions_missing_cta_in_rate_limits(self) -> None:
@@ -918,7 +1015,7 @@ class TestValidateConfigFileSettings:
         config["collection"]["rate_limits"] = {"other": {}}
 
         # Act & Assert
-        with pytest.raises(ValueError, match="rate_limits.cta"):
+        with pytest.raises(ValueError, match=r"rate_limits.cta"):
             validate_config_file_settings(config, required_features=["train_positions"])
 
     def test_train_positions_cta_max_per_second_not_float(self) -> None:
@@ -927,7 +1024,7 @@ class TestValidateConfigFileSettings:
         config["collection"]["rate_limits"]["cta"]["max_per_second"] = "0.1"
 
         # Act & Assert
-        with pytest.raises(ValueError, match="max_per_second.*float"):
+        with pytest.raises(ValueError, match=r"max_per_second.*float"):
             validate_config_file_settings(config, required_features=["train_positions"])
 
     def test_train_positions_cta_max_at_once_not_int(self) -> None:
@@ -936,7 +1033,7 @@ class TestValidateConfigFileSettings:
         config["collection"]["rate_limits"]["cta"]["max_at_once"] = 3.0
 
         # Act & Assert
-        with pytest.raises(ValueError, match="max_at_once.*integer"):
+        with pytest.raises(ValueError, match=r"max_at_once.*integer"):
             validate_config_file_settings(config, required_features=["train_positions"])
 
     def test_weather_collection_missing_rate_limits(self) -> None:
@@ -953,10 +1050,10 @@ class TestValidateConfigFileSettings:
     def test_weather_collection_rate_limits_not_dict(self) -> None:
         # Arrange
         config = _make_valid_full_config()
-        config["rate_limits"] = []
+        config["rate_limits"] = []  # ty:ignore[invalid-assignment]
 
         # Act & Assert
-        with pytest.raises(TypeError, match="rate_limits.*must be a dictionary"):
+        with pytest.raises(TypeError, match=r"rate_limits.*must be a dictionary"):
             validate_config_file_settings(
                 config, required_features=["weather_collection"]
             )
@@ -969,7 +1066,7 @@ class TestValidateConfigFileSettings:
         }
 
         # Act & Assert
-        with pytest.raises(ValueError, match="nws"):
+        with pytest.raises(ValueError, match=r"nws"):
             validate_config_file_settings(
                 config, required_features=["weather_collection"]
             )
@@ -988,7 +1085,7 @@ class TestValidateConfigFileSettings:
         del config["rate_limits"]["nws"]["max_per_second"]
 
         # Act & Assert
-        with pytest.raises(ValueError, match="nws.max_per_second"):
+        with pytest.raises(ValueError, match=r"nws.max_per_second"):
             validate_config_file_settings(
                 config, required_features=["weather_collection"]
             )
@@ -999,7 +1096,7 @@ class TestValidateConfigFileSettings:
         config["rate_limits"]["nws"]["max_per_second"] = "5"
 
         # Act & Assert
-        with pytest.raises(ValueError, match="nws.max_per_second"):
+        with pytest.raises(ValueError, match=r"nws.max_per_second"):
             validate_config_file_settings(
                 config, required_features=["weather_collection"]
             )
@@ -1010,7 +1107,7 @@ class TestValidateConfigFileSettings:
         config["rate_limits"]["nws"]["max_at_once"] = 5.5
 
         # Act & Assert
-        with pytest.raises(ValueError, match="nws.max_at_once.*integer"):
+        with pytest.raises(ValueError, match=r"nws.max_at_once.*integer"):
             validate_config_file_settings(
                 config, required_features=["weather_collection"]
             )
@@ -1018,10 +1115,10 @@ class TestValidateConfigFileSettings:
     def test_weather_collection_fallback_rate_limits_not_dict(self) -> None:
         # Arrange
         config = _make_valid_full_config()
-        config["rate_limits"] = []
+        config["rate_limits"] = []  # ty:ignore[invalid-assignment]
 
         # Act & Assert
-        with pytest.raises(TypeError, match="rate_limits.*must be a dictionary"):
+        with pytest.raises(TypeError, match=r"rate_limits.*must be a dictionary"):
             validate_config_file_settings(
                 config, required_features=["weather_collection_fallback"]
             )
@@ -1032,7 +1129,7 @@ class TestValidateConfigFileSettings:
         config["rate_limits"] = {"nws": {"max_per_second": 5, "max_at_once": 5}}
 
         # Act & Assert
-        with pytest.raises(ValueError, match="openweathermap"):
+        with pytest.raises(ValueError, match=r"openweathermap"):
             validate_config_file_settings(
                 config, required_features=["weather_collection_fallback"]
             )
@@ -1045,7 +1142,7 @@ class TestValidateConfigFileSettings:
         del config["rate_limits"]["openweathermap"]["max_per_second"]
 
         # Act & Assert
-        with pytest.raises(ValueError, match="openweathermap.max_per_second"):
+        with pytest.raises(ValueError, match=r"openweathermap\.max_per_second"):
             validate_config_file_settings(
                 config, required_features=["weather_collection_fallback"]
             )
@@ -1058,7 +1155,7 @@ class TestValidateConfigFileSettings:
         config["rate_limits"]["openweathermap"]["max_per_second"] = "60"
 
         # Act & Assert
-        with pytest.raises(ValueError, match="openweathermap.max_per_second"):
+        with pytest.raises(ValueError, match=r"openweathermap\.max_per_second"):
             validate_config_file_settings(
                 config, required_features=["weather_collection_fallback"]
             )
@@ -1071,7 +1168,7 @@ class TestValidateConfigFileSettings:
         config["rate_limits"]["openweathermap"]["max_at_once"] = 60.0
 
         # Act & Assert
-        with pytest.raises(ValueError, match="openweathermap.max_at_once"):
+        with pytest.raises(ValueError, match=r"openweathermap\.max_at_once"):
             validate_config_file_settings(
                 config, required_features=["weather_collection_fallback"]
             )
@@ -1204,14 +1301,14 @@ class TestGetConfigSection:
             TypeError,
             match=r"Configuration path 'x': section 'x' must be a dict, got str\.",
         ):
-            get_config_section("x", config=config)
+            get_config_section("x", config=config)  # ty:ignore[invalid-argument-type]
 
     def test_get_config_section_subsection_two_levels(self) -> None:
         # Arrange
         config = {"rate_limits": {"nws": {"calls_per_minute": 10}}}
 
         # Act
-        result = get_config_section("rate_limits.nws", config=config)
+        result = get_config_section("rate_limits.nws", config=config)  # ty:ignore[invalid-argument-type]
 
         # Assert
         assert result == {"calls_per_minute": 10}
@@ -1221,7 +1318,7 @@ class TestGetConfigSection:
         config = {"a": {"b": {"c": {"k": 1}}}}
 
         # Act
-        result = get_config_section("a.b.c", config=config)
+        result = get_config_section("a.b.c", config=config)  # ty:ignore[invalid-argument-type]
 
         # Assert
         assert result == {"k": 1}
@@ -1246,7 +1343,7 @@ class TestGetConfigSection:
             TypeError,
             match=r"Configuration path 'a\.b': section 'a' must be a dict, got str\.",
         ):
-            get_config_section("a.b", config=config)
+            get_config_section("a.b", config=config)  # ty:ignore[invalid-argument-type]
 
     def test_get_config_section_subsection_child_missing_raises(self) -> None:
         # Arrange
@@ -1334,7 +1431,7 @@ class TestGetConfigSection:
             ValueError,
             match=r"Configuration path '': section '' is missing\.",
         ):
-            get_config_section("", config=config)
+            get_config_section("", config=config)  # ty:ignore[invalid-argument-type]
 
     def test_get_config_section_section_empty_string_exists_returns_section(
         self,

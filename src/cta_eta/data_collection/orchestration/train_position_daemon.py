@@ -115,8 +115,8 @@ class TrainPositionDaemon(AsyncBaseDaemon):
 
         # Load CTA rate limits from config
         cta_rate_limit_config = get_config_section("rate_limits.cta")
-        self.cta_max_per_second = float(cta_rate_limit_config.get("max_per_second"))
-        self.cta_max_at_once = int(cta_rate_limit_config.get("max_at_once"))
+        self.cta_max_per_second = float(cta_rate_limit_config.get("max_per_second", 1))
+        self.cta_max_at_once = int(cta_rate_limit_config.get("max_at_once", 1))
 
         # Load CTA error 102 (daily quota) probe configuration
         self.probe_102_attempts = int(collection_config.get("probe_102_attempts", 2))

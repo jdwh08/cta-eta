@@ -155,16 +155,16 @@ class WeatherDaemon(AsyncBaseDaemon):
 
         # NWS API: https://api.weather.gov/
         nws_rate_limit_config = get_config_section("rate_limits.nws")
-        self.nws_max_per_second = float(nws_rate_limit_config.get("max_per_second"))
-        self.nws_max_at_once = int(nws_rate_limit_config.get("max_at_once"))
+        self.nws_max_per_second = float(nws_rate_limit_config.get("max_per_second", 1))
+        self.nws_max_at_once = int(nws_rate_limit_config.get("max_at_once", 1))
 
         # Open-Meteo API: https://open-meteo.com/en/docs
         open_meteo_rate_limit_config = get_config_section("rate_limits.open_meteo")
         self.open_meteo_max_per_second = float(
-            open_meteo_rate_limit_config.get("max_per_second")
+            open_meteo_rate_limit_config.get("max_per_second", 1)
         )
         self.open_meteo_max_at_once = int(
-            open_meteo_rate_limit_config.get("max_at_once")
+            open_meteo_rate_limit_config.get("max_at_once", 1)
         )
 
         # OpenWeatherMap API: https://openweathermap.org/api/one-call-3
@@ -172,10 +172,10 @@ class WeatherDaemon(AsyncBaseDaemon):
             "rate_limits.openweathermap"
         )
         self.openweathermap_max_per_second = float(
-            openweathermap_rate_limit_config.get("max_per_second")
+            openweathermap_rate_limit_config.get("max_per_second", 1)
         )
         self.openweathermap_max_at_once = int(
-            openweathermap_rate_limit_config.get("max_at_once")
+            openweathermap_rate_limit_config.get("max_at_once", 1)
         )
 
         # Initialize state tracking

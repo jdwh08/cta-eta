@@ -126,9 +126,8 @@ class TestPruneArchive:
         (archive_base / "date=2026-02-20").mkdir()
         (archive_base / "date=2026-02-24").mkdir()
 
-        mock_d = mocker.patch("cta_eta.data_collection.compaction.archiver.date")
-        mock_d.today.return_value = date(2026, 2, 25)
-        mock_d.fromisoformat = date.fromisoformat
+        mock_dt = mocker.patch("cta_eta.data_collection.compaction.archiver.datetime")
+        mock_dt.now.return_value = datetime(2026, 2, 25, tzinfo=UTC)
 
         result = prune_archive(archive_base, retention_days=7)
 

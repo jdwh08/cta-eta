@@ -4,14 +4,16 @@ This module provides an abstract base class for building long-running polling
 daemons with lifecycle management, signal handling, and state persistence.
 
 Usage example:
-    class TrainPoller(AsyncBaseDaemon):
-        async def run(self) -> None:
-            while self.running:
-                # Poll train API
-                await self.sleep(15)
+```python
+class TrainPoller(AsyncBaseDaemon):
+    async def run(self) -> None:
+        while self.running:
+            # Poll train API
+            await self.sleep(15)
 
-        async def _get_state(self) -> dict[str, str | int | float]:
-            return {"last_poll_timestamp": time.time()}
+    async def _get_state(self) -> dict[str, str | int | float]:
+        return {"last_poll_timestamp": time.time()}
+```
 """
 
 from __future__ import annotations
