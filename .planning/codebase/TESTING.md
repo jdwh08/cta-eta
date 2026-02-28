@@ -1,314 +1,423 @@
 # Testing Patterns
 
-**Analysis Date:** 2026-01-22
+**Analysis Date:** 2026-02-28
 
 ## Test Framework
 
 **Runner:**
 - pytest 9.0.2+
-- Config: `pyproject.toml` [tool.pytest] section
+- Config: `pyproject.toml` under `[tool.pytest]`
+
+**Key Settings:**
+```toml
+addopts = [
+    "--import-mode=importlib",      # importlib mode for namespace isolation
+    "--strict-markers",             # require marker definition
+    "--strict-config",              # error on unknown config keys
+    "--cov=src",                    # coverage of src/ only
+    "--cov-report=term-missing",    # show uncovered lines
+]
+strict = true                       # strict config enforcement
+python_files = ["test_*.py"]        # test file pattern
+python_classes = ["Test*"]          # test class pattern (PascalCase)
+python_functions = ["test_*"]       # test function pattern
+testpaths = ["tests"]               # test root directory
+```
 
 **Assertion Library:**
-- pytest built-in `assert` statements
-- Standard comparison: `assert result == expected`
-- Exception checking: `pytest.raises(ExceptionType)`
+- `assert` statements (built-in pytest)
+- `pytest.raises()` for exception testing
+- No separate assertion library needed
 
 **Run Commands:**
 ```bash
-pytest                                        # Run all tests with coverage
-pytest tests/data_collection/apis/            # Run API tests only
-pytest tests/data_collection/apis/test_api_train_position.py  # Single file
-pytest --no-cov                               # Skip coverage
-pytest -v                                     # Verbose output
-pytest -k "test_name_pattern"                 # Run tests matching pattern
+# All tests
+pytest
+
+# Watch mode (requires pytest-watch)
+pytest-watch
+
+# Coverage report
+pytest --cov=src --cov-report=html
+
+# Specific test
+pytest tests/data_collection/test_utils.py::TestSafeGetNested::test_success_single_key
+
+# Markers (if defined)
+pytest -m asyncio
 ```
+
+**Additional Tools:**
+- `pytest-cov` - Coverage measurement
+- `pytest-mock` - Mocking with `mocker` fixture
+- `pytest-sugar` - Enhanced output formatting
+- `pytest-asyncio` - Async test support
 
 ## Test File Organization
 
 **Location:**
-- Test files mirror source structure exactly
-- Pattern: `tests/` mirrors `src/cta_eta/`
+- Mirrored structure: `tests/` mirrors `src/cta_eta/`
+- Co-located by package: `tests/data_collection/apis/test_api_train_position.py` mirrors `src/cta_eta/data_collection/apis/api_train_position.py`
 
 **Naming:**
-- Unit tests: `test_<module>.py` (e.g., `test_cache.py`, `test_api_train_position.py`)
-- Only `test_*.py` pattern used (no `*_test.py` variant)
+- File: `test_<module_name>.py`
+- Class: `Test<FunctionName>` or `Test<ComponentName>` (PascalCase)
+- Function: `test_<scenario_description>` (describe_behavior pattern)
 
-**Structure:**
+**Structure Example:**
 ```
 tests/
-├── conftest.py                          # Shared pytest fixtures
-└── data_collection/
-    ├── apis/
-    │   ├── test_api_train_position.py  # 709 lines, comprehensive
-    │   ├── test_api_weather_nws.py
-    │   └── ...
-    ├── storage_cache/
-    │   ├── test_cache.py               # 733 lines, 100+ test methods
-    │   ├── test_kv_cache.py
-    │   ├── test_storage.py
-    │   └── test_weather_grid_cache.py
-    ├── orchestration/
-    │   ├── test_daemon.py
-    │   ├── test_daemon_async.py
-    │   ├── test_diagnostics.py
-    │   └── test_weather_daemon.py
-    ├── merging/
-    │   └── test_weather_merger.py
-    ├── test_config.py
-    └── test_logging.py
+├── conftest.py                                    # Shared fixtures
+├── data_collection/
+│   ├── conftest.py                               # Fixtures for this subtree
+│   ├── test_config.py
+│   ├── test_logging.py
+│   ├── test_utils.py
+│   ├── apis/
+│   │   ├── test_api_train_position.py
+│   │   ├── test_api_weather_openweathermap.py
+│   │   └── ...
+│   ├── orchestration/
+│   │   ├── test_daemon_async.py
+│   │   ├── test_train_position_daemon.py
+│   │   └── ...
+│   ├── storage_cache/
+│   │   ├── test_cache.py
+│   │   ├── test_journal_writer.py
+│   │   └── ...
+│   └── compaction/
+│       ├── test_compact.py
+│       ├── test_schema_registry.py
+│       └── ...
+├── monitoring/
+│   ├── test_alerting.py
+│   ├── test_health_check.py
+│   └── ...
 ```
-
-**File Count:**
-- 23 Python source files in `src/cta_eta/`
-- 19 test files in `tests/`
 
 ## Test Structure
 
 **Suite Organization:**
 ```python
+"""Unit tests for <module>."""
+
+from __future__ import annotations
+
+import json
+import time
+from pathlib import Path
+from typing import TYPE_CHECKING
+
 import pytest
-from pytest_mock import MockerFixture
+
+if TYPE_CHECKING:
+    from pytest_mock import MockerFixture
+
 
 class TestCachedData:
-    """Tests for CachedData generic cache."""
+    """Tests for CachedData generic class."""
 
-    def test_get_returns_none_when_cache_empty(self, cache_file):
+    @pytest.fixture
+    def temp_cache_dir(self, tmp_path: Path) -> Path:
+        """Create temporary directory for cache files."""
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        return cache_dir
+
+    @pytest.fixture
+    def mock_fetch_fn(self) -> Mock:
+        """Create mock fetch function."""
+        return Mock(return_value={"test": "data"})
+
+    def test_init_sets_attributes(self, cache_file: Path) -> None:
+        """Test that __init__ sets all attributes correctly."""
         # Arrange
-        cache = CachedData(cache_file, ttl=300, fetch_fn=mock_fetch)
+        ttl = 3600
 
         # Act
-        result = cache.get()
+        cache = CachedData(cache_file=cache_file, ttl=ttl, fetch_fn=mock_fetch_fn)
 
         # Assert
-        assert result is None
-
-    def test_get_returns_cached_value_when_not_expired(self, cache_file):
-        # Test implementation
-        ...
+        assert cache._cache_file == cache_file
+        assert cache._ttl == ttl
 ```
 
-**Patterns:**
-- Test classes group related tests: `TestCachedData`, `TestCreateCachedData`
-- Each test method prefixed with `test_`
-- Descriptive test names: `test_<method>_<scenario>`
-- Arrange-Act-Assert pattern consistently used
+**Key Patterns:**
 
-**Async Tests:**
-- Marked with `@pytest.mark.asyncio` decorator
-- Use `async def test_...()` pattern
-- Example from `test_api_train_position.py`:
-  ```python
-  @pytest.mark.asyncio
-  async def test_get_train_positions_requires_api_key():
-      # Test implementation
-  ```
+1. **Docstring convention:** `"""Verb + condition returns/does expected behavior."""`
+   - Example: `"""Returns value for single existing key."""`
+
+2. **AAA Pattern (Arrange-Act-Assert):**
+   - Arrange: Set up fixtures, mocks, test data
+   - Act: Call the function under test
+   - Assert: Check results and side effects
+
+3. **Comments within sections:**
+   ```python
+   # Arrange
+   monkeypatch.setenv("CTA_API_KEY", "test-api-key")
+
+   # Act
+   result = safe_get_nested(data, "a")
+
+   # Assert
+   assert result == 1
+   ```
+
+4. **Fixture dependency injection:**
+   - Class methods receive fixtures as parameters
+   - Fixtures defined as methods with `@pytest.fixture`
+   - Type hints on fixtures: `def mock_fetch_fn(self) -> Mock:`
 
 ## Mocking
 
-**Framework:**
-- pytest-mock (MockerFixture)
-- `mocker.AsyncMock()` for async functions
-- `mocker.Mock(spec=...)` for type-safe mocks
+**Framework:** `pytest-mock` (via `mocker` fixture)
 
 **Patterns:**
-```python
-def test_api_call_with_mock(mocker: MockerFixture):
-    # Mock HTTP client
-    mock_client = mocker.Mock(spec=httpx.AsyncClient)
-    mock_response = httpx.Response(200, json={"data": "..."})
-    mock_client.get.return_value = mock_response
 
-    # Call function with mock
-    result = await get_data(mock_client)
+1. **Mock async client:**
+   ```python
+   client = mocker.AsyncMock(spec=httpx.AsyncClient)
+   response = httpx_json_response(payload, 200, url)
+   client.get.return_value = response
+   ```
 
-    # Verify mock interactions
-    mock_client.get.assert_called_once_with("https://api.example.com/data")
-```
+2. **Mock functions:**
+   ```python
+   mock_fetch_fn = Mock(return_value={"test": "data"})
+   mocker.patch(
+       "cta_eta.data_collection.compaction.compact.discover_journals",
+       return_value=[]
+   )
+   ```
 
-**Unwrapping Decorated Functions:**
-- Retry decorators bypassed for testing: `func.__wrapped__.__wrapped__`
-- Example: `api_train_position.get_train_positions.__wrapped__.__wrapped__`
-- Allows testing error paths without retry delays
+3. **Spy on calls:**
+   ```python
+   client.get.assert_awaited_once()
+   assert client.get.call_args.args[0] == expected_url
+   assert client.get.call_args.kwargs["params"] == expected_params
+   ```
+
+4. **Shared HTTP response fixture in `conftest.py`:**
+   ```python
+   @pytest.fixture
+   def httpx_json_response() -> Callable[[object, int, str], httpx.Response]:
+       """Build an httpx.Response with realistic behavior."""
+       def _build(payload: object, status_code: int, url: str) -> httpx.Response:
+           request = httpx.Request("GET", url)
+           return httpx.Response(status_code=status_code, json=payload, request=request)
+       return _build
+   ```
 
 **What to Mock:**
-- HTTP clients (`httpx.AsyncClient`, `httpx.Client`)
-- File system operations (via temporary directories, not mocking)
-- Time for TTL expiration testing (via `mocker.patch`)
-- External API responses (via mock HTTP responses)
+- External APIs (httpx calls)
+- File system operations (when testing logic, not I/O)
+- Environment variables (via `monkeypatch`)
+- Expensive operations (database calls, external services)
 
 **What NOT to Mock:**
-- Pure functions and utilities
-- Internal business logic (test actual implementation)
-- Type hints and annotations
+- Core business logic (validate data, transform data)
+- Real schemas and data structures (use actual `pa.Table` from `schemas.py`)
+- Exception handling paths (test with real exceptions)
 
 ## Fixtures and Factories
 
-**Shared Fixtures (`tests/conftest.py`):**
-```python
-@pytest.fixture
-def httpx_json_response():
-    """Factory for creating httpx.Response objects with JSON payload."""
-    def _factory(status_code: int, json_data: dict) -> httpx.Response:
-        return httpx.Response(
-            status_code=status_code,
-            json=json_data,
-            headers={"content-type": "application/json"},
-        )
-    return _factory
-```
+**Test Data Patterns:**
 
-**Per-Module Fixtures:**
-- Environment variable mocking: `cta_api_key_env` fixture
-- Temporary directories: `temp_cache_dir`, `cache_file` fixtures
-- Mock fetch functions: `mock_fetch_fn` for cache testing
-- Complex test data: Factory functions in test files
+1. **Fixtures for common setup:**
+   ```python
+   @pytest.fixture
+   def cta_api_key_env(monkeypatch: pytest.MonkeyPatch) -> None:
+       """Set required CTA API env var for the duration of the test."""
+       monkeypatch.setenv("CTA_API_KEY", "test-api-key")
+   ```
 
-**Fixture Examples:**
-```python
-@pytest.fixture
-def cache_file(tmp_path):
-    """Provide a temporary cache file path."""
-    return tmp_path / "test_cache.json"
+2. **Table builders for integration tests:**
+   ```python
+   def make_train_positions_table(rows: int = 1) -> pa.Table:
+       """Build a train_positions table matching TRAIN_POSITION_SCHEMA."""
+       return pa.table({
+           "poll_timestamp": pa.array(
+               [datetime(2026, 2, 17, 12, 0, 0, tzinfo=UTC)] * rows,
+               type=pa.timestamp("us", tz="UTC"),
+           ),
+           # ... other fields ...
+       }, schema=TRAIN_POSITION_SCHEMA)
+   ```
 
-@pytest.fixture
-def mock_fetch_fn(mocker):
-    """Mock fetch function for cache testing."""
-    return mocker.AsyncMock(return_value={"test": "data"})
-```
+3. **Config builders:**
+   ```python
+   def minimal_config(tmp_path: Path) -> dict[str, Any]:
+       """Minimal config with tmp_path-based dirs (no shared /tmp)."""
+       return {
+           "storage": {
+               "immediate": {
+                   "data_path": str(tmp_path / "journals"),
+               },
+           },
+       }
+   ```
+
+**Location:**
+- Inline in test files if shared within one class
+- `conftest.py` if shared across modules
+- `tests/data_collection/conftest.py` for data_collection subtree fixtures
 
 ## Coverage
 
 **Requirements:**
-- Coverage enabled by default: `--cov=src` in pytest addopts
-- Coverage report: `--cov-report=term-missing` shows missing lines
-- No enforced minimum coverage percentage
-
-**Configuration:**
-- Tool: pytest-cov (wraps coverage.py)
-- Source: `src/` directory only
-- Excludes: Test files automatically excluded
+- No explicit minimum enforced (`--cov-report=term-missing` shows gaps)
+- Coverage measured for `src/` only via `--cov=src`
 
 **View Coverage:**
 ```bash
-pytest                          # Shows coverage in terminal
-pytest --cov-report=html        # Generate HTML report
-open htmlcov/index.html         # View HTML report
+pytest --cov=src --cov-report=html
+# Open htmlcov/index.html
 ```
+
+**Coverage file:** `.coverage` (gitignored)
+
+**HTML reports:** `.htmlcov/` directory with line-by-line coverage
 
 ## Test Types
 
 **Unit Tests:**
-- Scope: Test single function or class in isolation
-- Mocking: Mock all external dependencies (HTTP, file system)
-- Speed: Fast (<100ms per test)
-- Examples: `test_api_train_position.py` (API client functions)
+- Scope: Single function/method in isolation
+- Mocks: All external dependencies
+- Location: Test file mirrors module structure
+- Speed: Fast (< 1 second per test)
+- Example: `TestSafeGetNested` tests `safe_get_nested()` with mocked data
 
 **Integration Tests:**
-- Scope: Test multiple modules together
-- Mocking: Mock external APIs, use real caches and storage
-- Examples: `test_weather_daemon.py` (daemon with multiple dependencies)
+- Scope: Multiple components working together
+- Mocks: Only external services (APIs, cloud storage)
+- Data: Real schemas and table structures from `schemas.py`
+- Location: Same test file as unit tests, grouped in classes
+- Example: `TestCompactIntegrationStyle` in `test_compact.py` uses real Parquet writing
 
 **E2E Tests:**
-- Not present in current test suite
-- Recommendation: Add for full pipeline testing
+- Status: Not detected in codebase
+- Approach if needed: Would test full daemon lifecycle with real I/O
 
 ## Common Patterns
 
 **Async Testing:**
 ```python
 @pytest.mark.asyncio
-async def test_async_operation():
-    result = await async_function()
-    assert result == "expected"
+async def test_get_train_positions_requires_api_key(
+    monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+) -> None:
+    """Test that get_train_positions requires CTA_API_KEY environment variable."""
+    # Arrange
+    monkeypatch.delenv("CTA_API_KEY", raising=False)
+    client = mocker.AsyncMock(spec=httpx.AsyncClient)
+
+    # Act / Assert
+    with pytest.raises(ConfigurationError, match="CTA_API_KEY"):
+        await api_train_position.get_train_positions(client)
 ```
 
 **Error Testing:**
 ```python
-def test_raises_value_error_on_missing_api_key():
-    with pytest.raises(ValueError, match="CTA_API_KEY must be set"):
-        get_api_key()
+def test_missing_key_raises_api_response_error(self) -> None:
+    """Raises APIResponseError when required key is missing."""
+    # Arrange
+    data: dict[str, object] = {"a": 1}
 
-@pytest.mark.asyncio
-async def test_async_error():
-    with pytest.raises(httpx.HTTPStatusError):
-        await api_call_that_fails()
+    # Act & Assert
+    with pytest.raises(
+        APIResponseError, match=r"API response missing required field: 'b'"
+    ):
+        safe_get_nested(data, "b")
 ```
 
-**Parametrized Tests:**
+**Exception Chaining:**
 ```python
-@pytest.mark.parametrize("input,expected", [
-    (0, False),
-    (1, True),
-    (2, True),
-])
-def test_multiple_inputs(input, expected):
-    assert is_valid(input) == expected
+with pytest.raises(APIResponseError, match=r"Expected dict"):
+    safe_get_nested(data, "a", "b")
 ```
 
-**Temporary Files:**
+**Parameter Testing (AAA per test):**
 ```python
-def test_with_temp_file(tmp_path):
-    # tmp_path is a pytest fixture providing temporary directory
+def test_success_single_key(self) -> None:
+    """Returns value for single existing key."""
+    # Arrange
+    data: dict[str, object] = {"a": 1}
+
+    # Act
+    result = safe_get_nested(data, "a")
+
+    # Assert
+    assert result == 1
+
+def test_success_nested_keys(self) -> None:
+    """Returns value for nested key path."""
+    # Arrange
+    data: dict[str, object] = {"a": {"b": {"c": "value"}}}
+
+    # Act
+    result = safe_get_nested(data, "a", "b", "c")
+
+    # Assert
+    assert result == "value"
+```
+(Separate test per scenario, not parametrized)
+
+**Monkeypatch for Environment:**
+```python
+@pytest.fixture
+def cta_api_key_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Set required CTA API env var for the duration of the test."""
+    monkeypatch.setenv("CTA_API_KEY", "test-api-key")
+
+
+def test_calls_with_api_key(cta_api_key_env: None) -> None:
+    """Automatically gets cta_api_key_env fixture."""
+    # Environment variable is set for this test
+```
+
+**Tmp Path for File I/O:**
+```python
+def test_saves_to_file(self, tmp_path: Path) -> None:
+    """Verify data persists to file."""
+    # Arrange
     cache_file = tmp_path / "cache.json"
-    cache = CachedData(cache_file, ...)
-    # Test implementation
+
+    # Act
+    cache.get()
+
+    # Assert
+    assert cache_file.exists()
 ```
 
-**Edge Case Testing:**
-- Comprehensive coverage of edge cases with descriptive names
-- Examples from `test_api_train_position.py`:
-  - `test_normalize_handles_missing_optional_fields()`
-  - `test_normalize_handles_empty_routes_list()`
-  - `test_normalize_handles_invalid_json_structure()`
-  - `test_normalize_converts_string_numbers_to_typed_values()`
-
-## Test Configuration
-
-**pytest Configuration (`pyproject.toml`):**
-```toml
-[tool.pytest]
-addopts = [
-    "--import-mode=importlib",   # Use importlib for imports
-    "--strict-markers",           # Strict marker validation
-    "--strict-config",            # Strict configuration
-    "--cov=src",                  # Coverage for src/
-    "--cov-report=term-missing",  # Show missing lines
-]
-python_files = ["test_*.py"]
-python_classes = ["Test*"]
-python_functions = ["test_*"]
-testpaths = ["tests"]
-```
-
-**Linting for Tests:**
-```toml
-[tool.ruff.lint.per-file-ignores]
-"tests/**/*.py" = [
-    "PLR2004",  # Magic values allowed in tests
-    "S101",     # Assert statements allowed
-    "SLF001",   # Private method access allowed
-    "INP001",   # Implicit namespace packages
-]
-```
-
-## TYPE_CHECKING Pattern
-
-**Avoiding Circular Imports:**
+**Fixture Class Variables:**
 ```python
-from __future__ import annotations
+class TestCachedData:
+    """Test class with shared fixtures."""
 
-from typing import TYPE_CHECKING
+    @pytest.fixture
+    def cache_file(self, temp_cache_dir: Path) -> Path:
+        """Create cache file path for testing."""
+        return temp_cache_dir / "test_cache.json"
 
-if TYPE_CHECKING:
-    from collections.abc import Callable
-    from pytest_mock import MockerFixture
-
-def test_example(mocker: MockerFixture):
-    # Type hint works, but import only happens during type checking
-    ...
+    # Tests can request cache_file as parameter
+    def test_get_loads_from_file(self, cache_file: Path) -> None:
+        ...
 ```
+
+**Setup/Teardown:**
+- `conftest.py` sets environment: `os.environ["CTA_API_KEY"] = "test"`
+- Fixtures manage cleanup automatically (tmp_path, monkeypatch)
+- Generator fixtures with `yield` for resource cleanup:
+  ```python
+  @pytest.fixture
+  def cleanup_state_files(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+      original_cwd = Path.cwd()
+      monkeypatch.chdir(tmp_path)
+      yield
+      monkeypatch.chdir(original_cwd)
+  ```
 
 ---
 
-*Testing analysis: 2026-01-22*
-*Update when test patterns change*
+*Testing analysis: 2026-02-28*

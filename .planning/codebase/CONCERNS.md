@@ -1,181 +1,185 @@
 # Codebase Concerns
 
-**Analysis Date:** 2026-01-22
+**Analysis Date:** 2026-02-28
 
 ## Tech Debt
 
-**Unguarded API Response Parsing:**
-- Issue: Multiple API client files assume specific response structures without defensive validation
-- Files affected:
-  - `src/cta_eta/data_collection/apis/api_weather_nws.py` (lines 78, 159-189)
-  - `src/cta_eta/data_collection/apis/api_weather_open_meteo.py` (lines 97-98, 171-189)
-  - `src/cta_eta/data_collection/apis/api_weather_openweathermap.py` (lines 95-96, 166-192)
-- Why: Rapid prototyping during initial development, assumed well-formed API responses
-- Impact: KeyError or IndexError if API response structure changes or is malformed
-- Fix approach: Wrap parsing in try-except blocks or use `.get()` with defaults consistently
+**Large Daemon Files (Code Complexity):**
+- Issue: `train_position_daemon.py` (891 lines) and `weather_daemon.py` (844 lines) are monolithic with multiple responsibilities bundled into single classes
+- Files: `src/cta_eta/data_collection/orchestration/train_position_daemon.py`, `src/cta_eta/data_collection/orchestration/weather_daemon.py`
+- Impact: Makes testing individual behaviors difficult, increases maintenance burden, harder to debug specific features in isolation
+- Fix approach: Extract polling logic, gap detection, error handling, and storage management into separate composable classes. Consider using dependency injection to reduce coupling.
 
-**Pandas Overhead for Simple Dict Merging:**
-- Issue: Weather merger creates pandas DataFrames just to merge dictionaries
-- File: `src/cta_eta/data_collection/merging/weather_merger.py` (lines 89-104)
-- Why: Initial implementation used pandas for all data operations
-- Impact: Performance overhead on every polling cycle (~100 stations × 15-30 min intervals)
-- Fix approach: Replace pandas concat with simple dict merging logic
+**Broad Exception Handling in Daemons:**
+- Issue: Multiple `except Exception as e:` blocks without specific exception types in critical paths
+- Files: `src/cta_eta/data_collection/orchestration/train_position_daemon.py` (lines 365, 417), `src/cta_eta/data_collection/orchestration/weather_daemon.py`, `src/cta_eta/data_collection/orchestration/daemon_async.py`
+- Impact: Masks bugs and makes error categorization less reliable; classification may fail silently
+- Fix approach: Use specific exception types (APIResponseError, ConfigurationError, CTATrackerAPIError, etc.) instead of bare `Exception`. Reserve `except Exception` only for catch-all that re-raises after logging.
 
-**Hardcoded Rate Limit Constants:**
-- Issue: API rate limits hardcoded in daemon without linking to actual API documentation
-- File: `src/cta_eta/data_collection/orchestration/weather_daemon.py` (lines 62-63)
-- Values: `_OPEN_METEO_MAX_PER_SECOND = 0.1`, `_OPEN_METEO_MAX_AT_ONCE = 3`
-- Why: Quick implementation without configuration abstraction
-- Impact: Manual code updates needed if API limits change
-- Fix approach: Move to `config.toml` with comments linking to API docs
+**Storage Failure Handling with Incomplete Recovery:**
+- Issue: Storage failures trigger backoff via `storage_backoff_until` but the counter is never reset, leading to potential false positives after recovery
+- Files: `src/cta_eta/data_collection/orchestration/train_position_daemon.py` (lines 418-423)
+- Impact: If storage recovers after N failures, the counter remains non-zero, so next failure immediately re-triggers backoff even if it was a one-off transient error
+- Fix approach: Reset `storage_failure_count` to 0 on successful write, not just on backoff threshold. Alternatively, use exponential backoff with timestamp-based reset.
 
-## Known Bugs
-
-**Inconsistent Error Types for Missing Credentials:**
-- Symptoms: `KeyError` raised instead of `ValueError` for missing env vars
-- Trigger: Running without CTA_API_KEY set in environment
-- File: `src/cta_eta/data_collection/apis/api_train_position.py` (line 85)
-- Workaround: Set all required env vars in `.env` file
-- Root cause: Inconsistent error handling pattern across API clients
-- Fix: Change `raise KeyError(msg)` to `raise ValueError(msg)` for consistency
-
-**Secrets Default to Empty Strings:**
-- Symptoms: Application starts but fails later during API calls with cryptic errors
-- Trigger: Missing required env vars in `.env` file
-- File: `src/cta_eta/data_collection/config.py` (lines 39-47)
-- Workaround: Validate `.env` file against `.env.template` manually
-- Root cause: Defaults allow partial pipeline operation (by design)
-- Fix: Add startup validation distinguishing required vs optional credentials
-
-## Security Considerations
-
-**Hardcoded Placeholder User-Agent:**
-- Risk: NWS API requires proper User-Agent, placeholder may not be overridden
-- File: `src/cta_eta/data_collection/storage_cache/weather_grid_cache.py` (line 109)
-- Code: `"User-Agent": "(cta-eta, contact@example.com)"  # Will be overridden by actual config`
-- Current mitigation: Comment suggests override, but mechanism not evident
-- Recommendations: Verify override path or inject proper User-Agent from config
-
-**Environment Variable Exposure:**
-- Risk: API keys logged in plaintext if debug logging enabled
-- Files: All API client files accessing `os.getenv()`
-- Current mitigation: Structured logging doesn't log env vars by default
-- Recommendations: Audit log statements to ensure secrets never logged
-
-## Performance Bottlenecks
-
-**Pandas DataFrame Creation Per-Record:**
-- Problem: Creating DataFrames for every weather record merge
-- File: `src/cta_eta/data_collection/merging/weather_merger.py` (lines 89-104)
-- Measurement: ~100 stations × merge overhead × polling frequency
-- Cause: Using pandas for simple dictionary merging operations
-- Improvement path: Replace pandas concat with native dict operations
-
-**Grid Discovery Timeout Complexity:**
-- Problem: Complex nested async logic with multiple timeout scenarios
-- File: `src/cta_eta/data_collection/orchestration/weather_daemon.py` (lines 677-819)
-- Measurement: 143-line method with nested context managers
-- Cause: Handling multiple concurrent discovery calls with individual timeouts
-- Improvement path: Extract to separate `WeatherGridDiscoverer` class
+**CTA Error 102 (Daily Quota) Handling with Unbounded Sleep:**
+- Issue: When CTA daily quota is exceeded (error 102), daemon sleeps until next midnight Chicago time with no upper bound verification
+- Files: `src/cta_eta/data_collection/orchestration/train_position_daemon.py` (lines 600-700+, `_handle_daily_quota_exceeded` method)
+- Impact: If quota resets occur unexpectedly (e.g., API hotfix), daemon wastes monitoring/alerting bandwidth staying silent. No heartbeat during sleep window.
+- Fix approach: Add bounded probes during the midnight sleep window (already implemented via `probe_102_attempts`), but consider adding explicit heartbeat logging every 30 minutes during sleep to alert operators to stale daemon.
 
 ## Fragile Areas
 
-**Weather Daemon Discovery Logic:**
-- File: `src/cta_eta/data_collection/orchestration/weather_daemon.py` (lines 677-819)
-- Why fragile: 143-line method `_discover_open_meteo_grids_for_stations()` with complex async logic
-- Common failures: Timeout handling across multiple concurrent tasks
-- Safe modification: Extract grid discovery to separate class before modifying
-- Test coverage: Needs verification (test file exists but coverage unknown)
+**Journal Rotation Timing at 3 AM Partition Boundary:**
+- Files: `src/cta_eta/data_collection/storage_cache/journal_writer.py` (partition_hour=3), `src/cta_eta/data_collection/orchestration/train_position_daemon.py`
+- Why fragile: Hard partition at 3 AM America/Chicago timezone. If train runs cross the partition boundary, records are split across two journal files. Compaction must merge these correctly.
+- Safe modification: When modifying partition hour or timezone handling, verify that compaction `discover_journals` finds all files for a given date, including those from the previous partition day. Add test covering the 3 AM boundary explicitly.
+- Test coverage: `tests/data_collection/storage_cache/test_journal_writer.py` has partition tests, but needs explicit 3 AM boundary tests.
 
-**Configuration Access Without Guards:**
-- Files: `src/cta_eta/data_collection/storage_cache/weather_grid_cache.py` (lines 191-192, 207-209)
-- Why fragile: Direct dictionary key access assumes config structure
-- Example: `config["cache"]["directory"]` - crashes with KeyError if missing
-- Common failures: KeyError on startup if config.toml structure changes
-- Safe modification: Use `.get()` with defaults or validate config schema at load time
-- Test coverage: Config validation tests needed
+**File Archival Without Verification Lock:**
+- Files: `src/cta_eta/data_collection/compaction/archiver.py` (lines 23-50), `src/cta_eta/data_collection/compaction/compact.py`
+- Why fragile: After verifying upload row count, journals are moved to archive via `shutil.move()` with no atomic lock. If compaction restarts between verification and move, journals could be orphaned or deleted prematurely.
+- Safe modification: Consider using a two-phase commit pattern: write a `.verified` marker file in the staging area AFTER upload verification, then move journals only if marker exists. Or use atomic rename operations with explicit error handling.
+- Test coverage: `tests/data_collection/compaction/` lacks tests for partial failure scenarios (upload succeeds but archive fails).
+
+**IPC Reader Graceful Degradation on Corruption:**
+- Files: `src/cta_eta/data_collection/compaction/ipc_reader.py` (lines 74-93)
+- Why fragile: File corruption is silently handled by salvaging valid batches. If a journal file becomes corrupted mid-day, compaction appears to succeed with partial data, but the loss is invisible unless row counts are explicitly monitored.
+- Safe modification: When compaction detects corrupted journals (`was_clean=False` from `read_ipc_with_repair`), it should emit a CRITICAL log with the count of salvaged vs. expected batches. Add explicit alerting on journal corruption.
+- Test coverage: Tests exist for salvage behavior but lack end-to-end scenarios with corrupted intermediate batch.
+
+**Asyncio Daemon Signal Handling with Event Loop Dependency:**
+- Files: `src/cta_eta/data_collection/orchestration/daemon_async.py` (signal registration in `start()`)
+- Why fragile: Signal handlers registered only if event loop is running. If `start()` is called from a context where the event loop is unavailable, signal registration is silently skipped.
+- Safe modification: Check that `asyncio.get_running_loop()` succeeds before registering handlers; raise `RuntimeError` if no loop. Add explicit exception if signals cannot be registered in production.
+- Test coverage: Signal handling tests (`test_daemon_async.py`) need explicit coverage for no-event-loop scenarios.
+
+## Performance Bottlenecks
+
+**Synchronous Parquet Metadata Reads in Upload Verification:**
+- Problem: After each upload attempt, code reads entire uploaded file back to verify row count via `backend.get()` + `pq.read_metadata()`
+- Files: `src/cta_eta/data_collection/compaction/uploader.py` (lines 85-86)
+- Cause: With 3 retry attempts, this means up to 3 full file reads from cloud storage. For large compacted Parquet files (100MB+), each read is slow.
+- Improvement path: Use cloud provider metadata APIs (S3 Select, GCS metadata) to read row count without downloading entire file. Or cache metadata on local disk before upload, then verify via byte-level checksums instead of re-reading.
+
+**Discovery Phase Fills Weather Grid Cache Synchronously:**
+- Problem: When weather grid cache is cold, daemon discovers 50+ grid points one at a time via weather API calls
+- Files: `src/cta_eta/data_collection/orchestration/weather_grid_discovery.py` (lines 248+), `src/cta_eta/data_collection/storage_cache/weather_grid_cache.py`
+- Cause: Rate limiting (Open-Meteo: 0.1 req/sec max) forces sequential discovery, taking ~500 seconds (8+ minutes) on first run
+- Improvement path: Batch discovery calls using aiometer's concurrent request support. Pre-warm cache on daemon startup for known stations, or use a background refresh task separate from main polling loop.
+
+**Diagnostic Event Ring Buffer No Overflow Protection:**
+- Problem: Diagnostics event buffer (`max_recent_events=64`) is in-memory and unbounded by event size
+- Files: `src/cta_eta/data_collection/orchestration/diagnostics.py` (config: `max_recent_events=64`)
+- Cause: Large events (e.g., span timing with many fields) could exhaust memory after many poll cycles
+- Improvement path: Implement size-based eviction or ring buffer with maximum total bytes, not just event count. Add memory monitoring for daemon diagnostics.
 
 ## Scaling Limits
 
-**Open-Meteo API Rate Limit:**
-- Current capacity: 10,000 calls/day
-- Limit: ~50 grid points × 48 polls/day = 2,400 calls/day (24% utilization)
-- Symptoms at limit: 429 rate limit errors, missing weather data
-- Scaling path: Add retry with exponential backoff, consider premium tier
+**IPC Journal File Count Per Day:**
+- Current capacity: With 15-minute rotation, daemon writes 4 journal files per hour × 24 = 96 files per day per daemon
+- Limit: Hive-style directory structure `year=YYYY/month=MM/day=DD/journal_*.ipc` has no issue at 100 files, but compaction must glob and sort all at once, which becomes slow at 500+ files
+- Scaling path: At multi-daemon scale (5+ daemons × 96 files/day), implement sharded discovery that processes journal directories in parallel. Consider moving to a manifest file listing all journal files for a date rather than globbing.
 
-**CTA API Rate Limit:**
-- Current capacity: 50,000 requests/day
-- Limit: 15-second polling = 5,760 requests/day (12% utilization)
-- Symptoms at limit: 403 forbidden errors, missing train position data
-- Scaling path: Increase polling interval or request higher rate limit from CTA
+**Weather Grid Cache with Unbounded Growth:**
+- Current capacity: Cache stores up to ~50 grid mappings (stations → weather grids), persisted to JSON on disk
+- Limit: No expiration for individual entries beyond TTL; if station mapping changes, stale entries accumulate
+- Scaling path: Add automatic cleanup of stale cache entries based on last-access time. Implement versioning to detect schema changes and rebuild cache if needed.
 
-## Dependencies at Risk
-
-**No High-Risk Dependencies Detected:**
-- All major dependencies actively maintained (httpx, pandas, pytest)
-- Python 3.13 requirement may limit deployment platforms
-- Recommendation: Monitor pyarrow for breaking changes (rapid development)
+**Archival Retention Pruning at Fixed 7 Days:**
+- Current capacity: With 100 MB/day Parquet per daemon, 7-day retention = 700 MB per daemon. Multi-daemon setup could reach 1-2 GB without cleanup.
+- Limit: Pruning runs synchronously in compaction job; if archive grows large (1000+ directories), glob + delete becomes slow
+- Scaling path: Implement async background pruning task separate from compaction. Use S3 lifecycle policies or cloud native retention instead of application-level deletion.
 
 ## Missing Critical Features
 
-**Startup Configuration Validation:**
-- Problem: No validation of required env vars at daemon startup
-- Current workaround: Errors discovered during first API call
-- Blocks: Fast failure for misconfiguration, clear error messages
-- Implementation complexity: Low (add validation in `config.py` load_config)
+**No Data Loss Detection Between Daemon Restart and Compaction:**
+- Problem: If daemon crashes and misses polls before next compaction, there's no alerting. Compaction finds fewer files than expected but logs a warning only.
+- Blocks: Cannot guarantee data completeness for model training. Gaps due to crashes are not visible in dashboards.
+- Fix approach: Add explicit "expected vs. actual journal count" check in compaction. Compare against baseline polls-per-hour and surface mismatches as alerts. Store daemon state snapshots in a metrics database.
 
-**Comprehensive Error Classification:**
-- Problem: Generic `except Exception` in daemon main loop doesn't distinguish error types
-- File: `src/cta_eta/data_collection/orchestration/weather_daemon.py` (lines 236-237, 435, 483, 530)
-- Current workaround: Manual log inspection to determine error type
-- Blocks: Automated error handling (retry transient, exit on config errors)
-- Implementation complexity: Medium (classify exceptions, add specific handlers)
+**No Schema Version Enforcement in IPC Writes:**
+- Problem: JournalWriter infers schema from first batch and reuses it. If API response structure changes mid-day, subsequent records may fail to write or silently coerce types.
+- Blocks: Cannot handle API breaking changes without manual intervention.
+- Fix approach: Validate each batch schema against a versioned schema stored in config before write. Raise an error if schema changes during daemon run (forcing restart to pick up new schema).
+
+**No Explicit Health Check for Daemon Crash Detection:**
+- Problem: Monitoring system must watch logs/process status manually. No built-in mechanism for daemon to report "still alive" periodically.
+- Blocks: Stale daemons sleeping during quota exceeded (error 102) can go undetected for hours.
+- Fix approach: Add periodic heartbeat writes to a `.daemon_state/{daemon_name}.heartbeat` file with timestamp. Monitoring can check file age to detect stale daemons. Already partially implemented via `pending_gap_metadata` state file; extend this pattern.
+
+## Security Considerations
+
+**Unencrypted API Credentials in Memory:**
+- Risk: API keys (CTA_API_KEY, OPENWEATHERMAP_API_KEY, etc.) loaded into process memory with no encryption
+- Files: `src/cta_eta/data_collection/config.py` (lines 80-150), API client modules
+- Current mitigation: Credentials stored in `.env` (git-ignored). SENSITIVE_KEYS redacted in logging via `_sanitize_config_for_logging()`.
+- Recommendations: Use a secrets manager (Vault, AWS Secrets Manager) instead of .env. Rotate API keys periodically. Add audit logging for credential access.
+
+**Cloud Storage Credentials via Environment Variables:**
+- Risk: S3_BUCKET, GCS_BUCKET, AZURE_BUCKET, and cloud API credentials passed via env vars, visible in process listings
+- Files: `src/cta_eta/data_collection/storage_cache/storage.py` (fsspec initialization), `config.toml` [storage] section
+- Current mitigation: Cloud backend uses fsspec abstraction, which reads credentials from environment or IAM roles.
+- Recommendations: Prefer cloud IAM roles (EC2 instance profiles, GKE service accounts) over explicit credentials. If explicit credentials required, use temporary STS tokens with short TTL. Audit cloud access logs for unusual patterns.
+
+**No Input Validation on Latitude/Longitude Coordinates:**
+- Risk: User-supplied station coordinates could be invalid, causing API calls to wrong locations
+- Files: `src/cta_eta/data_collection/utils.py` (validate_lat_lon), weather API modules
+- Current mitigation: `validate_lat_lon()` exists and is used before API calls
+- Recommendations: Ensure all coordinate sources (CTA stations API, hardcoded configs) are validated. Add bounds checking for Chicago area (41-43°N, 87-88°W). Log and alert on out-of-bounds stations.
+
+**Email Alert Recipients Not Validated:**
+- Risk: `config.toml` contains `smtp_to = ["oncall@example.com"]` unvalidated
+- Files: `config.toml` [alerting] section, `src/cta_eta/monitoring/alerting.py`
+- Current mitigation: Email provider (Mailjet) validates recipient during send
+- Recommendations: Validate email format in config loading. Add unit tests for malformed email lists. Consider environment-specific alert recipients (dev vs. prod).
 
 ## Test Coverage Gaps
 
-**Error Path Coverage:**
-- What's not tested: Malformed API responses, retry behavior under failures
-- Risk: Error handling code paths may not work as expected
-- Priority: High (error handling is critical for 24/7 operation)
-- Difficulty to test: Medium (need mock responses simulating failures)
+**Untested Scenario: Daemon Crash During Journal Rotation:**
+- What's not tested: If daemon process crashes exactly during `journal_writer.append_batch()` when the journal file is being rotated, what happens to the in-flight batch?
+- Files: `src/cta_eta/data_collection/storage_cache/journal_writer.py`, `src/cta_eta/data_collection/orchestration/train_position_daemon.py`
+- Risk: Batch could be partially written to old file and partially to new file, causing compaction to skip or duplicate records
+- Priority: High - affects data integrity
 
-**Integration Testing:**
-- What's not tested: Full daemon lifecycle with real caches and storage
-- Risk: Integration issues between components may not be caught
-- Priority: Medium (unit tests provide good coverage)
-- Difficulty to test: Medium (requires test fixtures for daemons)
+**Untested Scenario: Compaction Upload Retries with Storage Backend Failures:**
+- What's not tested: If cloud storage `put()` fails on retry 2 of 3, then succeeds on retry 3, and `get()` for verification fails, does archival still happen?
+- Files: `src/cta_eta/data_collection/compaction/uploader.py`, `src/cta_eta/data_collection/compaction/compact.py`
+- Risk: Journals could be archived despite failed verification
+- Priority: High - causes data loss
 
-## Documentation Gaps
+**Untested Scenario: Weather Grid Discovery Cache Miss with Multiple Concurrent Daemons:**
+- What's not tested: If two daemon instances discover the same station simultaneously, can the cache writes race and corrupt the file?
+- Files: `src/cta_eta/data_collection/storage_cache/kv_cache.py` (uses tempfile for atomic writes, but not tested)
+- Risk: Stale weather mappings or file corruption
+- Priority: Medium - requires multi-daemon deployment to trigger
 
-**Complex Method Docstrings Missing:**
-- Files:
-  - `src/cta_eta/data_collection/orchestration/weather_daemon.py` (_collect_weather_cycle, _get_station_grid_mappings, _discover_open_meteo_grids_for_stations)
-- Impact: Difficult to understand multi-phase collection logic without reading full implementation
-- Fix: Add comprehensive docstrings explaining high-level flow and edge cases
+**Untested Scenario: Schema Drift Detection with Large Parquet Files:**
+- What's not tested: Does `classify_drift()` correctly detect all drift types when dealing with tables > 100 MB?
+- Files: `src/cta_eta/data_collection/compaction/schema_registry.py`
+- Risk: Subtle schema changes (e.g., field nullability changes) could be missed
+- Priority: Medium - only occurs with production data volumes
 
-**API Rate Limit Documentation:**
-- Issue: Rate limit comments in code don't link to official API documentation
-- Files: All `api_*.py` files with rate limit comments
-- Impact: Can't verify limits without manual research
-- Fix: Add URLs to official API docs in comments
+**Untested Scenario: Gap Detection Boundary at Midnight Chicago Time:**
+- What's not tested: Gap detection when last poll is 11:59:59 PM and next poll is 12:00:01 AM (midnight boundary)
+- Files: `src/cta_eta/data_collection/orchestration/gap_detection.py`
+- Risk: Midnight boundary could trigger false gap detection due to timezone handling
+- Priority: Medium - specific to daily partitioning logic
 
-## Input Validation Gaps
+## Known Bugs
 
-**Grid ID Validation:**
-- Problem: Minimal validation of grid identifier format
-- File: `src/cta_eta/data_collection/apis/api_weather_open_meteo.py` (lines 141-152)
-- Example: Accepts `"999999,999999"` as valid lat/lon
-- Impact: Invalid grid IDs may cause downstream errors
-- Fix: Add range validation for latitude (-90 to 90) and longitude (-180 to 180)
+**Storage Failure Counter Not Reset on Success:**
+- Symptoms: After 3 storage failures trigger backoff, the counter stays at 3. The next write succeeds, but counter remains elevated. If storage fails once more shortly after, backoff is re-triggered immediately (no gradual recovery).
+- Files: `src/cta_eta/data_collection/orchestration/train_position_daemon.py` (line 418: `self.storage_failure_count += 1`, but never reset)
+- Trigger: 1. Write succeeds after threshold hit, causing backoff. 2. After backoff, next write succeeds. 3. Third write fails - counter is still 3, backoff re-triggers.
+- Workaround: Manually restart daemon to reset counter, or wait for `storage_failure_backoff_seconds` to elapse.
 
-**Config Structure Assumptions:**
-- Problem: Config access assumes nested dictionary structure exists
-- Files: All cache factory functions (`get_nws_grid_cache`, etc.)
-- Example: `config["cache"]["directory"]` with no `.get()` fallback
-- Impact: KeyError on startup if config structure changes
-- Fix: Use `.get()` with defaults or validate config schema at load time
+**Gap Reason Override Not Cleared on Retry:**
+- Symptoms: If `gap_reason_override` is set by an error handler, but the next poll succeeds without a gap, the override is cleared. However, if multiple gaps occur in succession, the override from the first gap may be incorrectly applied to the second.
+- Files: `src/cta_eta/data_collection/orchestration/train_position_daemon.py` (lines 310-336: override handling)
+- Trigger: 1. Error occurs, `gap_reason_override` set to "Network timeout". 2. Next poll retries and succeeds (no gap). 3. Override cleared. 4. Gap detected immediately after (real gap). 5. Logs show override was cleared, not applied to real gap.
+- Workaround: Override is idempotent — set it again if the error recurs. Logs show when override is cleared vs. applied.
 
 ---
 
-*Concerns audit: 2026-01-22*
-*Update as issues are fixed or new ones discovered*
+*Concerns audit: 2026-02-28*
