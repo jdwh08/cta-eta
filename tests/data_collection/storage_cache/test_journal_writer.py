@@ -485,7 +485,11 @@ class TestCreateJournalWriter:
         # Arrange
         config: dict[str, dict[str, Any]] = {
             "storage": {
-                "immediate": {"data_path": str(tmp_path), "journal_rotation_minutes": 15, "partition_hour": 3},
+                "immediate": {
+                    "data_path": str(tmp_path),
+                    "journal_rotation_minutes": 15,
+                    "partition_hour": 3,
+                },
             }
         }
 

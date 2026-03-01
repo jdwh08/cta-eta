@@ -845,9 +845,19 @@ class TestCmdCompaction:
         assert "failures" in captured.out
 
     def test_compaction_partial_and_failed(
-        self, compaction_dir: Path, capsys: pytest.CaptureFixture[str]
+        self,
+        compaction_dir: Path,
+        capsys: pytest.CaptureFixture[str],
+        mocker: MockerFixture,
     ) -> None:
         """Partial and failed status render as PARTIAL and FAILED; failure triggers exit 1."""
+        # Patch datetime.now to return a fixed date
+        mocker_dt = mocker.patch(
+            "cta_eta.monitoring.cli.datetime",
+        )
+        mocker_dt.now.return_value = datetime(2026, 2, 23, tzinfo=UTC)
+        mocker_dt.fromisoformat = datetime.fromisoformat
+
         (compaction_dir / "compaction-2026-02-21.json").write_text(
             json.dumps(
                 {
