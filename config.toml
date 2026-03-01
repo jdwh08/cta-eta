@@ -47,45 +47,36 @@ stations_ttl = 604800
 # Track layout is very stable, refresh monthly
 track_geometry_ttl = 2592000
 
-# TTL for station-to-weather grid mapping in seconds (7 days)
+# TTL for station-to-weather grid mapping in seconds (30 days)
 # Maps ~300 CTA stations to ~50 weather grid points
-weather_mapping_ttl = 604800
-
+weather_mapping_ttl = 2592000
 
 [storage]
-# Storage backend selection
-# Options: "local" (filesystem), "s3" (AWS S3), "gcs" (Google Cloud Storage)
-backend = "local"
+# Storage: immediate (journal) vs compaction (destination + staging + archive)
+# Bucket names for cloud backends: set S3_BUCKET, GCS_BUCKET, AZURE_BUCKET in .env
+# Optional S3_ENDPOINT_URL in .env for S3-compatible storage (MinIO, DigitalOcean Spaces, etc.)
 
-# Local path for Parquet file storage (used when backend="local")
-# Can be absolute or relative to project root
-data_path = "data"
-
-# S3 bucket name (required when backend="s3")
-# Credentials from AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables
-s3_bucket = ""
-
-# GCS bucket name (required when backend="gcs")
-# Credentials from GOOGLE_APPLICATION_CREDENTIALS environment variable (path to JSON key)
-gcs_bucket = ""
-
-# Hour in America/Chicago timezone to split daily partitions (0-23)
-# Default 3 = 3:00 AM, minimizing splits of active train runs
+[storage.immediate]
+# Base directory for IPC journal files written by daemons (local only)
+data_path = "data/journals"
+# Arrow IPC journal rotation interval in minutes
+journal_rotation_minutes = 15
+# Hour in America/Chicago timezone to split daily partitions (0-23); shared for journal and parquet
 partition_hour = 3
 
-# Partitioning strategy for time-series data
-# Options: "daily", "hourly", "weekly"
-partition_by = "daily"
-
-# Enable Parquet compression for storage efficiency
+[storage.compaction]
+# Backend for compacted parquet: "local", "s3", "gcs", "abfs"
+backend = "s3"
+# Single path: when backend=local this is the parquet destination; when cloud, local staging before upload
+staging_path = "data/compaction"
+# Prefix under backend, e.g. raw/{daemon_name}/date={date}/data.parquet
+upload_prefix = "raw"
 compression = "snappy"
+# Where to move IPC journals after verified upload
+archive_path = "data/archive"
+# Days to retain archived journals before pruning
+journal_retention_days = 7
 
-# Maximum file size in MB before rotation
-max_file_size_mb = 128
-
-# Arrow IPC journal rotation interval in minutes (default 15)
-# After this interval, the current journal file is closed and a new one is opened
-journal_rotation_minutes = 15
 
 
 [retry]
@@ -168,36 +159,3 @@ last_alert_state = ".daemon_state/last_alert.json"  # Cooldown state file
 email_provider = "mailjet"
 smtp_from = "alerts@example.com"  # Sender (must be verified in Mailjet)
 smtp_to = ["oncall@example.com"]  # Recipients
-
-
-[compaction]
-# Cloud storage URL prefix for compacted Parquet upload
-# Examples: s3://my-bucket/raw, gs://my-bucket/raw, /local/path/raw
-cloud_url = "s3://CHANGEME/raw"
-
-# Local directory where compacted Parquet and JSON sidecar files are staged
-compaction_dir = "data/compaction"
-
-# Local directory where source IPC journals are moved after verified upload
-archive_path = "data/archive"
-
-# Number of days to retain archived journals before deletion (default: 7)
-journal_retention_days = 7
-
-
-[monitoring]
-# HTTP monitoring server for daemon health and diagnostics
-enabled = true
-
-# Host to bind to (127.0.0.1 for localhost only, 0.0.0.0 for external access)
-# Security note: Use localhost only until VPS firewall is configured (Phase 10)
-host = "127.0.0.1"
-
-# Port to bind to
-port = 8000
-
-# CORS allowed origins (for future web UI)
-allowed_origins = ["http://localhost:3000"]
-
-# Rate limiting (requests per minute per IP)
-rate_limit_per_minute = 60

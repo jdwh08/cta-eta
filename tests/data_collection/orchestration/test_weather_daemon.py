@@ -42,6 +42,20 @@ def sample_config() -> dict[
             "open_meteo": {"max_per_second": 10, "max_at_once": 1},
             "openweathermap": {"max_per_second": 10, "max_at_once": 1},
         },
+        "storage": {
+            "immediate": {
+                "data_path": "data/journals",
+                "journal_rotation_minutes": 15,
+                "partition_hour": 3,
+            },
+            "compaction": {
+                "backend": "local",
+                "staging_path": "data/compaction",
+                "upload_prefix": "raw",
+                "archive_path": "data/archive",
+                "journal_retention_days": 7,
+            },
+        },
     }
 
 

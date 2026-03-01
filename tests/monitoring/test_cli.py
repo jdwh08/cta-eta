@@ -807,7 +807,10 @@ class TestCmdCompaction:
         assert "Compaction Status" in captured.out
 
     def test_compaction_success_record_human(
-        self, compaction_dir: Path, capsys: pytest.CaptureFixture[str]
+        self,
+        compaction_dir: Path,
+        capsys: pytest.CaptureFixture[str],
+        mocker: MockerFixture,
     ) -> None:
         """Single success record produces human-readable table and no exit."""
         sidecar = compaction_dir / "compaction-2026-02-20.json"
@@ -828,18 +831,33 @@ class TestCmdCompaction:
             encoding="utf-8",
         )
         args = type("Args", (), {"days": 7, "json": False})()
+
+        mock_dt = mocker.patch("cta_eta.monitoring.cli.datetime")
+        mock_dt.now.return_value = datetime(2026, 2, 24, tzinfo=UTC)
+        mock_dt.fromisoformat = datetime.fromisoformat
+
         cli.cmd_compaction(args)
         captured = capsys.readouterr()
-        assert "2026-02-20" in captured.out
+        assert "2026-02-20" in captured.out  # Erroring out
         assert "TrainPositionDaemon" in captured.out
         assert "125,000" in captured.out
         assert "4.8 MB" in captured.out or "5.0 MB" in captured.out
         assert "failures" in captured.out
 
     def test_compaction_partial_and_failed(
-        self, compaction_dir: Path, capsys: pytest.CaptureFixture[str]
+        self,
+        compaction_dir: Path,
+        capsys: pytest.CaptureFixture[str],
+        mocker: MockerFixture,
     ) -> None:
         """Partial and failed status render as PARTIAL and FAILED; failure triggers exit 1."""
+        # Patch datetime.now to return a fixed date
+        mocker_dt = mocker.patch(
+            "cta_eta.monitoring.cli.datetime",
+        )
+        mocker_dt.now.return_value = datetime(2026, 2, 23, tzinfo=UTC)
+        mocker_dt.fromisoformat = datetime.fromisoformat
+
         (compaction_dir / "compaction-2026-02-21.json").write_text(
             json.dumps(
                 {
@@ -1162,7 +1180,7 @@ class TestSchemaUpdateCommand:
 
         mocker.patch(
             "cta_eta.data_collection.compaction.compact.load_config",
-            return_value={"compaction": {"compaction_dir": str(tmp_path)}},
+            return_value={"storage": {"compaction": {"staging_path": str(tmp_path)}}},
         )
         mock_save = mocker.patch(
             "cta_eta.data_collection.compaction.compact.save_registry"
@@ -1192,7 +1210,7 @@ class TestSchemaUpdateCommand:
 
         mocker.patch(
             "cta_eta.data_collection.compaction.compact.load_config",
-            return_value={"compaction": {"compaction_dir": str(tmp_path)}},
+            return_value={"storage": {"compaction": {"staging_path": str(tmp_path)}}},
         )
 
         args = type("Args", (), {"daemon": daemon})()

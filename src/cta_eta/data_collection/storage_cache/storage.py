@@ -7,23 +7,45 @@ Storage backends:
 - LocalStorage: File-based storage using pathlib for development
 - CloudStorage: Object storage via fsspec for production (S3/GCS)
 
-Partitioning:
-- Hive-style daily partitions (date=YYYY-MM-DD/)
-- Timezone-aware split at 3:00 AM America/Chicago to minimize splitting active train runs
-- Preserves all data points without deduplication (raw collection priority)
 """
 
-import io
-import json
 from abc import ABC, abstractmethod
-from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Final
-from zoneinfo import ZoneInfo
+from types import TracebackType
+from typing import Any, Final, Protocol, Self
 
 import fsspec
 import pyarrow as pa
-import pyarrow.parquet as pq
+
+
+class WritableFile(Protocol):
+    """Protocol for append-capable binary write handles."""
+
+    def write(self, data: bytes) -> int | None:
+        """Write bytes to the handle."""
+        ...
+
+    def flush(self) -> None:
+        """Flush buffered writes to storage."""
+        ...
+
+    def close(self) -> None:
+        """Close the handle."""
+        ...
+
+    def __enter__(self) -> Self:
+        """Enter the context manager."""
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> bool:
+        """Exit the context manager."""
+        self.close()
+        return exc_type is None
 
 
 class StorageBackend(ABC):
@@ -88,6 +110,24 @@ class StorageBackend(ABC):
 
         Returns:
             True if path exists, False otherwise
+
+        """
+        ...
+
+    @abstractmethod
+    def open_writer(self, path: str) -> WritableFile:
+        """Open a long-lived writable handle for streaming writes.
+
+        Args:
+            path: Relative path within storage backend
+
+        Returns:
+            Writable file-like handle
+
+        Raises:
+            NotImplementedError: If backend does not support streaming writes
+            PermissionError: If write access denied
+            OSError: If opening the writer fails
 
         """
         ...
@@ -167,6 +207,12 @@ class LocalStorage(StorageBackend):
         file_path = self.base_path / path
         return file_path.exists()
 
+    def open_writer(self, path: str) -> WritableFile:
+        """Open a binary file handle for long-lived streaming writes."""
+        file_path = self.base_path / path
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        return pa.OSFile(str(file_path), "wb")
+
 
 class CloudStorage(StorageBackend):
     """Cloud object storage backend using fsspec for S3/GCS access."""
@@ -180,20 +226,22 @@ class CloudStorage(StorageBackend):
         """Initialize cloud storage backend.
 
         Args:
-            filesystem_type: Type of filesystem ("s3" or "gcs")
+            filesystem_type: Type of filesystem ("s3" or "gcs" or "abfs")
             bucket: Bucket name for object storage
             credentials: Optional credentials dict (uses environment variables if None)
-                - S3: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+                - S3: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY; use
+                  client_kwargs={"endpoint_url": "..."} for S3-compatible endpoints
                 - GCS: GOOGLE_APPLICATION_CREDENTIALS (path to JSON key file)
+                - ABFS: Azure Application Credentials
 
         Raises:
             ValueError: If filesystem_type is not supported
 
         """
-        cloud_filesystem_types: Final[tuple[str, ...]] = ("s3", "gcs")
+        cloud_filesystem_types: Final[tuple[str, ...]] = ("s3", "gcs", "abfs")
 
         if filesystem_type not in cloud_filesystem_types:
-            msg = f"Unsupported filesystem type: {filesystem_type}. Expected 's3' or 'gcs'."
+            msg = f"Unsupported filesystem type: {filesystem_type}. Expected 's3' or 'gcs' or 'abfs'."
             raise ValueError(msg)
 
         self.filesystem_type = filesystem_type
@@ -283,162 +331,22 @@ class CloudStorage(StorageBackend):
         full_path = self._get_full_path(path)
         return self.fs.exists(full_path)
 
-
-class ParquetWriter:
-    """Writes train position data to Parquet files with timezone-aware partitioning.
-
-    Partitioning strategy:
-    - Daily partitions split at partition_hour (default 3:00 AM) in America/Chicago timezone
-    - Times before partition_hour assigned to previous calendar day
-    - Times at or after partition_hour assigned to current calendar day
-    - Hive-style path format: dataset_name/date=YYYY-MM-DD/data_{timestamp}.parquet
-    """
-
-    def __init__(
-        self,
-        storage_backend: StorageBackend,
-        partition_hour: int = 3,
-        compression: str = "snappy",
-        timezone: str = "America/Chicago",
-    ) -> None:
-        """Initialize Parquet writer with storage backend and partitioning settings.
-
-        Args:
-            storage_backend: Storage backend to write Parquet files to
-            partition_hour: Hour in timezone to split days (default 3 for 3:00 AM)
-            compression: Parquet compression codec (default "snappy")
-            timezone: Timezone for partition calculation (default "America/Chicago")
-
-        """
-        self.storage_backend = storage_backend
-        self.partition_hour = partition_hour
-        self.compression = compression
-        self.timezone = ZoneInfo(timezone)
-
-    def _calculate_partition_date(self, timestamp: datetime) -> str:
-        """Calculate partition date based on timezone and partition hour.
-
-        Args:
-            timestamp: Datetime to partition (assumed UTC if naive)
-
-        Returns:
-            Partition date string in YYYY-MM-DD format
-
-        """
-        # Convert to timezone-aware UTC if naive
-        if timestamp.tzinfo is None:
-            timestamp = timestamp.replace(tzinfo=ZoneInfo("UTC"))
-
-        # Convert to target timezone
-        local_time = timestamp.astimezone(self.timezone)
-
-        # If before partition hour, use previous day
-        if local_time.hour < self.partition_hour:
-            partition_date = local_time.date() - timedelta(days=1)
-        else:
-            partition_date = local_time.date()
-
-        return partition_date.isoformat()
-
-    def write(
-        self,
-        data: list[dict[str, Any]],
-        dataset_name: str = "default",
-        metadata: dict[str, Any] | None = None,
-    ) -> None:
-        """Write records to Parquet with timezone-aware partitioning and optional metadata.
-
-        Args:
-            data: List of records as dictionaries
-            dataset_name: Name of dataset for organizing files (default "default")
-            metadata: Optional metadata dict to attach to Parquet file (stored in schema metadata)
-
-        Raises:
-            ValueError: If data is empty
-            OSError: If write operation fails
-
-        """
-        if not data:
-            msg = "Cannot write empty data"
-            raise ValueError(msg)
-
-        # Add request timestamp if not present
-        current_timestamp = datetime.now(ZoneInfo("UTC"))
-        for record in data:
-            if "request_timestamp" not in record:
-                record["request_timestamp"] = current_timestamp
-
-        # Use first record's timestamp to determine partition
-        # (all records in a single write call should have same partition)
-        first_timestamp = data[0].get("request_timestamp", current_timestamp)
-        if isinstance(first_timestamp, str):
-            first_timestamp = datetime.fromisoformat(first_timestamp)
-
-        partition_date = self._calculate_partition_date(first_timestamp)
-
-        # Generate partition path and timestamp suffix
-        timestamp_suffix = current_timestamp.strftime("%Y%m%d_%H%M%S_%f")[:-3]
-        if dataset_name == "default":
-            partition_path = f"date={partition_date}/data_{timestamp_suffix}.parquet"
-        else:
-            partition_path = (
-                f"{dataset_name}/date={partition_date}/data_{timestamp_suffix}.parquet"
-            )
-
-        # Convert data to PyArrow Table
-        table = pa.Table.from_pylist(data)
-
-        # Attach metadata to schema if provided
-        if metadata is not None:
-            # Convert metadata dict to bytes for storage in Parquet metadata
-            # PyArrow expects metadata values to be bytes
-            metadata_bytes = {
-                key: json.dumps(value).encode("utf-8")
-                for key, value in metadata.items()
-            }
-            # Get existing schema metadata or create new
-            existing_metadata = table.schema.metadata or {}
-            # Merge with new metadata
-            combined_metadata = {**existing_metadata, **metadata_bytes}
-            # Create new schema with metadata
-            table = table.replace_schema_metadata(combined_metadata)
-
-        # Write table to bytes using BytesIO
-        buffer = io.BytesIO()
-        pq.write_table(table, buffer, compression=self.compression)
-        parquet_bytes = buffer.getvalue()
-
-        # Write to storage backend
-        self.storage_backend.put(partition_path, parquet_bytes)
-
-    def append_batch(
-        self,
-        records: list[dict[str, Any]],
-        dataset_name: str = "default",
-        metadata: dict[str, Any] | None = None,
-    ) -> None:
-        """Append a batch of records to Parquet storage with optional metadata.
-
-        Convenience method that wraps write() with a clearer name for batch appending.
-
-        Args:
-            records: List of records as dictionaries
-            dataset_name: Name of dataset for organizing files (default "default")
-            metadata: Optional metadata dict to attach to Parquet file
-
-        Raises:
-            ValueError: If records is empty
-            OSError: If write operation fails
-
-        """
-        self.write(records, dataset_name=dataset_name, metadata=metadata)
+    def open_writer(self, path: str) -> WritableFile:
+        """Open streaming writer for cloud storage (not supported)."""
+        msg = (
+            "CloudStorage does not support long-lived streaming writers. "
+            "Use put() for complete object writes."
+        )
+        raise NotImplementedError(msg)
 
 
 def create_storage_backend(config: dict[str, dict[str, Any]]) -> StorageBackend:
     """Create storage backend from configuration.
 
     Args:
-        config: Configuration dict from load_config()
+        config: Configuration dict from load_config(). Reads from
+            config["storage"]["compaction"]: backend, staging_path (for local),
+            and bucket env keys for cloud.
 
     Returns:
         Configured StorageBackend instance
@@ -447,51 +355,39 @@ def create_storage_backend(config: dict[str, dict[str, Any]]) -> StorageBackend:
         ValueError: If backend type is unknown or required config missing
 
     """
-    storage_config = config.get("storage", {})
-    backend_type = storage_config.get("backend", "local")
+    compaction = config.get("storage", {}).get("compaction", {})
+    if not isinstance(compaction, dict):
+        compaction = {}
+    backend_type = str(compaction.get("backend", "local"))
 
     match backend_type:
         case "local":
-            data_path = storage_config.get("data_path", "data")
-            return LocalStorage(base_path=data_path)
+            staging_path = str(compaction.get("staging_path", "data/compaction"))
+            return LocalStorage(base_path=Path(staging_path))
         case "s3":
-            bucket = storage_config.get("s3_bucket")
+            bucket = compaction.get("s3_bucket")
             if not bucket:
                 msg = "s3_bucket must be specified in config for S3 backend"
                 raise ValueError(msg)
-            return CloudStorage(filesystem_type="s3", bucket=bucket)
+            credentials: dict[str, Any] | None = None
+            endpoint_url = compaction.get("s3_endpoint_url")
+            if endpoint_url:
+                credentials = {"client_kwargs": {"endpoint_url": endpoint_url}}
+            return CloudStorage(
+                filesystem_type="s3", bucket=bucket, credentials=credentials
+            )
         case "gcs":
-            bucket = storage_config.get("gcs_bucket")
+            bucket = compaction.get("gcs_bucket")
             if not bucket:
                 msg = "gcs_bucket must be specified in config for GCS backend"
                 raise ValueError(msg)
             return CloudStorage(filesystem_type="gcs", bucket=bucket)
+        case "abfs":
+            bucket = compaction.get("azure_bucket")
+            if not bucket:
+                msg = "azure_bucket must be specified in config for Azure backend"
+                raise ValueError(msg)
+            return CloudStorage(filesystem_type="abfs", bucket=bucket)
         case _:
-            msg = f"Unknown storage backend: {backend_type}. Expected 'local', 's3', or 'gcs'."
+            msg = f"Unknown storage backend: {backend_type}. Expected 'local', 's3', or 'gcs', or 'abfs'."
             raise ValueError(msg)
-
-
-def create_parquet_writer(config: dict[str, dict[str, Any]]) -> ParquetWriter:
-    """Create configured ParquetWriter from configuration.
-
-    Args:
-        config: Configuration dict from load_config()
-
-    Returns:
-        Configured ParquetWriter instance
-
-    """
-    storage_config = config.get("storage", {})
-
-    # Create storage backend
-    backend = create_storage_backend(config)
-
-    # Create ParquetWriter with configured settings
-    partition_hour = storage_config.get("partition_hour", 3)
-    compression = storage_config.get("compression", "snappy")
-
-    return ParquetWriter(
-        storage_backend=backend,
-        partition_hour=partition_hour,
-        compression=compression,
-    )

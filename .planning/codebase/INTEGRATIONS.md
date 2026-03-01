@@ -1,146 +1,165 @@
 # External Integrations
 
-**Analysis Date:** 2026-01-22
+**Analysis Date:** 2026-02-28
 
 ## APIs & External Services
 
-**CTA Train Tracker API:**
-- Endpoint: `http://lapi.transitchicago.com/api/1.0/ttpositions.aspx`
-- Purpose: Real-time train positions for all 8 CTA rail lines
-- Files: `src/cta_eta/data_collection/apis/api_train_position.py`
-- SDK/Client: httpx with custom parsing
-- Auth: API key in CTA_API_KEY env var
-- Rate limit: 50,000 requests/day (~5K/hour)
-- Polling: 15 second intervals (configured in config.toml)
+**Transit Data:**
+- CTA Train Tracker API (Chicago Transit Authority) - Train positions and real-time status
+  - SDK/Client: Custom client in `src/cta_eta/data_collection/apis/api_train_position.py`
+  - Auth: `CTA_API_KEY` environment variable
+  - Rate limit: 50,000 calls/day; configured to 0.1 req/sec (6/min) = ~8,640/day
+  - Docs: https://www.transitchicago.com/developers/ttdocs/
 
-**National Weather Service (NWS) API:**
-- Endpoints:
-  - Points API: `https://api.weather.gov/points/{lat},{lon}` (grid discovery)
-  - Forecast API: `https://api.weather.gov/gridpoints/{OFFICE}/{X},{Y}/forecast/hourly`
-- Purpose: Hourly weather forecasts (primary source)
-- Files: `src/cta_eta/data_collection/apis/api_weather_nws.py`
-- SDK/Client: httpx with async requests
-- Auth: User-Agent header via NWS_APP_NAME and NWS_EMAIL env vars
-- Rate limit: No documented limit (public US government API)
-- Grid points: ~50 unique locations deduced from ~145 CTA stations
+- CTA Stations API - Station metadata and geographic data
+  - SDK/Client: Custom client in `src/cta_eta/data_collection/apis/api_cta_stations.py`
+  - Auth: `CTA_API_KEY` environment variable
+  - Rate limit: Shared with train position API (50k/day quota)
 
-**Open-Meteo API:**
-- Endpoint: `https://api.open-meteo.com/v1/forecast`
-- Purpose: Supplementary weather data (visibility, snow depth, surface pressure)
-- Files: `src/cta_eta/data_collection/apis/api_weather_open_meteo.py`
-- SDK/Client: httpx with custom parsing
-- Auth: No API key required
-- Rate limit: 10,000 calls/day (~2,400/day usage with 50 grid points)
-- Retry: 3 attempts for discovery, 5 for current data
+- CTA Track Shape API - Track geometry and route definitions
+  - SDK/Client: Custom client in `src/cta_eta/data_collection/apis/api_track_shape.py`
+  - Auth: `CTA_API_KEY` environment variable
+  - Rate limit: Shared with train position API (50k/day quota)
 
-**OpenWeatherMap API:**
-- Endpoints:
-  - Current: `https://api.openweathermap.org/data/2.5/weather`
-  - Forecast: `https://api.openweathermap.org/data/2.5/forecast`
-- Purpose: Fallback weather source when NWS/Open-Meteo fail
-- Files: `src/cta_eta/data_collection/apis/api_weather_openweathermap.py`
-- SDK/Client: httpx with custom parsing
-- Auth: API key in OPENWEATHERMAP_API_KEY env var
-- Rate limit: 60 calls/min, 1M calls/month (free tier)
+**Weather Data (Primary):**
+- National Weather Service (NWS) API - Hourly weather forecasts
+  - SDK/Client: Custom client in `src/cta_eta/data_collection/apis/api_weather_nws.py`
+  - Auth: User-Agent header with `NWS_APP_NAME` and `NWS_EMAIL` (no formal API key)
+  - Rate limit: No official limit; configured to 5 req/sec with max 5 concurrent
+  - Docs: https://www.weather.gov/documentation/services-web-api
+  - Endpoint: https://api.weather.gov/
 
-**Chicago Data Portal (Socrata API):**
-- Endpoints:
-  - Stations: `https://data.cityofchicago.org/api/v3/views/3tzw-cg4m/query.json`
-  - Track shapes: `https://data.cityofchicago.org/resource/xbyr-jnvx.json`
-- Purpose: CTA station metadata and track geometry (reference data)
-- Files: `src/cta_eta/data_collection/apis/api_cta_stations.py`, `api_track_shape.py`
-- SDK/Client: httpx with custom parsing
-- Auth: CHIDATA_APP_TOK and CHIDATA_APP_SECRET env vars
-- Caching: 7 days (stations), 30 days (track geometry)
-- Data: ~300 station locations, track segments with MultiLineString geometry
+**Weather Data (Supplementary):**
+- Open-Meteo API - Additional weather variables (visibility, snow depth, wind gusts, etc.)
+  - SDK/Client: Custom client in `src/cta_eta/data_collection/apis/api_weather_open_meteo.py`
+  - Auth: None (public API)
+  - Rate limit: 10,000 calls/day free tier; configured to 0.1 req/sec (6/min) = ~8,640/day
+  - Docs: https://open-meteo.com/en/docs
+  - Endpoint: https://api.open-meteo.com/v1/forecast
+
+**Weather Data (Fallback):**
+- OpenWeatherMap API - Weather fallback when primary sources unavailable
+  - SDK/Client: Custom client in `src/cta_eta/data_collection/apis/api_weather_openweathermap.py`
+  - Auth: `OPENWEATHERMAP_API_KEY` environment variable
+  - Rate limit: Free tier 60 calls/min, 1M calls/month; current tier 3000 calls/min, 100M calls/month; configured to 60 req/sec with max 60 concurrent
+  - Docs: https://openweathermap.org/api
+  - Endpoint: https://api.openweathermap.org/
+
+**Municipal Data:**
+- Chicago Data Portal API - Station and transit infrastructure metadata
+  - SDK/Client: Custom client in `src/cta_eta/data_collection/apis/api_cta_stations.py`
+  - Auth: `CHIDATA_APP_TOK` and `CHIDATA_APP_SECRET` (Socrata API credentials)
+  - Docs: https://data.cityofchicago.org/
 
 ## Data Storage
 
-**Cloud Storage Backends:**
-- Local filesystem - Development and default mode
-  - Path: Configurable directory with Hive-style partitioning
-  - Files: `src/cta_eta/data_collection/storage_cache/storage.py`
+**Databases:**
+- Not used - Project uses flat file storage only (Parquet, Arrow IPC journals)
 
-- AWS S3 - Production cloud storage option
-  - SDK/Client: s3fs>=2026.1.0 via fsspec abstraction
-  - Auth: AWS credentials via standard AWS credential chain
-  - Backend: config.toml backend="s3"
+**File Storage:**
+- Local filesystem (development):
+  - IPC Journals: `data/journals/` (Arrow IPC format for immediate writes)
+  - Compaction staging: `data/compaction/` (local staging before cloud upload)
+  - Archive: `data/archive/` (archived journals after verified cloud upload)
 
-- Google Cloud Storage - Alternative cloud storage
-  - SDK/Client: gcsfs>=2026.1.0 via fsspec abstraction
-  - Auth: GCS credentials via standard GCP credential chain
-  - Backend: config.toml backend="gcs"
+- Cloud object storage (production):
+  - AWS S3 via s3fs
+    - Connection: `S3_BUCKET` environment variable (bucket name)
+    - Optional: `S3_ENDPOINT_URL` for S3-compatible endpoints (MinIO, DigitalOcean Spaces)
+    - Credentials: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` (via AWS SDK chain or boto3 env vars)
+    - Client: `src/cta_eta/data_collection/storage_cache/storage.py` uses fsspec with s3fs backend
 
-**File Format:**
-- Apache Parquet with Snappy compression
-- Daily partitions split at 3:00 AM America/Chicago timezone
-- Hive-style partitioning: `dataset=weather/date=2026-01-22/part-*.parquet`
+  - Google Cloud Storage (GCS) via gcsfs
+    - Connection: `GCS_BUCKET` environment variable (bucket name)
+    - Credentials: `GOOGLE_APPLICATION_CREDENTIALS` (path to JSON service account key file)
+    - Client: fsspec with gcsfs backend
+
+  - Azure Blob Storage (ABFS) via fsspec
+    - Connection: `AZURE_BUCKET` environment variable (container name)
+    - Credentials: Azure Application Credentials
+    - Client: fsspec with abfs backend
 
 **Caching:**
-- TTL-based persistent caches for reference data
-- Files: `src/cta_eta/data_collection/storage_cache/cache.py`, `kv_cache.py`
-- Weather grid mappings: 7 day TTL (`weather_grid_cache.py`)
-- Station metadata: 7 day TTL
-- Track geometry: 30 day TTL
+- Local filesystem cache for operational state:
+  - Location: `.cache/` directory
+  - Purpose: Station list cache, track geometry, weather grid mappings
+  - Cache TTLs: 7 days (stations), 30 days (track geometry), 30 days (weather mapping)
+  - Implementation: `src/cta_eta/data_collection/storage_cache/cache.py`
 
 ## Authentication & Identity
 
-Not applicable - no authentication/authorization system (data collection pipeline)
+**Auth Provider:**
+- None - Stateless API authentication via API keys and headers
+
+**Authentication Methods:**
+- API Key in headers: CTA API, OpenWeatherMap
+- Custom User-Agent headers: NWS API
+- OAuth/Token-based: Chicago Data Portal (Socrata), Mailjet
 
 ## Monitoring & Observability
 
-**Custom Diagnostics:**
-- Lightweight span timing with context managers
-- Files: `src/cta_eta/data_collection/orchestration/diagnostics.py`
-- Event recording with bounded memory (deque)
-- Optional JSONL event sink with rotation
-
-**Logging:**
-- Structured JSON logging via custom formatters
-- Files: `src/cta_eta/data_collection/logging.py`
-- Context variables for request correlation
-- Log decorators: `@log_api_call()` for automatic timing
-
 **Error Tracking:**
-- None (logs only)
+- Custom diagnostic system in `src/cta_eta/data_collection/orchestration/diagnostics.py`
+- Structured event logging with bounded in-memory ring buffer
+- Optional JSONL event log output (rotated by size)
 
-**Analytics:**
-- None (internal data pipeline)
+**Logs:**
+- Configuration: `src/cta_eta/data_collection/logging.py`
+- Log file: `logs/cta_eta.log`
+- Format: JSON structured logging (enabled by default in config.toml)
+- Level: Configurable (default INFO)
+- Output: Console + file simultaneously
+
+**Alerting:**
+- Email alerts via Mailjet API (optional, disabled by default)
+  - Implementation: `src/cta_eta/monitoring/alerting.py`
+  - API endpoint: https://api.mailjet.com/v3.1/send
+  - Auth: `MAILJET_API_KEY`, `MAILJET_API_SECRET`
+  - Cooldown: Configurable minimum hours between repeat alerts
+  - State file: `.daemon_state/last_alert.json` tracks last alert timestamp
 
 ## CI/CD & Deployment
 
 **Hosting:**
-- Self-hosted daemon processes (24/7 operation)
-- No cloud hosting platform (runs on user infrastructure)
+- Not applicable - This is a data collection service, not a web application
+- Runs as daemons on schedule or continuously
 
 **CI Pipeline:**
-- `.pre-commit-config.yaml` - Local pre-commit hooks with ruff
-- No CI/CD configuration detected
+- Pre-commit hooks: Ruff linting and formatting (`.pre-commit-config.yaml`)
+- GitHub integration: Configured for pull requests (`.github/` directory present)
+- Manual testing via pytest
 
 ## Environment Configuration
 
-**Development:**
-- Required env vars: CTA_API_KEY, NWS_APP_NAME, NWS_EMAIL (for CTA + NWS APIs)
-- Optional env vars: OPENWEATHERMAP_API_KEY (fallback), CHIDATA_APP_TOK/SECRET (metadata)
-- Secrets location: `.env` file (git-ignored, template: `.env.template`)
-- Config file: `config.toml` in project root
+**Required env vars (Feature-dependent):**
+- `CTA_API_KEY` - CTA Train Tracker (required if train_positions enabled)
+- `NWS_APP_NAME`, `NWS_EMAIL` - National Weather Service User-Agent (required if weather_collection enabled)
+- `OPENWEATHERMAP_API_KEY` - OpenWeatherMap fallback (required if weather_collection_fallback enabled)
+- `CHIDATA_APP_TOK`, `CHIDATA_APP_SECRET` - Chicago Data Portal (required if station_data enabled)
+- `MAILJET_API_KEY`, `MAILJET_API_SECRET` - Email alerts (required if alerting enabled)
+- `S3_BUCKET`, `GCS_BUCKET`, `AZURE_BUCKET` - Cloud storage buckets (required when storage.compaction.backend is cloud)
+- `S3_ENDPOINT_URL` - Optional S3-compatible endpoint override
 
-**Staging:**
-- Not applicable (data collection pipeline, not a deployed application)
+**Feature flags (config.toml):**
+- `features.train_positions` - Enable/disable CTA train tracking
+- `features.weather_collection` - Enable/disable NWS weather collection
+- `features.weather_collection_fallback` - Enable/disable OpenWeatherMap fallback
+- `features.station_data` - Enable/disable Chicago Data Portal station sync
+- `alerting.enabled` - Enable/disable email alerts
 
-**Production:**
-- Same as development with production API keys
-- Cloud storage backend configured in `config.toml`
+**Secrets location:**
+- `.env` file (git-ignored) - See `.env.template` for template
+- Configuration uses dotenv to load `.env` into environment variables
+- `config.py` redacts sensitive keys in logs
 
 ## Webhooks & Callbacks
 
 **Incoming:**
-- None
+- None detected
 
 **Outgoing:**
-- None
+- Mailjet email API calls (one-way notifications only, no callbacks)
 
 ---
 
-*Integration audit: 2026-01-22*
-*Update when adding/removing external services*
+*Integration audit: 2026-02-28*

@@ -110,12 +110,19 @@ def make_weather_table(rows: int = 1) -> pa.Table:
 def minimal_config(tmp_path: Path) -> dict[str, Any]:
     """Minimal config with tmp_path-based dirs (no shared /tmp)."""
     return {
-        "storage": {"data_path": str(tmp_path / "data")},
-        "compaction": {
-            "cloud_url": "file://" + str(tmp_path / "cloud"),
-            "compaction_dir": str(tmp_path / "compaction"),
-            "archive_path": str(tmp_path / "archive"),
-            "journal_retention_days": 7,
+        "storage": {
+            "immediate": {
+                "data_path": str(tmp_path / "journals"),
+                "journal_rotation_minutes": 15,
+                "partition_hour": 3,
+            },
+            "compaction": {
+                "backend": "local",
+                "staging_path": str(tmp_path / "compaction"),
+                "upload_prefix": "raw",
+                "archive_path": str(tmp_path / "archive"),
+                "journal_retention_days": 7,
+            },
         },
         "alerting": {},
     }
@@ -862,8 +869,9 @@ class TestCompactIntegrationStyle:
     def test_real_ipc_discover_read_upload_mocked(
         self, tmp_path: Path, mocker: MockerFixture
     ) -> None:
+        journals_base = tmp_path / "journals"
         day_dir = (
-            tmp_path / "data" / "train_positions" / "year=2026" / "month=02" / "day=17"
+            journals_base / "train_positions" / "year=2026" / "month=02" / "day=17"
         )
         day_dir.mkdir(parents=True)
         journal_path = day_dir / "journal_120000_000001.ipc"
@@ -876,7 +884,6 @@ class TestCompactIntegrationStyle:
         sink.close()
 
         config = minimal_config(tmp_path)
-        config["storage"]["data_path"] = str(tmp_path / "data")
         mocker.patch(
             "cta_eta.data_collection.compaction.compact.load_config",
             return_value=config,
@@ -1038,7 +1045,7 @@ class TestDriftAnnotationInParquet:
 
         # Locate the local staging Parquet and verify drift metadata
         local_parquet = (
-            Path(config["compaction"]["compaction_dir"])
+            Path(config["storage"]["compaction"]["staging_path"])
             / "train_positions"
             / "date=2026-02-17"
             / "data.parquet"

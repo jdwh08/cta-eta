@@ -2,7 +2,7 @@
 
 Reads IPC journal files produced by the daemon's JournalWriter, merges them
 into a single Snappy-compressed Parquet file per daemon per day, uploads to
-cloud storage (fsspec-compatible URL), and archives source journals.
+the configured storage backend, and archives source journals.
 
 Usage:
     uv run python -m cta_eta.data_collection.compaction.compact
@@ -43,6 +43,7 @@ from cta_eta.data_collection.compaction.schemas import (
 )
 from cta_eta.data_collection.compaction.uploader import upload_parquet
 from cta_eta.data_collection.config import load_config
+from cta_eta.data_collection.storage_cache.storage import create_storage_backend
 from cta_eta.monitoring.alerting import send_email_alert
 from cta_eta.monitoring.run_alerts import _build_email_config
 
@@ -170,13 +171,17 @@ def _compact_one_daemon(
 
     """
     t0 = time.monotonic()
-    data_path = Path(config.get("storage", {}).get("data_path", "data"))
-    compaction_cfg = config.get("compaction", {})
-    cloud_url_base = str(compaction_cfg.get("cloud_url", ""))
+    immediate = config.get("storage", {}).get("immediate", {})
+    if not isinstance(immediate, dict):
+        immediate = {}
+    data_path = Path(str(immediate.get("data_path", "data/journals")))
+    compaction_cfg = config.get("storage", {}).get("compaction", {})
+    if not isinstance(compaction_cfg, dict):
+        compaction_cfg = {}
     archive_base = Path(str(compaction_cfg.get("archive_path", "data/archive")))
     retention_days = int(compaction_cfg.get("journal_retention_days", 7))
     compaction_dir_base = Path(
-        str(compaction_cfg.get("compaction_dir", "data/compaction"))
+        str(compaction_cfg.get("staging_path", "data/compaction"))
     )
 
     expected_schema = _DATASET_SCHEMAS.get(daemon_name)
@@ -248,12 +253,14 @@ def _compact_one_daemon(
         day_drift_result,
     )
 
-    # Step 5: Upload to cloud storage (with retry and row count verification)
+    # Step 5: Upload to storage backend (with retry and row count verification)
     # If upload fails after all retries: return failed metrics WITHOUT archiving
     # journals. Journals stay in place for the next run (two-phase safety invariant).
-    cloud_url = f"{cloud_url_base}/{daemon_name}/date={date_str}/data.parquet"
+    backend = create_storage_backend(config)
+    upload_prefix = str(compaction_cfg.get("upload_prefix", "raw"))
+    upload_path = f"{upload_prefix}/{daemon_name}/date={date_str}/data.parquet"
     try:
-        upload_parquet(merged, cloud_url, reprocess=reprocess)
+        upload_parquet(merged, backend, upload_path, reprocess=reprocess)
     except Exception as upload_exc:
         logger.exception(
             "Upload failed for %s on %s after all retries",
@@ -506,8 +513,10 @@ def cmd_schema_update(args: argparse.Namespace) -> None:
 
     """
     config = load_config()
-    compaction_cfg = config.get("compaction", {})
-    compaction_dir = Path(str(compaction_cfg.get("compaction_dir", "data/compaction")))
+    compaction_cfg = config.get("storage", {}).get("compaction", {})
+    if not isinstance(compaction_cfg, dict):
+        compaction_cfg = {}
+    compaction_dir = Path(str(compaction_cfg.get("staging_path", "data/compaction")))
 
     daemon_names = (
         ["train_positions", "weather"] if args.daemon == "all" else [args.daemon]
@@ -617,9 +626,10 @@ def main(argv: list[str] | None = None) -> None:
         logger.info("Compacting date: %s", target_date.isoformat())
 
     datasets = ["train_positions", "weather"]
-    compaction_dir = Path(
-        str(config.get("compaction", {}).get("compaction_dir", "data/compaction"))
-    )
+    compaction_cfg = config.get("storage", {}).get("compaction", {})
+    if not isinstance(compaction_cfg, dict):
+        compaction_cfg = {}
+    compaction_dir = Path(str(compaction_cfg.get("staging_path", "data/compaction")))
     compaction_dir.mkdir(parents=True, exist_ok=True)
 
     for daemon_name in datasets:

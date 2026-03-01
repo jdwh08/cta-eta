@@ -15,12 +15,15 @@ _SENSITIVE_KEYS: Final[set[str]] = {
     "chidata_app_token",
     "chidata_app_secret",
     "openweathermap_api_key",
+    "s3_bucket",
+    "gcs_bucket",
+    "azure_bucket",
 }
 
 
 def _sanitize_config_for_logging(
-    config: dict[str, dict[str, str | int | float | bool]],
-) -> dict[str, dict[str, str | int | float | bool]]:
+    config: dict[str, str | int | float | bool | dict[str, str | int | float | bool]],
+) -> dict[str, str | int | float | bool | dict[str, str | int | float | bool]]:
     """Sanitize configuration dictionary for safe logging.
 
     Replaces sensitive values (API keys, tokens, secrets) with "<REDACTED>"
@@ -33,13 +36,25 @@ def _sanitize_config_for_logging(
         Sanitized copy of configuration dictionary
 
     """
-    sanitized: dict[str, dict[str, str | int | float | bool]] = {}
+    sanitized: dict[
+        str, str | int | float | bool | dict[str, str | int | float | bool]
+    ] = {}
     for section_name, section_data in config.items():
         if not isinstance(section_data, dict):
-            sanitized[section_name] = section_data
+            if (
+                section_name.lower() in _SENSITIVE_KEYS
+                or "key" in section_name.lower()
+                or "secret" in section_name.lower()
+                or "token" in section_name.lower()
+            ):
+                sanitized[section_name] = "<REDACTED>"
+            else:
+                sanitized[section_name] = section_data
             continue
 
-        sanitized_section: dict[str, str | int | float | bool] = {}
+        sanitized_section: dict[
+            str, str | int | float | bool | dict[str, str | int | float | bool]
+        ] = {}
         for key, value in section_data.items():
             if (
                 key.lower() in _SENSITIVE_KEYS
@@ -48,9 +63,16 @@ def _sanitize_config_for_logging(
                 or "token" in key.lower()
             ):
                 sanitized_section[key] = "<REDACTED>"
+            elif isinstance(value, dict):
+                sanitized_section[key] = _sanitize_config_for_logging(
+                    cast(
+                        "dict[str, str | int | float | bool | dict[str, str | int | float | bool]]",
+                        value,
+                    )
+                )  # ty:ignore[invalid-assignment]
             else:
                 sanitized_section[key] = value
-        sanitized[section_name] = sanitized_section
+        sanitized[section_name] = sanitized_section  # ty:ignore[invalid-assignment]
 
     return sanitized
 
@@ -92,6 +114,20 @@ def _load_config_from_path(
         "chidata_app_secret": chidata_app_secret,
         "openweathermap_api_key": openweathermap_api_key,
     }
+
+    # Inject storage compaction bucket names and optional S3 endpoint from env
+    storage = config.setdefault("storage", {})
+    if not isinstance(storage, dict):
+        storage = {}
+        config["storage"] = storage
+    compaction = storage.setdefault("compaction", {})
+    if not isinstance(compaction, dict):
+        compaction = {}
+        storage["compaction"] = compaction
+    compaction["s3_bucket"] = (os.getenv("S3_BUCKET") or "").strip()
+    compaction["s3_endpoint_url"] = (os.getenv("S3_ENDPOINT_URL") or "").strip()
+    compaction["gcs_bucket"] = (os.getenv("GCS_BUCKET") or "").strip()
+    compaction["azure_bucket"] = (os.getenv("AZURE_BUCKET") or "").strip()
 
     return config
 
@@ -304,6 +340,54 @@ def _validate_config_file_settings_weather_collection_fallback(
         raise ValueError(msg)
 
 
+def _validate_config_file_settings_storage(  # noqa: C901
+    config: dict[str, dict[str, str | int | float | bool]],
+) -> None:
+    """Validate configuration for storage.immediate and storage.compaction."""
+    storage = config.get("storage", {})
+    if not isinstance(storage, dict):
+        msg = f"Configuration path 'storage': must be a dictionary, got {type(storage).__name__}."
+        raise TypeError(msg)
+    immediate = storage.get("immediate", {})
+    if not isinstance(immediate, dict):
+        msg = "Configuration path 'storage.immediate': must be a dictionary."
+        raise TypeError(msg)
+    if "data_path" not in immediate:
+        msg = "Configuration path 'storage.immediate': must contain 'data_path'."
+        raise ValueError(msg)
+    if "journal_rotation_minutes" not in immediate or not isinstance(
+        immediate["journal_rotation_minutes"], int
+    ):
+        msg = "Configuration path 'storage.immediate': must contain 'journal_rotation_minutes' (integer)."
+        raise ValueError(msg)
+    if "partition_hour" not in immediate or not isinstance(
+        immediate["partition_hour"], int
+    ):
+        msg = "Configuration path 'storage.immediate': must contain 'partition_hour' (integer)."
+        raise ValueError(msg)
+    compaction = storage.get("compaction", {})
+    if not isinstance(compaction, dict):
+        msg = "Configuration path 'storage.compaction': must be a dictionary."
+        raise TypeError(msg)
+    if "backend" not in compaction:
+        msg = "Configuration path 'storage.compaction': must contain 'backend'."
+        raise ValueError(msg)
+    if "staging_path" not in compaction:
+        msg = "Configuration path 'storage.compaction': must contain 'staging_path'."
+        raise ValueError(msg)
+    if "upload_prefix" not in compaction:
+        msg = "Configuration path 'storage.compaction': must contain 'upload_prefix'."
+        raise ValueError(msg)
+    if "archive_path" not in compaction:
+        msg = "Configuration path 'storage.compaction': must contain 'archive_path'."
+        raise ValueError(msg)
+    if "journal_retention_days" not in compaction or not isinstance(
+        compaction["journal_retention_days"], int
+    ):
+        msg = "Configuration path 'storage.compaction': must contain 'journal_retention_days' (integer)."
+        raise ValueError(msg)
+
+
 def validate_config_file_settings(
     config: dict[str, dict[str, str | int | float | bool]],
     required_features: list[str] | None = None,
@@ -329,8 +413,10 @@ def validate_config_file_settings(
         _validate_config_file_settings_station_data(config)
     if "train_positions" in required_features:
         _validate_config_file_settings_train_positions(config)
+        _validate_config_file_settings_storage(config)
     if "weather_collection" in required_features:
         _validate_config_file_settings_weather_collection(config)
+        _validate_config_file_settings_storage(config)
     if "weather_collection_fallback" in required_features:
         _validate_config_file_settings_weather_collection_fallback(config)
 
