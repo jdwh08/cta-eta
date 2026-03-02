@@ -5,33 +5,33 @@
   "fields": [
     {
       "name": "poll_timestamp",
-      "type": "timestamp[us, tz=UTC]",
-      "nullable": true
+      "type": "timestamp[us, tz=America/Chicago]",
+      "nullable": false
     },
     {
       "name": "api_timestamp",
       "type": "string",
-      "nullable": true
+      "nullable": false
     },
     {
       "name": "route",
       "type": "string",
-      "nullable": true
+      "nullable": false
     },
     {
       "name": "train_id",
       "type": "string",
-      "nullable": true
+      "nullable": false
     },
     {
       "name": "lat",
       "type": "double",
-      "nullable": true
+      "nullable": false
     },
     {
       "name": "lon",
       "type": "double",
-      "nullable": true
+      "nullable": false
     },
     {
       "name": "heading",

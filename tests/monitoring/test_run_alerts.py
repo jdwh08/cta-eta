@@ -6,12 +6,16 @@ from __future__ import annotations
 
 import json
 import subprocess
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
 from cta_eta.monitoring import run_alerts
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from pytest_mock import MockerFixture
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -30,8 +34,6 @@ def valid_alerting_config() -> dict[str, object]:
     return {
         "enabled": True,
         "cooldown_hours": 4,
-        "smtp_from": "alerts@example.com",
-        "smtp_to": ["ops@example.com"],
         "last_alert_state": ".daemon_state/last_alert.json",
     }
 
@@ -95,24 +97,20 @@ class TestLoadAlertingConfig:
         out = capsys.readouterr().out
         assert "Warning" in out or "failed" in out.lower()
 
-    def test_returns_alerting_section_when_enabled(
-        self, config_path: Path, valid_alerting_config: dict[str, object]
-    ) -> None:
+    def test_returns_alerting_section_when_enabled(self, config_path: Path) -> None:
         """Returns [alerting] dict when enabled=true."""
         config_path.write_text(
             "[alerting]\n"
             "enabled = true\n"
             "cooldown_hours = 4\n"
-            'smtp_from = "alerts@example.com"\n'
-            'smtp_to = ["ops@example.com"]\n'
-            'last_alert_state = ".daemon_state/last_alert.json"\n',
+            "last_alert_state = '.daemon_state/last_alert.json'\n",
             encoding="utf-8",
         )
         result = run_alerts._load_alerting_config(config_path)
         assert result is not None
         assert result.get("enabled") is True
         assert result.get("cooldown_hours") == 4
-        assert result.get("smtp_to") == ["ops@example.com"]
+        assert result.get("last_alert_state") == ".daemon_state/last_alert.json"
 
 
 # ---------------------------------------------------------------------------
@@ -129,12 +127,14 @@ class TestBuildEmailConfig:
         """Mailjet config is built when email_provider is default (mailjet)."""
         monkeypatch.setenv("MAILJET_API_KEY", "mj-key")
         monkeypatch.setenv("MAILJET_API_SECRET", "mj-secret")
+        monkeypatch.setenv("SMTP_FROM", "alerts@example.com")
+        monkeypatch.setenv("SMTP_TO", "ops@example.com, ops2@example.com")
         result = run_alerts._build_email_config(valid_alerting_config)
         assert result["provider"] == "mailjet"
         assert result["api_key"] == "mj-key"
-        assert result["api_secret"] == "mj-secret"
+        assert result["api_secret"] == "mj-secret"  # noqa: S105
         assert result["from_addr"] == "alerts@example.com"
-        assert result["to_addrs"] == ["ops@example.com"]
+        assert result["to_addrs"] == ["ops@example.com", "ops2@example.com"]
 
     def test_builds_mailjet_config_when_provider_mailjet(
         self, valid_alerting_config: dict[str, object], monkeypatch: pytest.MonkeyPatch
@@ -143,28 +143,32 @@ class TestBuildEmailConfig:
         valid_alerting_config["email_provider"] = "mailjet"
         monkeypatch.setenv("MAILJET_API_KEY", "mj-key")
         monkeypatch.setenv("MAILJET_API_SECRET", "mj-secret")
+        monkeypatch.setenv("SMTP_FROM", "alerts@example.com")
+        monkeypatch.setenv("SMTP_TO", "ops@example.com, ops2@example.com")
         result = run_alerts._build_email_config(valid_alerting_config)
         assert result["provider"] == "mailjet"
         assert result["from_addr"] == "alerts@example.com"
-        assert result["to_addrs"] == ["ops@example.com"]
+        assert result["to_addrs"] == ["ops@example.com", "ops2@example.com"]
 
     def test_builds_minimal_config_for_unsupported_provider(
-        self, valid_alerting_config: dict[str, object]
+        self, valid_alerting_config: dict[str, object], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Unknown provider yields minimal config (send_email_alert will return False)."""
         valid_alerting_config["email_provider"] = "sendgrid"
+        monkeypatch.setenv("SMTP_FROM", "alerts@example.com")
+        monkeypatch.setenv("SMTP_TO", "ops@example.com, ops2@example.com")
         result = run_alerts._build_email_config(valid_alerting_config)
         assert result["provider"] == "sendgrid"
         assert result["from_addr"] == "alerts@example.com"
-        assert result["to_addrs"] == ["ops@example.com"]
+        assert result["to_addrs"] == ["ops@example.com", "ops2@example.com"]
 
     def test_to_addrs_from_config_list(
         self, valid_alerting_config: dict[str, object], monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """to_addrs is taken from config smtp_to list."""
+        """to_addrs is taken from environment variable SMTP_TO list."""
         monkeypatch.setenv("MAILJET_API_KEY", "k")
         monkeypatch.setenv("MAILJET_API_SECRET", "s")
-        valid_alerting_config["smtp_to"] = ["a@x.com", "b@x.com"]
+        monkeypatch.setenv("SMTP_TO", "a@x.com, b@x.com")
         result = run_alerts._build_email_config(valid_alerting_config)
         assert result["to_addrs"] == ["a@x.com", "b@x.com"]
 
@@ -177,7 +181,7 @@ class TestBuildEmailConfig:
 class TestFetchMetrics:
     """Tests for _fetch_metrics()."""
 
-    def test_returns_parsed_json_on_success(self, mocker: pytest.MockerFixture) -> None:
+    def test_returns_parsed_json_on_success(self, mocker: MockerFixture) -> None:
         """Returns dict when subprocess exits 0 and stdout is valid JSON."""
         payload = {"status": "healthy", "daemons": []}
         mock_run = mocker.patch.object(
@@ -197,9 +201,7 @@ class TestFetchMetrics:
         assert "metrics" in call_args
         assert "--json" in call_args
 
-    def test_returns_none_when_subprocess_nonzero(
-        self, mocker: pytest.MockerFixture
-    ) -> None:
+    def test_returns_none_when_subprocess_nonzero(self, mocker: MockerFixture) -> None:
         """Returns None when cta-monitor exits non-zero."""
         mocker.patch.object(
             subprocess,
@@ -213,7 +215,7 @@ class TestFetchMetrics:
         result = run_alerts._fetch_metrics()
         assert result is None
 
-    def test_returns_none_when_stdout_empty(self, mocker: pytest.MockerFixture) -> None:
+    def test_returns_none_when_stdout_empty(self, mocker: MockerFixture) -> None:
         """Returns None when subprocess stdout is empty."""
         mocker.patch.object(
             subprocess,
@@ -227,7 +229,7 @@ class TestFetchMetrics:
         result = run_alerts._fetch_metrics()
         assert result is None
 
-    def test_returns_none_on_timeout(self, mocker: pytest.MockerFixture) -> None:
+    def test_returns_none_on_timeout(self, mocker: MockerFixture) -> None:
         """Returns None when subprocess times out."""
         mocker.patch.object(
             subprocess,
@@ -237,7 +239,7 @@ class TestFetchMetrics:
         result = run_alerts._fetch_metrics()
         assert result is None
 
-    def test_returns_none_on_file_not_found(self, mocker: pytest.MockerFixture) -> None:
+    def test_returns_none_on_file_not_found(self, mocker: MockerFixture) -> None:
         """Returns None when cta-monitor is not found."""
         mocker.patch.object(
             subprocess,
@@ -248,7 +250,7 @@ class TestFetchMetrics:
         assert result is None
 
     def test_returns_none_when_stdout_not_valid_json(
-        self, mocker: pytest.MockerFixture
+        self, mocker: MockerFixture
     ) -> None:
         """Returns None when stdout is not valid JSON."""
         mocker.patch.object(
@@ -272,7 +274,7 @@ class TestFetchMetrics:
 class TestMain:
     """Tests for main() entry point."""
 
-    def test_exit_0_when_config_disabled(self, mocker: pytest.MockerFixture) -> None:
+    def test_exit_0_when_config_disabled(self, mocker: MockerFixture) -> None:
         """Exits 0 when alerting config is None (disabled or missing)."""
         mocker.patch.object(
             run_alerts,
@@ -285,7 +287,7 @@ class TestMain:
 
     def test_exit_0_when_fetch_metrics_fails(
         self,
-        mocker: pytest.MockerFixture,
+        mocker: MockerFixture,
         valid_alerting_config: dict[str, object],
         capsys: pytest.CaptureFixture[str],
     ) -> None:
@@ -304,10 +306,9 @@ class TestMain:
 
     def test_exit_0_when_no_alert_needed(
         self,
-        mocker: pytest.MockerFixture,
+        mocker: MockerFixture,
         valid_alerting_config: dict[str, object],
         metrics_with_alert_context: dict[str, object],
-        tmp_path: Path,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         """Exits 0 when should_send_alert returns False."""
@@ -332,7 +333,7 @@ class TestMain:
 
     def test_exit_0_and_saves_timestamp_when_alert_sent(
         self,
-        mocker: pytest.MockerFixture,
+        mocker: MockerFixture,
         valid_alerting_config: dict[str, object],
         metrics_with_alert_context: dict[str, object],
         tmp_path: Path,
@@ -372,10 +373,9 @@ class TestMain:
 
     def test_exit_1_when_email_send_fails(
         self,
-        mocker: pytest.MockerFixture,
+        mocker: MockerFixture,
         valid_alerting_config: dict[str, object],
         metrics_with_alert_context: dict[str, object],
-        tmp_path: Path,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         """Exits 1 when send_email_alert returns False."""
@@ -405,9 +405,8 @@ class TestMain:
 
     def test_alert_context_non_dict_treated_as_empty(
         self,
-        mocker: pytest.MockerFixture,
+        mocker: MockerFixture,
         valid_alerting_config: dict[str, object],
-        tmp_path: Path,
     ) -> None:
         """When alert_context is not a dict, it is treated as empty and no crash."""
         metrics: dict[str, object] = {
@@ -430,9 +429,8 @@ class TestMain:
 
     def test_violations_non_list_treated_as_empty(
         self,
-        mocker: pytest.MockerFixture,
+        mocker: MockerFixture,
         valid_alerting_config: dict[str, object],
-        tmp_path: Path,
     ) -> None:
         """When violations is not a list, it is treated as empty list."""
         metrics: dict[str, object] = {
@@ -462,7 +460,7 @@ class TestMain:
 
     def test_subject_pluralization_single_violation(
         self,
-        mocker: pytest.MockerFixture,
+        mocker: MockerFixture,
         valid_alerting_config: dict[str, object],
         metrics_with_alert_context: dict[str, object],
     ) -> None:
@@ -493,7 +491,7 @@ class TestMain:
 
     def test_subject_pluralization_multiple_violations(
         self,
-        mocker: pytest.MockerFixture,
+        mocker: MockerFixture,
         valid_alerting_config: dict[str, object],
     ) -> None:
         """Subject uses 'violations' when count is not 1."""

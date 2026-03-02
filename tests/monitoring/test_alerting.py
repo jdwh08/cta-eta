@@ -9,11 +9,14 @@ import time
 from typing import TYPE_CHECKING
 
 import pytest
+from httpx import Request, Response
 
 from cta_eta.monitoring import alerting
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from pytest_mock import MockerFixture
 
 
 # ---------------------------------------------------------------------------
@@ -274,9 +277,7 @@ class TestFormatAlertMessage:
 class TestSendEmailAlertMailjet:
     """Tests for send_email_alert() when provider is mailjet."""
 
-    def test_returns_true_when_mailjet_returns_200(
-        self, mocker: pytest.MockerFixture
-    ) -> None:
+    def test_returns_true_when_mailjet_returns_200(self, mocker: MockerFixture) -> None:
         """send_email_alert with provider mailjet returns True when API returns 200."""
         mock_post = mocker.patch(
             "cta_eta.monitoring.alerting.httpx.Client",
@@ -311,15 +312,17 @@ class TestSendEmailAlertMailjet:
         ]
 
     def test_returns_false_when_mailjet_returns_non_200(
-        self, mocker: pytest.MockerFixture
+        self, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
     ) -> None:
         """send_email_alert with provider mailjet returns False when API returns error status."""
         mock_post = mocker.patch(
             "cta_eta.monitoring.alerting.httpx.Client",
         )
-        mock_resp = mocker.Mock()
-        mock_resp.status_code = 401
-        mock_resp.text = "Unauthorized"
+        mock_resp = Response(
+            request=Request("POST", "https://api.mailjet.com/v3.1/send"),
+            status_code=401,
+            content=b"Unauthorized",
+        )
         mock_client_instance = mocker.Mock()
         mock_client_instance.__enter__ = mocker.Mock(return_value=mock_client_instance)
         mock_client_instance.__exit__ = mocker.Mock(return_value=None)
@@ -335,9 +338,10 @@ class TestSendEmailAlertMailjet:
         }
         result = alerting.send_email_alert(config, "Sub", "Body")
         assert result is False
+        assert "Unauthorized" in caplog.text
 
     def test_returns_false_for_unsupported_provider(
-        self, mocker: pytest.MockerFixture
+        self, mocker: MockerFixture
     ) -> None:
         """send_email_alert returns False and does not call HTTP when provider is unknown."""
         mock_client = mocker.patch(

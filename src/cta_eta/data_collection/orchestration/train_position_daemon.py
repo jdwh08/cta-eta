@@ -33,7 +33,7 @@ from cta_eta.data_collection.apis.api_train_position import (
 )
 from cta_eta.data_collection.config import get_config_section, load_config
 from cta_eta.data_collection.logging import log_context
-from cta_eta.data_collection.orchestration.daemon_async import AsyncBaseDaemon, Config
+from cta_eta.data_collection.orchestration.daemon import AsyncBaseDaemon, Config
 from cta_eta.data_collection.orchestration.daemon_utils import (
     ErrorCategory,
     classify_error,

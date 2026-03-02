@@ -43,7 +43,7 @@ from cta_eta.data_collection.config import (
 )
 from cta_eta.data_collection.logging import log_context
 from cta_eta.data_collection.merging.weather_merger import merge_weather_sources
-from cta_eta.data_collection.orchestration.daemon_async import AsyncBaseDaemon
+from cta_eta.data_collection.orchestration.daemon import AsyncBaseDaemon
 from cta_eta.data_collection.orchestration.daemon_utils import (
     ErrorCategory,
     classify_error,

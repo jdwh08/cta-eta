@@ -1,0 +1,48 @@
+#cloud-config
+# CTA ETA — Oracle Linux 9 cloud-init
+# Use as custom cloud-init when launching an OL9 instance (e.g. Oracle Cloud).
+# After first boot: fill /opt/cta-eta/.env with credentials, then:
+#   sudo systemctl start cta-train-daemon cta-weather-daemon cta-alerts.timer
+# For a private repo, clone manually after boot or use runcmd with a deploy key/token.
+
+package_update: true
+package_upgrade: true
+packages:
+  - git
+  - logrotate
+  - curl
+
+write_files:
+  - path: /etc/profile.d/uv.sh
+    permissions: "0644"
+    content: |
+      export PATH="/usr/local/bin:$PATH"
+
+runcmd:
+  # Install uv system-wide so cta-eta can run it for future updates
+  - curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
+  - export PATH="/usr/local/bin:$PATH"
+
+  # Service user (home dir created by git clone below)
+  - useradd --system --home-dir /opt/cta-eta --shell /bin/bash cta-eta || true
+
+  # Clone into /opt/cta-eta (git creates dir). For private repo, clone after boot with deploy key/token.
+  - git clone --depth 1 https://github.com/jdwh08/cta-eta /opt/cta-eta
+  - chown -R cta-eta:cta-eta /opt/cta-eta
+
+  # Python 3.13 + deps via uv (uv fetches Python if needed)
+  - sudo -u cta-eta env PATH=/usr/local/bin:$PATH uv sync --no-dev --directory /opt/cta-eta
+
+  # Runtime dirs and .env placeholder (user must fill secrets before starting services)
+  - sudo -u cta-eta cp /opt/cta-eta/.env.template /opt/cta-eta/.env
+  - chmod 600 /opt/cta-eta/.env
+  - sudo -u cta-eta mkdir -p /opt/cta-eta/.daemon_state /opt/cta-eta/.cache /opt/cta-eta/logs /opt/cta-eta/data
+
+  # systemd units and logrotate (same as Debian)
+  - cp /opt/cta-eta/deploy/cta-train-daemon.service /opt/cta-eta/deploy/cta-weather-daemon.service /opt/cta-eta/deploy/cta-alerts.service /opt/cta-eta/deploy/cta-alerts.timer /opt/cta-eta/deploy/cta-compaction.service /opt/cta-eta/deploy/cta-compaction.timer /etc/systemd/system/
+  - cp /opt/cta-eta/deploy/logrotate.conf /etc/logrotate.d/cta-eta
+  - systemctl daemon-reload
+  - systemctl enable cta-train-daemon.service cta-weather-daemon.service cta-alerts.timer
+  # Do not start until .env is filled with API keys and alerting credentials
+
+final_message: "CTA ETA bootstrap done. Fill /opt/cta-eta/.env then: sudo systemctl start cta-train-daemon cta-weather-daemon cta-alerts.timer"
