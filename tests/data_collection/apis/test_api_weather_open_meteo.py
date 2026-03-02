@@ -26,34 +26,6 @@ def open_meteo_client(mocker: MockerFixture) -> AsyncMock:
     return mocker.AsyncMock(spec=httpx.AsyncClient)
 
 
-async def test_discover_open_meteo_grid_returns_actual_coordinates(
-    open_meteo_client: AsyncMock,
-    httpx_json_response: Callable[[dict, int, str], httpx.Response],
-) -> None:
-    """Test that the discover_open_meteo_grid function returns the actual coordinates."""
-    # Arrange
-    open_meteo_client.get.return_value = httpx_json_response(
-        {"latitude": 41.715942, "longitude": -87.63699},
-        200,
-        f"{api_weather_open_meteo.OPEN_METEO_URL}?latitude=41.72&longitude=-87.62&current=temperature_2m&timezone=America/Chicago",
-    )
-
-    # Act
-    grid_id = await api_weather_open_meteo.discover_open_meteo_grid(
-        open_meteo_client, 41.72, -87.62
-    )
-
-    # Assert
-    assert grid_id == "41.715942,-87.63699"
-    open_meteo_client.get.assert_awaited_once()
-    assert (
-        open_meteo_client.get.call_args.args[0] == api_weather_open_meteo.OPEN_METEO_URL
-    )
-    assert (
-        open_meteo_client.get.call_args.kwargs["params"]["timezone"]
-        == "America/Chicago"
-    )
-
 
 async def test_get_open_meteo_current_defaults_missing_fields_and_converts_visibility(
     open_meteo_client: AsyncMock,
@@ -150,25 +122,6 @@ async def test_get_open_meteo_current_rejects_grid_id_with_too_many_commas(
         )
 
 
-async def test_open_meteo_propagates_http_errors(
-    open_meteo_client: AsyncMock,
-    httpx_json_response: Callable[[dict, int, str], httpx.Response],
-) -> None:
-    """Test that the open_meteo_propagates_http_errors function propagates HTTP errors."""
-    # Arrange
-    fn_no_retry = getattr(
-        api_weather_open_meteo.discover_open_meteo_grid,
-        "__wrapped__",
-        api_weather_open_meteo.discover_open_meteo_grid,
-    )
-    open_meteo_client.get.return_value = httpx_json_response(
-        {"error": "nope"}, 429, "https://example.com"
-    )
-
-    # Act / Assert
-    with pytest.raises(httpx.HTTPStatusError):
-        await fn_no_retry(open_meteo_client, 41.88, -87.63)
-
 
 async def test_get_open_meteo_current_propagates_http_errors_without_retry_delay(
     open_meteo_client: AsyncMock,
@@ -189,43 +142,6 @@ async def test_get_open_meteo_current_propagates_http_errors_without_retry_delay
     with pytest.raises(httpx.HTTPStatusError):
         await fn_no_retry(open_meteo_client, "41.88,-87.63")
 
-
-async def test_discover_open_meteo_grid_parse_error_non_numeric_lat_lon(
-    open_meteo_client: AsyncMock,
-    httpx_json_response: Callable[[dict, int, str], httpx.Response],
-) -> None:
-    """discover_open_meteo_grid raises when API returns non-numeric latitude/longitude."""
-    # Arrange
-    open_meteo_client.get.return_value = httpx_json_response(
-        {"latitude": "41.71", "longitude": -87.63},
-        200,
-        api_weather_open_meteo.OPEN_METEO_URL,
-    )
-
-    # Act / Assert
-    with pytest.raises(APIResponseError, match=r"latitude.*or.*longitude.*not numeric"):
-        await api_weather_open_meteo.discover_open_meteo_grid(
-            open_meteo_client, 41.72, -87.62
-        )
-
-
-async def test_discover_open_meteo_grid_parse_error_propagates(
-    open_meteo_client: AsyncMock,
-    httpx_json_response: Callable[[dict, int, str], httpx.Response],
-) -> None:
-    """discover_open_meteo_grid logs and re-raises when parsing discovery response fails."""
-    # Arrange: missing "latitude" causes safe_get_nested to raise
-    open_meteo_client.get.return_value = httpx_json_response(
-        {"longitude": -87.63699},
-        200,
-        api_weather_open_meteo.OPEN_METEO_URL,
-    )
-
-    # Act / Assert
-    with pytest.raises(APIResponseError, match="missing required field"):
-        await api_weather_open_meteo.discover_open_meteo_grid(
-            open_meteo_client, 41.72, -87.62
-        )
 
 
 async def test_get_open_meteo_current_parse_error_current_not_dict(

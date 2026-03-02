@@ -47,9 +47,6 @@ stations_ttl = 604800
 # Track layout is very stable, refresh monthly
 track_geometry_ttl = 2592000
 
-# TTL for station-to-weather grid mapping in seconds (30 days)
-# Maps ~300 CTA stations to ~50 weather grid points
-weather_mapping_ttl = 2592000
 
 [storage]
 # Storage: immediate (journal) vs compaction (destination + staging + archive)

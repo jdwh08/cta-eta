@@ -16,11 +16,8 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import json
-import os
 import time
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, override
 
 import aiometer
@@ -48,9 +45,6 @@ from cta_eta.data_collection.orchestration.daemon_utils import (
     ErrorCategory,
     classify_error,
 )
-from cta_eta.data_collection.orchestration.weather_grid_discovery import (
-    OpenMeteoWeatherGridDiscoverer,
-)
 from cta_eta.data_collection.storage_cache.journal_writer import create_journal_writer
 from cta_eta.data_collection.storage_cache.weather_grid_cache import (
     get_nws_grid_cache,
@@ -74,7 +68,12 @@ class _StationGridMapping:
     station_latitude: float
     station_longitude: float
     nws_grid_id: str
-    open_meteo_grid_id: str
+    open_meteo_grid_id: str | None  # None on cache miss; lazily discovered from real API call
+
+
+def _om_effective_grid(mapping: _StationGridMapping) -> str:
+    """Return effective Open-Meteo grid key: canonical cached grid or raw station lat,lon."""
+    return mapping.open_meteo_grid_id or f"{mapping.station_latitude},{mapping.station_longitude}"
 
 
 class WeatherDaemon(AsyncBaseDaemon):
@@ -181,15 +180,6 @@ class WeatherDaemon(AsyncBaseDaemon):
         # Initialize state tracking
         self.last_collection_time = 0.0
         self.records_stored_last_cycle = 0
-
-        # Initialize grid discoverer
-        self._grid_discoverer = OpenMeteoWeatherGridDiscoverer(
-            logger=logger,
-            diagnostics=self.diagnostics,
-            om_grid_cache=self.om_grid_cache,
-            write_discovery_state_marker=self._write_discovery_state_marker,
-            daemon_class=self.__class__.__name__,
-        )
 
     @override
     async def run(self) -> None:
@@ -331,7 +321,7 @@ class WeatherDaemon(AsyncBaseDaemon):
                         "resolve_station_grid_mappings", cycle_id=cycle_id
                     ):
                         station_mappings = await self._get_station_grid_mappings(
-                            nws_client, om_client
+                            nws_client
                         )
 
                     if not station_mappings:
@@ -341,16 +331,16 @@ class WeatherDaemon(AsyncBaseDaemon):
                         return
 
                     unique_nws_grids = {m.nws_grid_id for m in station_mappings}
-                    unique_om_grids = {m.open_meteo_grid_id for m in station_mappings}
+                    unique_om_grids = {_om_effective_grid(m) for m in station_mappings}
 
                     # Step 2: Fetch each provider once per unique provider grid ID.
+                    # NWS deduplicates by cached grid ID; Open-Meteo deduplicates by
+                    # effective grid key (canonical cached grid or raw station lat,lon).
                     nws_by_grid_task = asyncio.create_task(
                         self._fetch_nws_by_grid(nws_client, sorted(unique_nws_grids))
                     )
                     om_by_grid_task = asyncio.create_task(
-                        self._fetch_open_meteo_by_grid(
-                            om_client, sorted(unique_om_grids)
-                        )
+                        self._fetch_open_meteo_by_grid(om_client, station_mappings)
                     )
 
                     nws_by_grid, om_by_grid = await asyncio.gather(
@@ -364,12 +354,12 @@ class WeatherDaemon(AsyncBaseDaemon):
                         om_by_grid = {}
 
                     # Step 3: Optional OpenWeatherMap fallback for stations where either primary
-                    # source failed. We dedupe fallback calls by Open-Meteo grid ID (a lat,lon key).
+                    # source failed. Dedupe fallback calls by effective Open-Meteo grid key.
                     fallback_grids = {
-                        m.open_meteo_grid_id
+                        _om_effective_grid(m)
                         for m in station_mappings
                         if nws_by_grid.get(m.nws_grid_id) is None
-                        or om_by_grid.get(m.open_meteo_grid_id) is None
+                        or om_by_grid.get(_om_effective_grid(m)) is None
                     }
 
                     owm_by_grid: dict[str, dict[str, Any] | None] = {}
@@ -442,9 +432,10 @@ class WeatherDaemon(AsyncBaseDaemon):
         collection_timestamp = time.time()
 
         for mapping in station_mappings:
+            om_key = _om_effective_grid(mapping)
             nws_data = nws_by_grid.get(mapping.nws_grid_id)
-            om_data = om_by_grid.get(mapping.open_meteo_grid_id)
-            owm_data = owm_by_grid.get(mapping.open_meteo_grid_id)
+            om_data = om_by_grid.get(om_key)
+            owm_data = owm_by_grid.get(om_key)
 
             merged = merge_weather_sources(nws_data, om_data, owm_data)
             if merged is None:
@@ -452,7 +443,7 @@ class WeatherDaemon(AsyncBaseDaemon):
 
             merged["station_id"] = mapping.station_id
             merged["nws_grid_id"] = mapping.nws_grid_id
-            merged["open_meteo_grid_id"] = mapping.open_meteo_grid_id
+            merged["open_meteo_grid_id"] = om_key
 
             # Preserve schema: station coordinates (not provider grid coordinates).
             merged["latitude"] = mapping.station_latitude
@@ -523,8 +514,27 @@ class WeatherDaemon(AsyncBaseDaemon):
         return {g: v for g, v in results if v is not None}
 
     async def _fetch_open_meteo_by_grid(
-        self, client: httpx.AsyncClient, grid_ids: list[str]
+        self,
+        client: httpx.AsyncClient,
+        mappings: list[_StationGridMapping],
     ) -> dict[str, dict[str, Any] | None]:
+        """Fetch Open-Meteo weather for each unique grid, updating the grid cache lazily.
+
+        On a cache hit the effective key is the cached canonical grid (e.g. "41.88,-87.63"),
+        enabling deduplication across stations that share a grid point.  On a cache miss the
+        effective key falls back to the station's raw lat,lon.  Either way, the API accepts
+        any valid lat,lon string and returns the canonical coordinates in its response; those
+        are written back to the grid cache so the next cycle benefits from full deduplication.
+
+        Returns a dict keyed by effective grid key (see ``_om_effective_grid``).
+        """
+        # Group station IDs by effective grid key for deduplication and cache updates.
+        grid_to_station_ids: dict[str, list[str]] = {}
+        for m in mappings:
+            grid_to_station_ids.setdefault(_om_effective_grid(m), []).append(m.station_id)
+
+        unique_grids = sorted(grid_to_station_ids)
+
         async def _fetch_one(grid_id: str) -> tuple[str, dict[str, Any] | None]:
             try:
                 async with self.diagnostics.span(
@@ -547,16 +557,23 @@ class WeatherDaemon(AsyncBaseDaemon):
                 )
                 return (grid_id, None)
             else:
+                # Lazily update grid cache from the canonical coordinates in the response.
+                canonical_lat = data.get("latitude")
+                canonical_lon = data.get("longitude")
+                if isinstance(canonical_lat, float) and isinstance(canonical_lon, float):
+                    canonical_grid = f"{canonical_lat},{canonical_lon}"
+                    for station_id in grid_to_station_ids.get(grid_id, []):
+                        self.om_grid_cache.set_grid_identifier(station_id, canonical_grid)
                 return (grid_id, data)
 
         self.diagnostics.record_event(
             "aiometer_run",
             operation="open_meteo.get_current",
-            item_count=len(grid_ids),
+            item_count=len(unique_grids),
             max_per_second=self.open_meteo_max_per_second,
             max_at_once=self.open_meteo_max_at_once,
         )
-        jobs = [functools.partial(_fetch_one, g) for g in grid_ids]
+        jobs = [functools.partial(_fetch_one, g) for g in unique_grids]
         results = await aiometer.run_all(
             jobs,
             max_at_once=self.open_meteo_max_at_once,
@@ -601,55 +618,38 @@ class WeatherDaemon(AsyncBaseDaemon):
     async def _get_station_grid_mappings(
         self,
         nws_client: httpx.AsyncClient | None = None,
-        om_client: httpx.AsyncClient | None = None,
     ) -> list[_StationGridMapping]:
-        """Resolve station → provider grid mappings for this polling cycle.
+        """Resolve station → NWS grid mappings, deferring Open-Meteo grid discovery.
 
-        This method performs the critical deduplication step that reduces API calls from
-        ~145 stations to ~50 unique weather grid points. For each station:
+        For each station:
+        1. **NWS Grid Resolution**: Checks cache for NWS grid ID (permanent, TTL=None).
+           On cache miss (first run only), calls NWS Points API to discover the grid
+           identifier ("LOT/85,67"). Discovered IDs are cached permanently.
 
-        1. **NWS Grid Resolution**: Checks cache for NWS grid ID. On cache miss, calls
-           NWS Points API to discover grid identifier (format: "LOT/85,67"). Discovery
-           is done synchronously per station to avoid overwhelming the API.
+        2. **Open-Meteo Grid**: Returns cached canonical grid if present, or None on
+           cache miss. Cache misses are resolved lazily by ``_fetch_open_meteo_by_grid``
+           during the real weather fetch — no throwaway discovery call is made here.
 
-        2. **Open-Meteo Grid Resolution**: Checks cache for Open-Meteo grid ID. On cache
-           miss, adds station to discovery batch. Batch discovery is performed
-           concurrently with rate limiting (see OpenMeteoWeatherGridDiscoverer).
-
-        3. **Cache Persistence**: All discovered grid identifiers are immediately
-           persisted to cache files to survive daemon restarts.
-
-        The method returns station-scoped mappings so the caller can:
-        - Deduplicate NWS calls by NWS grid ID (multiple stations → one NWS grid)
-        - Deduplicate Open-Meteo calls by Open-Meteo grid ID
-        - Reuse provider responses across all stations mapping to the same grid
+        Returns station-scoped mappings. The caller deduplicates NWS calls by NWS grid
+        ID and Open-Meteo calls by effective grid key (``_om_effective_grid``).
 
         Args:
-            nws_client: HTTP client for NWS API (created if None)
-            om_client: HTTP client for Open-Meteo API (created if None)
+            nws_client: HTTP client for NWS Points API (created if None)
 
         Returns:
-            List of _StationGridMapping objects, one per station, with both NWS and
-            Open-Meteo grid identifiers resolved.
+            List of _StationGridMapping objects, one per station. open_meteo_grid_id
+            may be None for stations with no cached canonical grid yet.
 
         """
-        if nws_client is None or om_client is None:
+        if nws_client is None:
             timeout = httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=10.0)
             limits = httpx.Limits(max_connections=50, max_keepalive_connections=10)
-            async with (
-                httpx.AsyncClient(timeout=timeout, limits=limits) as nws_client_ctx,
-                httpx.AsyncClient(timeout=timeout, limits=limits) as om_client_ctx,
-            ):
-                return await self._get_station_grid_mappings(
-                    nws_client_ctx, om_client_ctx
-                )
+            async with httpx.AsyncClient(timeout=timeout, limits=limits) as nws_client_ctx:
+                return await self._get_station_grid_mappings(nws_client_ctx)
 
         stations = self.stations_cache.get()
-        cache_misses = 0
-
-        base_by_station: dict[str, tuple[float, float, str]] = {}
+        nws_cache_misses = 0
         mappings: list[_StationGridMapping] = []
-        om_discovery_requests: list[tuple[str, float, float]] = []
 
         self.diagnostics.record_event(
             "station_grid_mapping_start",
@@ -678,17 +678,11 @@ class WeatherDaemon(AsyncBaseDaemon):
                     )
                     continue
                 else:
-                    cache_misses += 1
-                    # Cache writes are done on the event loop thread to avoid
-                    # concurrent file writes in the persistent KV cache.
+                    nws_cache_misses += 1
                     self.nws_grid_cache.set_grid_identifier(station_id, nws_grid)
 
-            base_by_station[station_id] = (lat, lon, nws_grid)
-
+            # Open-Meteo grid may be None; lazily resolved during the real weather fetch.
             om_grid = self.om_grid_cache.get_grid_identifier(station_id)
-            if om_grid is None:
-                om_discovery_requests.append((station_id, lat, lon))
-                continue
 
             mappings.append(
                 _StationGridMapping(
@@ -700,83 +694,25 @@ class WeatherDaemon(AsyncBaseDaemon):
                 )
             )
 
-        if om_discovery_requests:
-            self.diagnostics.record_event(
-                "station_grid_mapping_cache_miss",
-                provider="open_meteo",
-                miss_count=len(om_discovery_requests),
-                max_per_second=self.open_meteo_max_per_second,
-                max_at_once=self.open_meteo_max_at_once,
-            )
-            discovered = await self._discover_open_meteo_grids_for_stations(
-                om_client, om_discovery_requests
-            )
-            for station_id, om_grid in discovered.items():
-                base = base_by_station.get(station_id)
-                if base is None:
-                    continue
-                lat, lon, nws_grid = base
-                cache_misses += 1
-                mappings.append(
-                    _StationGridMapping(
-                        station_id=station_id,
-                        station_latitude=lat,
-                        station_longitude=lon,
-                        nws_grid_id=nws_grid,
-                        open_meteo_grid_id=om_grid,
-                    )
-                )
-
         unique_nws = {m.nws_grid_id for m in mappings}
-        unique_om = {m.open_meteo_grid_id for m in mappings}
+        unique_om = {m.open_meteo_grid_id for m in mappings if m.open_meteo_grid_id}
+        om_cache_misses = sum(1 for m in mappings if m.open_meteo_grid_id is None)
 
         self.logger.info(
-            f"Resolved {len(stations)} stations to {len(unique_nws)} NWS grids and {len(unique_om)} Open-Meteo grids",
+            f"Resolved {len(stations)} stations to {len(unique_nws)} NWS grids and {len(unique_om)} cached Open-Meteo grids",
             extra={
                 "extra_fields": {
                     "total_stations": len(stations),
                     "stations_with_mappings": len(mappings),
                     "unique_nws_grids": len(unique_nws),
-                    "unique_open_meteo_grids": len(unique_om),
-                    "cache_misses": cache_misses,
+                    "unique_cached_open_meteo_grids": len(unique_om),
+                    "nws_cache_misses": nws_cache_misses,
+                    "om_cache_misses": om_cache_misses,
                 }
             },
         )
 
         return mappings
-
-    async def _discover_open_meteo_grids_for_stations(
-        self,
-        client: httpx.AsyncClient,
-        requests: list[tuple[str, float, float]],
-    ) -> dict[str, str]:
-        """Discover Open-Meteo grid identifiers for multiple stations.
-
-        Delegates to OpenMeteoWeatherGridDiscoverer for the actual discovery logic.
-
-        Args:
-            client: HTTP client for API requests
-            requests: List of (station_id, latitude, longitude) tuples
-
-        Returns:
-            Dictionary mapping station_id to grid_id
-
-        """
-        return await self._grid_discoverer.discover_open_meteo_grids_for_stations(
-            client, requests
-        )
-
-    def _write_discovery_state_marker(self, state: dict[str, object]) -> None:
-        """Write an atomic discovery progress marker to `.daemon_state/` (best-effort)."""
-        try:
-            state_dir = Path(".daemon_state")
-            state_dir.mkdir(exist_ok=True)
-            path = state_dir / f"{self.__class__.__name__}.cold_cache.json"
-            tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-            tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
-            tmp.replace(path)
-        except (OSError, ValueError, TypeError):
-            return
 
     @override
     def _get_state(self) -> dict[str, str | int | float]:

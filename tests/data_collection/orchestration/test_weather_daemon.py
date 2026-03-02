@@ -181,14 +181,16 @@ class TestWeatherDaemonGetUniqueGridPoints:
         om_cache.set_grid_identifier.assert_not_called()
 
     @pytest.mark.usefixtures("cleanup_state_files")
-    def test_get_station_grid_mappings_discovers_and_caches_misses(
+    def test_get_station_grid_mappings_nws_cache_miss_discovers_and_caches(
         self,
         weather_daemon: tuple[
             WeatherDaemon, MagicMock, MagicMock, MagicMock, MagicMock
         ],
         mocker: MockerFixture,
     ) -> None:
-        """On cache miss, discovers grids and updates caches."""
+        """NWS cache miss triggers Points API discovery and caches result.
+        Open-Meteo cache miss yields open_meteo_grid_id=None (lazy discovery deferred to fetch).
+        """
         # Arrange
         daemon, stations_cache, nws_cache, om_cache, _ = weather_daemon
         stations_cache.get.return_value = [
@@ -201,23 +203,20 @@ class TestWeatherDaemonGetUniqueGridPoints:
             "cta_eta.data_collection.orchestration.weather_daemon.discover_nws_grid",
             new=mocker.AsyncMock(return_value="LOT/9,9"),
         )
-        mocker.patch(
-            "cta_eta.data_collection.orchestration.weather_grid_discovery.discover_open_meteo_grid",
-            new=mocker.AsyncMock(return_value="41.10,-87.10"),
-        )
 
         # Act
         mappings = asyncio.run(daemon._get_station_grid_mappings())
 
-        # Assert
+        # Assert: station is included; NWS grid discovered and cached;
+        # Open-Meteo grid is None (will be lazily discovered during the real fetch).
         assert len(mappings) == 1
         assert mappings[0].station_id == "s1"
         assert mappings[0].station_latitude == 41.1
         assert mappings[0].station_longitude == -87.1
         assert mappings[0].nws_grid_id == "LOT/9,9"
-        assert mappings[0].open_meteo_grid_id == "41.10,-87.10"
+        assert mappings[0].open_meteo_grid_id is None
         nws_cache.set_grid_identifier.assert_called_once_with("s1", "LOT/9,9")
-        om_cache.set_grid_identifier.assert_called_once_with("s1", "41.10,-87.10")
+        om_cache.set_grid_identifier.assert_not_called()
 
     @pytest.mark.usefixtures("cleanup_state_files")
     def test_get_station_grid_mappings_skips_station_on_nws_discovery_failure(
@@ -248,14 +247,16 @@ class TestWeatherDaemonGetUniqueGridPoints:
         cast("MagicMock", daemon.logger).exception.assert_called()
 
     @pytest.mark.usefixtures("cleanup_state_files")
-    def test_get_station_grid_mappings_skips_station_on_open_meteo_discovery_failure(
+    def test_get_station_grid_mappings_includes_station_with_none_om_grid_on_cache_miss(
         self,
         weather_daemon: tuple[
             WeatherDaemon, MagicMock, MagicMock, MagicMock, MagicMock
         ],
-        mocker: MockerFixture,
     ) -> None:
-        """If Open-Meteo discovery fails for a station, that station is skipped."""
+        """Open-Meteo cache miss no longer skips the station.
+        The station is included with open_meteo_grid_id=None; the canonical grid is
+        discovered lazily from the real API response in _fetch_open_meteo_by_grid.
+        """
         # Arrange
         daemon, stations_cache, nws_cache, om_cache, _ = weather_daemon
         stations_cache.get.return_value = [
@@ -263,17 +264,16 @@ class TestWeatherDaemonGetUniqueGridPoints:
         ]
         nws_cache.get_grid_identifier.return_value = "LOT/1,2"
         om_cache.get_grid_identifier.return_value = None
-        mocker.patch(
-            "cta_eta.data_collection.orchestration.weather_grid_discovery.discover_open_meteo_grid",
-            new=mocker.AsyncMock(side_effect=RuntimeError("nope")),
-        )
 
         # Act
         mappings = asyncio.run(daemon._get_station_grid_mappings())
 
-        # Assert
-        assert mappings == []
-        cast("MagicMock", daemon.logger).exception.assert_called()
+        # Assert: station is still included; Open-Meteo discovery deferred to fetch.
+        assert len(mappings) == 1
+        assert mappings[0].station_id == "s1"
+        assert mappings[0].nws_grid_id == "LOT/1,2"
+        assert mappings[0].open_meteo_grid_id is None
+        om_cache.set_grid_identifier.assert_not_called()
 
 
 class TestWeatherDaemonCollectWeatherCycle:
@@ -661,45 +661,6 @@ class TestWeatherDaemonRunLoop:
         assert cycle_count == 2
 
 
-class TestWeatherDaemonDiscoveryTimeouts:
-    """Tests for timeout handling in discovery operations."""
-
-    @pytest.mark.usefixtures("cleanup_state_files")
-    def test_discovery_handles_overall_batch_timeout(
-        self,
-        weather_daemon: tuple[
-            WeatherDaemon, MagicMock, MagicMock, MagicMock, MagicMock
-        ],
-        mocker: MockerFixture,
-    ) -> None:
-        """Discovery handles overall batch timeout via time.monotonic check and returns partial dict."""
-        # Arrange
-        daemon, _stations_cache, _nws_cache, _, _storage = weather_daemon
-        mocker.patch(
-            "cta_eta.data_collection.orchestration.weather_grid_discovery._OVERALL_BATCH_TIMEOUT_S",
-            new=0.02,
-        )
-
-        async def slow_discover(_client: object, lat: float, lon: float) -> str:
-            await asyncio.sleep(0.05)
-            return f"{lat},{lon}"
-
-        mocker.patch(
-            "cta_eta.data_collection.orchestration.weather_grid_discovery.discover_open_meteo_grid",
-            new=mocker.AsyncMock(side_effect=slow_discover),
-        )
-
-        requests = [("s1", 1.0, 1.0), ("s2", 2.0, 2.0)]
-        mock_client = MagicMock(spec=httpx.AsyncClient)
-
-        # Act
-        result = asyncio.run(
-            daemon._discover_open_meteo_grids_for_stations(mock_client, requests)
-        )
-
-        # Assert
-        assert isinstance(result, dict)
-
 
 class TestWeatherDaemonErrorHandling:
     """Tests for improved error handling."""
@@ -806,6 +767,13 @@ class TestWeatherDaemonErrorHandling:
         # Arrange
         daemon, *_ = weather_daemon
         mock_client = MagicMock(spec=httpx.AsyncClient)
+        mapping = mocker.Mock(
+            station_id="s1",
+            station_latitude=41.0,
+            station_longitude=-87.0,
+            nws_grid_id="LOT/1,2",
+            open_meteo_grid_id="41.0,-87.0",
+        )
 
         mocker.patch(
             "cta_eta.data_collection.orchestration.weather_daemon.aiometer.run_all",
@@ -815,7 +783,7 @@ class TestWeatherDaemonErrorHandling:
 
         # Act
         result = asyncio.run(
-            daemon._fetch_open_meteo_by_grid(mock_client, ["41.0,-87.0"])
+            daemon._fetch_open_meteo_by_grid(mock_client, [mapping])
         )
 
         # Assert

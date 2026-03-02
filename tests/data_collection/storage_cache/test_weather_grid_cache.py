@@ -200,12 +200,11 @@ class TestWeatherGridCacheFactories:
         return {
             "cache": {
                 "directory": str(tmp_path / "cache"),
-                "weather_mapping_ttl": "123",
             }
         }
 
     def test_get_nws_grid_cache_builds_expected_instance(self, config: dict) -> None:
-        """Test NWS cache factory returns correct type and config."""
+        """Test NWS cache factory returns correct type and permanent TTL."""
         # Arrange
         expected_name = "nws_grid_mapping.json"
 
@@ -214,13 +213,13 @@ class TestWeatherGridCacheFactories:
 
         # Assert
         assert isinstance(cache, NWSGridCache)
-        assert cache._ttl == 123
+        assert cache._ttl is None  # Permanent: geographic grid mappings never expire
         assert cache._cache._cache_file.name == expected_name
 
     def test_get_open_meteo_grid_cache_builds_expected_instance(
         self, config: dict
     ) -> None:
-        """Test Open-Meteo cache factory returns expected cache."""
+        """Test Open-Meteo cache factory returns expected cache with permanent TTL."""
         # Arrange
         expected_name = "open_meteo_grid_mapping.json"
 
@@ -229,13 +228,13 @@ class TestWeatherGridCacheFactories:
 
         # Assert
         assert isinstance(cache, WeatherGridCache)
-        assert cache._ttl == 123
+        assert cache._ttl is None  # Permanent: geographic grid mappings never expire
         assert cache._cache._cache_file.name == expected_name
 
     def test_get_openweathermap_grid_cache_builds_expected_instance(
         self, config: dict
     ) -> None:
-        """Test OpenWeatherMap cache factory returns expected cache."""
+        """Test OpenWeatherMap cache factory returns expected cache with permanent TTL."""
         # Arrange
         expected_name = "openweathermap_grid_mapping.json"
 
@@ -244,5 +243,5 @@ class TestWeatherGridCacheFactories:
 
         # Assert
         assert isinstance(cache, WeatherGridCache)
-        assert cache._ttl == 123
+        assert cache._ttl is None  # Permanent: geographic grid mappings never expire
         assert cache._cache._cache_file.name == expected_name
