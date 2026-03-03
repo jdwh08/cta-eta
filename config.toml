@@ -5,10 +5,11 @@
 [features]
 # Feature flags to enable/disable parts of the pipeline
 # Only credentials for enabled features will be validated at startup
-train_positions = false  # Requires CTA_API_KEY
+train_positions = true  # Requires CTA_API_KEY
+
+# Weather at stations requires stations; CHIDATA_APP_TOK and CHIDATA_APP_SECRET
 weather_collection = true  # Requires NWS_APP_NAME and NWS_EMAIL
 weather_collection_fallback = true  # Requires OPENWEATHERMAP_API_KEY
-station_data = true  # Requires CHIDATA_APP_TOK and CHIDATA_APP_SECRET
 
 
 [collection]
@@ -75,7 +76,6 @@ archive_path = "data/archive"
 journal_retention_days = 7
 
 
-
 [retry]
 # Maximum retry attempts for transient API failures
 # Using stamina decorator with exponential backoff w/ Jitter
@@ -123,9 +123,6 @@ log_level = "INFO"
 # Useful for parsing and analysis tools
 json_format = true
 
-# Log file path (relative to project root or absolute)
-log_path = "logs/cta_eta.log"
-
 # Enable console output in addition to file logging
 console_output = true
 
@@ -133,6 +130,8 @@ console_output = true
 [diagnostics]
 # When enabled, daemons emit structured span timing + error telemetry,
 # periodically log a compact summary, and (optionally) write JSONL events for offline analysis.
+
+[diagnostics.TrainPositionDaemon]
 enabled = true
 
 # How often to log a "diagnostics summary" line (seconds).
@@ -143,9 +142,24 @@ max_recent_events = 64
 
 # Optional JSONL sink for events; if empty, events are not written to disk.
 # If set and enabled, the file is rotated by size.
+event_log_path = ".daemon_state/TrainPositionDaemon.events.jsonl"
+event_log_max_bytes = 5242880
+event_log_backups = 1
+
+[diagnostics.WeatherDaemon]
+enabled = true
+
+# How often to log a "diagnostics summary" line (seconds).
+summary_interval_seconds = 300
+
+# Bounded in-memory ring buffer of recent diagnostic events.
+max_recent_events = 64
+
+# Optional JSONL sink for events; if empty, events are not written to disk.
+# If set and enabled, the file is rotated by size.
 event_log_path = ".daemon_state/WeatherDaemon.events.jsonl"
 event_log_max_bytes = 5242880
-event_log_backups = 3
+event_log_backups = 1
 
 
 [alerting]
@@ -156,5 +170,3 @@ last_alert_state = ".daemon_state/last_alert.json"  # Cooldown state file
 email_provider = "mailjet"
 
 # Emails from/to controlled by smtp_from and smtp_to in .env
-smtp_from = "alerts@example.com"  # Sender (must be verified in Mailjet)
-smtp_to = ["oncall@example.com"]  # Recipients

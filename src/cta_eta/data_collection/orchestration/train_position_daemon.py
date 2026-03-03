@@ -102,7 +102,6 @@ class TrainPositionDaemon(AsyncBaseDaemon):
         """
         if config is None:
             config = load_config()
-        super().__init__(config, logger)
 
         # Initialize storage backend for IPC journal writes
         self.storage = create_journal_writer(config)
@@ -141,6 +140,9 @@ class TrainPositionDaemon(AsyncBaseDaemon):
         )
         self.storage_backoff_until = 0.0
         self.gap_reason_override = None
+
+        # Set up remaining attributes from base class
+        super().__init__(config, logger)
 
         # Check for restart gaps after state has been applied
         self._check_restart_gap()
@@ -807,6 +809,8 @@ class TrainPositionDaemon(AsyncBaseDaemon):
             },
         )
 
+        self.logger.info(f"Current state: {self._get_state()}")
+
     def _check_restart_gap(self) -> None:
         """Check for downtime gap on daemon restart.
 
@@ -816,7 +820,7 @@ class TrainPositionDaemon(AsyncBaseDaemon):
 
         Called once during __init__ after state has been applied.
         """
-        if self.last_poll_timestamp == 0.0:
+        if self.last_poll_timestamp <= 0.0:
             # First run ever - no previous state to compare
             self.logger.info("First daemon run - no restart gap check needed")
             return

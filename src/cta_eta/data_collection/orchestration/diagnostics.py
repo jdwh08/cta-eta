@@ -69,12 +69,12 @@ class DaemonDiagnosticsConfig:
     ) -> DaemonDiagnosticsConfig:
         """Create a DaemonDiagnosticsConfig from a raw configuration or the global config.
 
-        When `cfg` is None, the `[diagnostics]` section is taken from `config` if
+        When `cfg` is None, the `[diagnostics.{daemon_name}]` section is taken from `config` if
         provided, or from `config.toml` via `get_config_section` when `config` is None.
         Pass `config={}` in tests to avoid loading from disk while still using this path.
         """
         if cfg is None:
-            cfg = get_config_section("diagnostics", config=config)
+            cfg = get_config_section(f"diagnostics.{daemon_name}", config=config)
         if not cfg:
             return cls()
 

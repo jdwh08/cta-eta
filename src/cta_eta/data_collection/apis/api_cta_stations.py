@@ -187,7 +187,7 @@ def get_stations_cache(
 ) -> CachedData[list[dict[str, Any]]]:
     """Build a TTL-backed cache for CTA stations.
 
-    Cache TTL is configured via `[cache].stations_ttl` (recommended: 7 days).
+    Cache TTL is configured via `[cache].stations_ttl`.
 
     Args:
         cfg: Optional config dict (uses load_config() if not provided)

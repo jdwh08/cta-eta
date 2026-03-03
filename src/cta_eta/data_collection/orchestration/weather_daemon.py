@@ -45,6 +45,7 @@ from cta_eta.data_collection.orchestration.daemon_utils import (
     ErrorCategory,
     classify_error,
 )
+from cta_eta.data_collection.orchestration.gap_detection import detect_gap
 from cta_eta.data_collection.storage_cache.journal_writer import create_journal_writer
 from cta_eta.data_collection.storage_cache.weather_grid_cache import (
     get_nws_grid_cache,
@@ -68,12 +69,17 @@ class _StationGridMapping:
     station_latitude: float
     station_longitude: float
     nws_grid_id: str
-    open_meteo_grid_id: str | None  # None on cache miss; lazily discovered from real API call
+    open_meteo_grid_id: (
+        str | None
+    )  # None on cache miss; lazily discovered from real API call
 
 
 def _om_effective_grid(mapping: _StationGridMapping) -> str:
     """Return effective Open-Meteo grid key: canonical cached grid or raw station lat,lon."""
-    return mapping.open_meteo_grid_id or f"{mapping.station_latitude},{mapping.station_longitude}"
+    return (
+        mapping.open_meteo_grid_id
+        or f"{mapping.station_latitude},{mapping.station_longitude}"
+    )
 
 
 class WeatherDaemon(AsyncBaseDaemon):
@@ -95,7 +101,7 @@ class WeatherDaemon(AsyncBaseDaemon):
         nws_grid_cache: NWSGridCache for station → NWS grid mappings
         om_grid_cache: OpenMeteoGridCache for station → Open-Meteo grid mappings
         storage: JournalWriter for storing unified weather records
-        weather_interval: Collection interval in seconds (default: 900 = 15 minutes)
+        weather_poll_interval: Collection interval in seconds (default: 900 = 15 minutes)
         last_collection_time: Timestamp of last successful collection cycle
         records_stored_last_cycle: Number of records stored in last cycle
 
@@ -105,7 +111,7 @@ class WeatherDaemon(AsyncBaseDaemon):
     nws_grid_cache: NWSGridCache
     om_grid_cache: OpenMeteoGridCache
     storage: JournalWriter
-    weather_interval: int
+    weather_poll_interval: int
     last_collection_time: float
     records_stored_last_cycle: int
     open_meteo_max_per_second: float
@@ -125,7 +131,6 @@ class WeatherDaemon(AsyncBaseDaemon):
         """
         if config is None:
             config = load_config()
-        super().__init__(config, logger)
 
         # Validate configuration for required credentials
         validate_config(
@@ -145,10 +150,10 @@ class WeatherDaemon(AsyncBaseDaemon):
 
         # Extract weather collection interval from config (convert minutes to seconds)
         collection_config = config.get("collection", {})
-        weather_interval_minutes = int(
-            collection_config.get("weather_interval_minutes", 30)
+        weather_poll_interval_minutes = int(
+            collection_config.get("weather_poll_interval_minutes", 30)
         )
-        self.weather_interval = weather_interval_minutes * 60
+        self.weather_poll_interval = weather_poll_interval_minutes * 60
 
         # Load rate limits from config with fallback defaults
 
@@ -180,6 +185,12 @@ class WeatherDaemon(AsyncBaseDaemon):
         # Initialize state tracking
         self.last_collection_time = 0.0
         self.records_stored_last_cycle = 0
+
+        # Set up remaining attributes from base class
+        super().__init__(config, logger)
+
+        # Check for restart gaps after state has been applied
+        self._check_restart_gap()
 
     @override
     async def run(self) -> None:
@@ -230,7 +241,7 @@ class WeatherDaemon(AsyncBaseDaemon):
                                 },
                             )
                             # Apply longer backoff for rate limits
-                            await self.sleep(self.weather_interval * 2)
+                            await self.sleep(self.weather_poll_interval * 2)
                             continue
                         case ErrorCategory.TRANSIENT:
                             self.logger.warning(
@@ -255,7 +266,7 @@ class WeatherDaemon(AsyncBaseDaemon):
                                 },
                             )
 
-                await self.sleep(self.weather_interval)
+                await self.sleep(self.weather_poll_interval)
 
     async def _collect_weather_cycle(
         self,
@@ -531,7 +542,9 @@ class WeatherDaemon(AsyncBaseDaemon):
         # Group station IDs by effective grid key for deduplication and cache updates.
         grid_to_station_ids: dict[str, list[str]] = {}
         for m in mappings:
-            grid_to_station_ids.setdefault(_om_effective_grid(m), []).append(m.station_id)
+            grid_to_station_ids.setdefault(_om_effective_grid(m), []).append(
+                m.station_id
+            )
 
         unique_grids = sorted(grid_to_station_ids)
 
@@ -560,10 +573,14 @@ class WeatherDaemon(AsyncBaseDaemon):
                 # Lazily update grid cache from the canonical coordinates in the response.
                 canonical_lat = data.get("latitude")
                 canonical_lon = data.get("longitude")
-                if isinstance(canonical_lat, float) and isinstance(canonical_lon, float):
+                if isinstance(canonical_lat, float) and isinstance(
+                    canonical_lon, float
+                ):
                     canonical_grid = f"{canonical_lat},{canonical_lon}"
                     for station_id in grid_to_station_ids.get(grid_id, []):
-                        self.om_grid_cache.set_grid_identifier(station_id, canonical_grid)
+                        self.om_grid_cache.set_grid_identifier(
+                            station_id, canonical_grid
+                        )
                 return (grid_id, data)
 
         self.diagnostics.record_event(
@@ -644,7 +661,9 @@ class WeatherDaemon(AsyncBaseDaemon):
         if nws_client is None:
             timeout = httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=10.0)
             limits = httpx.Limits(max_connections=50, max_keepalive_connections=10)
-            async with httpx.AsyncClient(timeout=timeout, limits=limits) as nws_client_ctx:
+            async with httpx.AsyncClient(
+                timeout=timeout, limits=limits
+            ) as nws_client_ctx:
                 return await self._get_station_grid_mappings(nws_client_ctx)
 
         stations = self.stations_cache.get()
@@ -725,7 +744,7 @@ class WeatherDaemon(AsyncBaseDaemon):
         return {
             "last_collection_timestamp": self.last_collection_time,
             "records_stored_last_cycle": self.records_stored_last_cycle,
-            "weather_interval_seconds": self.weather_interval,
+            "weather_poll_interval_seconds": self.weather_poll_interval,
         }
 
     @override
@@ -733,17 +752,60 @@ class WeatherDaemon(AsyncBaseDaemon):
         """Apply state to daemon instance."""
         self.last_collection_time = float(state.get("last_collection_timestamp", 0.0))
         self.records_stored_last_cycle = int(state.get("records_stored_last_cycle", 0))
-        self.weather_interval = int(state.get("weather_interval_seconds", 0))
+        self.weather_poll_interval = int(state.get("weather_poll_interval_seconds", 0))
         self.logger.info(
             "Applied daemon state from previous run",
             extra={
                 "extra_fields": {
                     "last_collection_timestamp": self.last_collection_time,
                     "records_stored_last_cycle": self.records_stored_last_cycle,
-                    "weather_interval_seconds": self.weather_interval,
+                    "weather_poll_interval_seconds": self.weather_poll_interval,
                 }
             },
         )
+
+    def _check_restart_gap(self) -> None:
+        """Check for downtime gap on daemon restart.
+
+        Uses gap_detection.detect_gap() to identify gaps between last poll
+        (from persisted state) and current restart time. If gap detected,
+        logs warning and flags gap metadata for next successful poll.
+
+        Called once during __init__ after state has been applied.
+        """
+        if self.last_collection_time <= 0.0:
+            # First run ever - no previous state to compare
+            self.logger.info("First daemon run - no restart gap check needed")
+            return
+
+        current_timestamp = time.time()
+        gap_metadata = detect_gap(
+            last_poll_timestamp=self.last_collection_time,
+            current_timestamp=current_timestamp,
+            poll_interval=float(self.weather_poll_interval),
+            threshold_multiplier=2.0,
+        )
+
+        if gap_metadata["is_gap"]:
+            self.logger.warning(
+                f"Restart gap detected: downtime of {gap_metadata['gap_duration_seconds']:.1f}s "
+                f"({gap_metadata['missed_poll_cycles']} missed cycles)",
+                extra={
+                    "extra_fields": {
+                        "gap_metadata": gap_metadata,
+                        "gap_reason": "downtime",
+                    }
+                },
+            )
+            # Flag gap metadata to attach to next successful poll
+            # Override gap_reason to "downtime" since this is a restart gap
+            gap_metadata["gap_reason"] = "downtime"
+            self.pending_gap_metadata = gap_metadata
+        else:
+            self.logger.info(
+                f"Restart gap check: no gap detected (last poll {current_timestamp - self.last_collection_time:.1f}s ago, "
+                f"within threshold {self.weather_poll_interval * 2.0:.1f}s)"
+            )
 
     @override
     def _pre_shutdown_hook(self) -> None:

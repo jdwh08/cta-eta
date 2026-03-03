@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import tomllib
+from io import BytesIO
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
@@ -11,6 +13,7 @@ from unittest.mock import MagicMock
 import httpx
 import pytest
 
+### OWN MODULES
 from cta_eta.data_collection.orchestration.diagnostics import (
     DaemonDiagnostics,
     DaemonDiagnosticsConfig,
@@ -125,8 +128,21 @@ class TestDaemonDiagnosticsConfig:
         assert config.event_log_max_bytes == 5 * 1024 * 1024
         assert config.event_log_backups == 3
 
-    def test_from_config_with_none(self) -> None:
+    def test_from_config_with_none(self, mocker: MockerFixture) -> None:
         """from_config returns default config when raw is None and config has no diagnostics."""
+        # Mock the toml file using StringIO
+        toml_content = b"""
+        [diagnostics.TestDaemon]
+        enabled = true
+        summary_interval_seconds = 30
+        max_recent_events = 64
+        """
+        toml_file = tomllib.load(BytesIO(toml_content))
+        mocker.patch(
+            "cta_eta.data_collection.config.load_config",
+            return_value=toml_file,
+        )
+
         config = DaemonDiagnosticsConfig.from_config(
             None, daemon_name="TestDaemon", config=None
         )
@@ -139,9 +155,11 @@ class TestDaemonDiagnosticsConfig:
         """from_config(None, config=...) uses the [diagnostics] section from the given config."""
         full_config = {
             "diagnostics": {
-                "enabled": True,
-                "summary_interval_seconds": 45,
-                "max_recent_events": 64,
+                "TestDaemon": {
+                    "enabled": True,
+                    "summary_interval_seconds": 45,
+                    "max_recent_events": 64,
+                }
             }
         }
         config = DaemonDiagnosticsConfig.from_config(
