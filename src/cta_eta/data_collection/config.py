@@ -167,7 +167,7 @@ def get_required_credentials(
     return required_credentials
 
 
-def validate_config_secrets(
+def _validate_config_secrets(
     config: dict[str, dict[str, str | int | float | bool]],
     required_features: list[str] | None = None,
 ) -> None:
@@ -250,11 +250,6 @@ def _validate_config_file_settings_station_data(
     ):
         msg = "Configuration path 'cache': section 'cache' must contain 'track_geometry_ttl' key with an integer value."
         raise ValueError(msg)
-    if "weather_mapping_ttl" not in cache_config or not isinstance(
-        cache_config["weather_mapping_ttl"], int
-    ):
-        msg = "Configuration path 'cache': section 'cache' must contain 'weather_mapping_ttl' key with an integer value."
-        raise ValueError(msg)
 
 
 def _validate_config_file_settings_train_positions(
@@ -270,27 +265,25 @@ def _validate_config_file_settings_train_positions(
     ):
         msg = "Configuration path 'collection': section 'collection' must contain 'train_interval_seconds' key with an integer value."
         raise ValueError(msg)
-    if "rate_limits" not in collection_config or not isinstance(
-        collection_config["rate_limits"], dict
+    rate_limits_config = config.get("rate_limits", {})
+    if not isinstance(rate_limits_config, dict):
+        msg = f"Configuration path 'rate_limits': section 'rate_limits' must be a dictionary, got {type(rate_limits_config).__name__}."
+        raise TypeError(msg)
+    if "cta" not in rate_limits_config or not isinstance(
+        rate_limits_config["cta"], dict
     ):
-        msg = "Configuration path 'collection': section 'collection' must contain 'rate_limits' key with a dictionary value."
+        msg = "Configuration path 'rate_limits': section 'rate_limits' must contain 'cta' key with a dictionary value."
         raise ValueError(msg)
-    if "cta" not in collection_config["rate_limits"] or not isinstance(
-        collection_config["rate_limits"]["cta"], dict
+    cta_limits = rate_limits_config["cta"]
+    if "max_per_second" not in cta_limits or not isinstance(
+        cta_limits["max_per_second"], float
     ):
-        msg = "Configuration path 'collection': section 'collection' must contain 'rate_limits.cta' key with a dictionary value."
+        msg = "Configuration path 'rate_limits': section 'rate_limits' must contain 'cta.max_per_second' key with a float value."
         raise ValueError(msg)
-    if "max_per_second" not in collection_config["rate_limits"][
-        "cta"
-    ] or not isinstance(
-        collection_config["rate_limits"]["cta"]["max_per_second"], float
+    if "max_at_once" not in cta_limits or not isinstance(
+        cta_limits["max_at_once"], int
     ):
-        msg = "Configuration path 'collection': section 'collection' must contain 'rate_limits.cta.max_per_second' key with a float value."
-        raise ValueError(msg)
-    if "max_at_once" not in collection_config["rate_limits"]["cta"] or not isinstance(
-        collection_config["rate_limits"]["cta"]["max_at_once"], int
-    ):
-        msg = "Configuration path 'collection': section 'collection' must contain 'rate_limits.cta.max_at_once' key with an integer value."
+        msg = "Configuration path 'rate_limits': section 'rate_limits' must contain 'cta.max_at_once' key with an integer value."
         raise ValueError(msg)
 
 
@@ -392,7 +385,116 @@ def _validate_config_file_settings_storage(  # noqa: C901
         raise ValueError(msg)
 
 
-def validate_config_file_settings(
+def _validate_logging_settings(
+    config: dict[str, dict[str, str | int | float | bool]],
+) -> None:
+    """Validate the optional [logging] section (if present)."""
+    logging_cfg = config.get("logging")
+    if logging_cfg is None:
+        return
+    if not isinstance(logging_cfg, dict):
+        msg = (
+            "Configuration path 'logging': section 'logging' must be a dictionary, "
+            f"got {type(logging_cfg).__name__}."
+        )
+        raise TypeError(msg)
+
+    level = logging_cfg.get("log_level")
+    if level is not None:
+        if not isinstance(level, str):
+            msg = (
+                "Configuration path 'logging': 'log_level' must be a string "
+                "(e.g. 'INFO', 'DEBUG')."
+            )
+            raise ValueError(msg)
+        valid_levels = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+        if level.upper() not in valid_levels:
+            msg = (
+                "Configuration path 'logging': 'log_level' must be one of "
+                f"{sorted(valid_levels)}, got '{level}'."
+            )
+            raise ValueError(msg)
+
+    for key in ("json_format", "console_output"):
+        if key in logging_cfg and not isinstance(logging_cfg[key], bool):
+            msg = (
+                f"Configuration path 'logging': '{key}' must be a boolean (true/false)."
+            )
+            raise ValueError(msg)
+
+
+def _validate_diagnostics_settings(
+    config: dict[str, dict[str, str | int | float | bool]],
+) -> None:
+    """Validate the optional [diagnostics] section (if present).
+
+    The detailed per-daemon schema is owned by DaemonDiagnosticsConfig; here we only
+    ensure the TOML structure is consistent (nested tables become dicts).
+    """
+    diagnostics_cfg = config.get("diagnostics")
+    if diagnostics_cfg is None:
+        return
+    if not isinstance(diagnostics_cfg, dict):
+        msg = (
+            "Configuration path 'diagnostics': section 'diagnostics' must be a "
+            f"dictionary, got {type(diagnostics_cfg).__name__}."
+        )
+        raise TypeError(msg)
+
+    for daemon_name, section in diagnostics_cfg.items():
+        if not isinstance(section, dict):
+            msg = (
+                "Configuration path 'diagnostics': section "
+                f"'diagnostics.{daemon_name}' must be a dictionary, "
+                f"got {type(section).__name__}."
+            )
+            raise TypeError(msg)
+
+
+def _validate_alerting_settings(
+    config: dict[str, dict[str, str | int | float | bool]],
+) -> None:
+    """Validate the optional [alerting] section (if present)."""
+    alerting_cfg = config.get("alerting")
+    if alerting_cfg is None:
+        return
+    if not isinstance(alerting_cfg, dict):
+        msg = (
+            "Configuration path 'alerting': section 'alerting' must be a dictionary, "
+            f"got {type(alerting_cfg).__name__}."
+        )
+        raise TypeError(msg)
+
+    if "enabled" in alerting_cfg and not isinstance(alerting_cfg["enabled"], bool):
+        msg = "Configuration path 'alerting': 'enabled' must be a boolean (true/false)."
+        raise ValueError(msg)
+
+    if "cooldown_hours" in alerting_cfg and not isinstance(
+        alerting_cfg["cooldown_hours"], int
+    ):
+        msg = (
+            "Configuration path 'alerting': 'cooldown_hours' must be an integer "
+            "number of hours."
+        )
+        raise ValueError(msg)
+
+    if "last_alert_state" in alerting_cfg and not isinstance(
+        alerting_cfg["last_alert_state"], str
+    ):
+        msg = "Configuration path 'alerting': 'last_alert_state' must be a string path."
+        raise ValueError(msg)
+
+    if "email_provider" in alerting_cfg and not isinstance(
+        alerting_cfg["email_provider"], str
+    ):
+        msg = (
+            "Configuration path 'alerting': 'email_provider' must be a string "
+            "(e.g. 'mailjet')."
+        )
+        raise ValueError(msg)
+
+
+def _validate_config_file_settings(
     config: dict[str, dict[str, str | int | float | bool]],
     required_features: list[str] | None = None,
 ) -> None:
@@ -413,7 +515,7 @@ def validate_config_file_settings(
             for feature in config.get("features", {})
             if config.get("features", {}).get(feature, False)
         ]
-    if "station_data" in required_features:
+    if "station_data" in required_features or "weather_collection" in required_features:
         _validate_config_file_settings_station_data(config)
     if "train_positions" in required_features:
         _validate_config_file_settings_train_positions(config)
@@ -448,8 +550,11 @@ def validate_config(
     required_features: list[str] | None = None,
 ) -> None:
     """Validate configuration for required credentials and file settings based on enabled features."""
-    validate_config_secrets(config, required_features)
-    validate_config_file_settings(config, required_features)
+    _validate_config_secrets(config, required_features)
+    _validate_config_file_settings(config, required_features)
+    _validate_logging_settings(config)
+    _validate_diagnostics_settings(config)
+    _validate_alerting_settings(config)
 
 
 def get_config_section(

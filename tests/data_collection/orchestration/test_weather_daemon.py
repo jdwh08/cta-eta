@@ -47,6 +47,11 @@ def sample_config() -> dict[
             "open_meteo": {"max_per_second": 10, "max_at_once": 1},
             "openweathermap": {"max_per_second": 10, "max_at_once": 1},
         },
+        "cache": {
+            "stations_ttl": 604800,
+            "track_geometry_ttl": 2592000,
+            "directory": "data/cache",
+        },
         "storage": {
             "immediate": {
                 "data_path": "data/journals",

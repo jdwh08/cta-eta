@@ -163,7 +163,7 @@ event_log_backups = 1
 
 
 [alerting]
-enabled = false  # Set to true to enable email alerts
+enabled = true  # Set to true to enable email alerts
 cooldown_hours = 4  # Minimum hours between repeat alerts
 last_alert_state = ".daemon_state/last_alert.json"  # Cooldown state file
 # API-based provider; only "mailjet" is implemented (MAILJET_API_KEY, MAILJET_API_SECRET in .env)

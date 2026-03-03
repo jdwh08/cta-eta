@@ -4,8 +4,8 @@ Tests cover:
 - load_config / _load_config_from_path: TOML + .env merge, file missing, invalid TOML.
 - _sanitize_config_for_logging: redaction of sensitive keys.
 - get_required_credentials: per-feature credential lists, derived from config.
-- validate_config_secrets: required credentials for enabled features (uses get_required_credentials).
-- validate_config_file_settings: station_data, train_positions, weather_collection, weather_collection_fallback.
+- _validate_config_secrets: required credentials for enabled features (uses get_required_credentials).
+- _validate_config_file_settings: station_data, train_positions, weather_collection, weather_collection_fallback.
 - validate_config: full validation (secrets + file settings).
 - get_config_section: top-level and dotted paths, missing/wrong types.
 
@@ -25,12 +25,12 @@ import cta_eta.data_collection.config as cta_config
 from cta_eta.data_collection.config import (
     _load_config_from_path,
     _sanitize_config_for_logging,
+    _validate_config_file_settings,
+    _validate_config_secrets,
     get_config_section,
     get_required_credentials,
     load_config,
     validate_config,
-    validate_config_file_settings,
-    validate_config_secrets,
 )
 
 if TYPE_CHECKING:
@@ -69,7 +69,7 @@ journal_retention_days = 7
 def _make_valid_full_config() -> dict[str, dict[str, Any]]:
     """Build a config dict that passes all file-settings and secrets validations.
 
-    Uses the same shape as load_config() + config.toml so validate_config_file_settings
+    Uses the same shape as load_config() + config.toml so _validate_config_file_settings
     and get_required_credentials paths are exercised with real structures.
     """
     return {
@@ -88,15 +88,12 @@ def _make_valid_full_config() -> dict[str, dict[str, Any]]:
         "cache": {
             "stations_ttl": 604800,
             "track_geometry_ttl": 2592000,
-            "weather_mapping_ttl": 604800,
         },
         "collection": {
             "train_interval_seconds": 15,
-            "rate_limits": {
-                "cta": {"max_per_second": 0.1, "max_at_once": 3},
-            },
         },
         "rate_limits": {
+            "cta": {"max_per_second": 0.1, "max_at_once": 3},
             "nws": {"max_per_second": 5, "max_at_once": 5},
             "openweathermap": {"max_per_second": 60, "max_at_once": 60},
         },
@@ -281,11 +278,11 @@ station_data = true
 [cache]
 stations_ttl = 604800
 track_geometry_ttl = 2592000
-weather_mapping_ttl = 604800
 
 [collection]
 train_interval_seconds = 15
-[collection.rate_limits.cta]
+
+[rate_limits.cta]
 max_per_second = 0.1
 max_at_once = 3
 
@@ -328,7 +325,7 @@ journal_retention_days = 7
         assert "cta_api_key" in creds
         assert "openweathermap_api_key" in creds
         assert config["cache"]["stations_ttl"] == 604800
-        assert config["collection"]["rate_limits"]["cta"]["max_per_second"] == 0.1  # ty:ignore[invalid-argument-type, not-subscriptable]
+        assert config["rate_limits"]["cta"]["max_per_second"] == 0.1
 
     def test_load_config_success(
         self, temp_config_file: Path, monkeypatch: pytest.MonkeyPatch
@@ -678,7 +675,7 @@ class TestGetRequiredCredentials:
 
 
 class TestValidateConfigSecrets:
-    """Test cases for validate_config_secrets (credentials by feature)."""
+    """Test cases for _validate_config_secrets (credentials by feature)."""
 
     def test_no_features_enabled(self) -> None:
         # Arrange
@@ -692,7 +689,7 @@ class TestValidateConfigSecrets:
         }
 
         # Act & Assert
-        validate_config_secrets(config, required_features=None)
+        _validate_config_secrets(config, required_features=None)
 
     def test_train_positions_requires_cta_key(self) -> None:
         # Arrange
@@ -702,14 +699,14 @@ class TestValidateConfigSecrets:
         with pytest.raises(
             ValueError, match="CTA_API_KEY \\(required for train_positions\\)"
         ):
-            validate_config_secrets(config, required_features=["train_positions"])
+            _validate_config_secrets(config, required_features=["train_positions"])
 
     def test_train_positions_ok(self) -> None:
         # Arrange
         config = {"secrets": {"cta_api_key": "key123"}, "features": {}}
 
         # Act & Assert
-        validate_config_secrets(config, required_features=["train_positions"])
+        _validate_config_secrets(config, required_features=["train_positions"])
 
     def test_weather_collection_missing_nws_app_name(
         self, monkeypatch: pytest.MonkeyPatch
@@ -723,7 +720,7 @@ class TestValidateConfigSecrets:
         with pytest.raises(
             ValueError, match="NWS_APP_NAME \\(required for weather_collection\\)"
         ):
-            validate_config_secrets(config, required_features=["weather_collection"])
+            _validate_config_secrets(config, required_features=["weather_collection"])
 
     def test_weather_collection_missing_nws_email(
         self, monkeypatch: pytest.MonkeyPatch
@@ -737,7 +734,7 @@ class TestValidateConfigSecrets:
         with pytest.raises(
             ValueError, match="NWS_EMAIL \\(required for weather_collection\\)"
         ):
-            validate_config_secrets(config, required_features=["weather_collection"])
+            _validate_config_secrets(config, required_features=["weather_collection"])
 
     def test_weather_collection_ok(self) -> None:
         # Arrange
@@ -750,14 +747,14 @@ class TestValidateConfigSecrets:
         }
 
         # Act & Assert
-        validate_config_secrets(config, required_features=["weather_collection"])
+        _validate_config_secrets(config, required_features=["weather_collection"])
 
     def test_weather_collection_fallback_ok(self) -> None:
         # Arrange
         config = {"secrets": {"openweathermap_api_key": "owm_key"}, "features": {}}
 
         # Act & Assert
-        validate_config_secrets(
+        _validate_config_secrets(
             config, required_features=["weather_collection_fallback"]
         )
 
@@ -770,7 +767,7 @@ class TestValidateConfigSecrets:
 
         # Act & Assert
         with pytest.raises(ValueError, match="CHIDATA_APP_TOK"):
-            validate_config_secrets(config, required_features=["station_data"])
+            _validate_config_secrets(config, required_features=["station_data"])
 
     def test_station_data_ok(self) -> None:
         # Arrange
@@ -780,7 +777,7 @@ class TestValidateConfigSecrets:
         }
 
         # Act & Assert
-        validate_config_secrets(config, required_features=["station_data"])
+        _validate_config_secrets(config, required_features=["station_data"])
 
     def test_required_features_from_enabled(
         self, monkeypatch: pytest.MonkeyPatch
@@ -799,7 +796,7 @@ class TestValidateConfigSecrets:
 
         # Act & Assert
         with pytest.raises(ValueError, match="NWS_APP_NAME"):
-            validate_config_secrets(config, required_features=None)
+            _validate_config_secrets(config, required_features=None)
 
     def test_required_features_from_enabled_train_positions(self) -> None:
         # Arrange: required_features=None, train_positions enabled, cta_api_key missing
@@ -814,7 +811,7 @@ class TestValidateConfigSecrets:
 
         # Act & Assert
         with pytest.raises(ValueError, match="CTA_API_KEY"):
-            validate_config_secrets(config, required_features=None)
+            _validate_config_secrets(config, required_features=None)
 
     def test_required_features_from_enabled_station_data(self) -> None:
         # Arrange: required_features=None, station_data enabled, chidata missing
@@ -829,7 +826,7 @@ class TestValidateConfigSecrets:
 
         # Act & Assert
         with pytest.raises(ValueError, match="CHIDATA_APP_TOK"):
-            validate_config_secrets(config, required_features=None)
+            _validate_config_secrets(config, required_features=None)
 
     def test_multiple_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Arrange
@@ -846,7 +843,7 @@ class TestValidateConfigSecrets:
 
         # Act & Assert
         with pytest.raises(ValueError, match="CTA_API_KEY") as exc_info:
-            validate_config_secrets(
+            _validate_config_secrets(
                 config,
                 required_features=[
                     "train_positions",
@@ -866,11 +863,11 @@ class TestValidateConfigSecrets:
         config: dict[str, dict[str, str | int | float | bool]] = {}
 
         # Act & Assert: required_features=None → derived from features.get(...)=False → []
-        validate_config_secrets(config, required_features=None)
+        _validate_config_secrets(config, required_features=None)
 
 
 class TestValidateConfigFileSettings:
-    """Test cases for validate_config_file_settings and file-setting validators."""
+    """Test cases for _validate_config_file_settings and file-setting validators."""
 
     def test_valid_full_config_passes_all_features(
         self, valid_full_config: dict[str, dict[str, Any]]
@@ -879,7 +876,7 @@ class TestValidateConfigFileSettings:
         config = valid_full_config
 
         # Act & Assert
-        validate_config_file_settings(
+        _validate_config_file_settings(
             config,
             required_features=[
                 "station_data",
@@ -896,14 +893,14 @@ class TestValidateConfigFileSettings:
         config = valid_full_config
 
         # Act & Assert
-        validate_config_file_settings(config, required_features=None)
+        _validate_config_file_settings(config, required_features=None)
 
     def test_empty_required_features_skips_validation(self) -> None:
         # Arrange: minimal config that would fail station_data/train_positions/etc.
         config = {"features": {}}
 
         # Act & Assert
-        validate_config_file_settings(config, required_features=[])
+        _validate_config_file_settings(config, required_features=[])
 
     def test_station_data_missing_cache_section(self) -> None:
         # Arrange
@@ -912,7 +909,7 @@ class TestValidateConfigFileSettings:
 
         # Act & Assert
         with pytest.raises(ValueError, match="stations_ttl"):
-            validate_config_file_settings(config, required_features=["station_data"])
+            _validate_config_file_settings(config, required_features=["station_data"])
 
     def test_station_data_cache_not_dict(self) -> None:
         # Arrange
@@ -921,7 +918,7 @@ class TestValidateConfigFileSettings:
 
         # Act & Assert
         with pytest.raises(TypeError, match=r"cache.*must be a dictionary"):
-            validate_config_file_settings(config, required_features=["station_data"])
+            _validate_config_file_settings(config, required_features=["station_data"])
 
     def test_station_data_missing_stations_ttl(self) -> None:
         # Arrange
@@ -930,7 +927,7 @@ class TestValidateConfigFileSettings:
 
         # Act & Assert
         with pytest.raises(ValueError, match="stations_ttl"):
-            validate_config_file_settings(config, required_features=["station_data"])
+            _validate_config_file_settings(config, required_features=["station_data"])
 
     def test_station_data_stations_ttl_not_int(self) -> None:
         # Arrange
@@ -939,7 +936,7 @@ class TestValidateConfigFileSettings:
 
         # Act & Assert
         with pytest.raises(ValueError, match=r"stations_ttl.*integer"):
-            validate_config_file_settings(config, required_features=["station_data"])
+            _validate_config_file_settings(config, required_features=["station_data"])
 
     def test_station_data_missing_track_geometry_ttl(self) -> None:
         # Arrange
@@ -948,16 +945,7 @@ class TestValidateConfigFileSettings:
 
         # Act & Assert
         with pytest.raises(ValueError, match=r"track_geometry_ttl"):
-            validate_config_file_settings(config, required_features=["station_data"])
-
-    def test_station_data_missing_weather_mapping_ttl(self) -> None:
-        # Arrange
-        config = _make_valid_full_config()
-        del config["cache"]["weather_mapping_ttl"]
-
-        # Act & Assert
-        with pytest.raises(ValueError, match=r"weather_mapping_ttl"):
-            validate_config_file_settings(config, required_features=["station_data"])
+            _validate_config_file_settings(config, required_features=["station_data"])
 
     def test_train_positions_missing_collection(self) -> None:
         # Arrange
@@ -966,7 +954,9 @@ class TestValidateConfigFileSettings:
 
         # Act & Assert
         with pytest.raises(ValueError, match=r"train_interval_seconds"):
-            validate_config_file_settings(config, required_features=["train_positions"])
+            _validate_config_file_settings(
+                config, required_features=["train_positions"]
+            )
 
     def test_train_positions_collection_not_dict(self) -> None:
         # Arrange
@@ -975,7 +965,9 @@ class TestValidateConfigFileSettings:
 
         # Act & Assert
         with pytest.raises(TypeError, match=r"collection.*must be a dictionary"):
-            validate_config_file_settings(config, required_features=["train_positions"])
+            _validate_config_file_settings(
+                config, required_features=["train_positions"]
+            )
 
     def test_train_positions_missing_train_interval_seconds(self) -> None:
         # Arrange
@@ -984,7 +976,9 @@ class TestValidateConfigFileSettings:
 
         # Act & Assert
         with pytest.raises(ValueError, match=r"train_interval_seconds"):
-            validate_config_file_settings(config, required_features=["train_positions"])
+            _validate_config_file_settings(
+                config, required_features=["train_positions"]
+            )
 
     def test_train_positions_train_interval_not_int(self) -> None:
         # Arrange
@@ -993,52 +987,67 @@ class TestValidateConfigFileSettings:
 
         # Act & Assert
         with pytest.raises(ValueError, match=r"train_interval_seconds.*integer"):
-            validate_config_file_settings(config, required_features=["train_positions"])
+            _validate_config_file_settings(
+                config, required_features=["train_positions"]
+            )
 
     def test_train_positions_missing_rate_limits(self) -> None:
         # Arrange
         config = _make_valid_full_config()
-        del config["collection"]["rate_limits"]
+        del config["rate_limits"]
 
         # Act & Assert
         with pytest.raises(ValueError, match=r"rate_limits"):
-            validate_config_file_settings(config, required_features=["train_positions"])
+            _validate_config_file_settings(
+                config, required_features=["train_positions"]
+            )
 
     def test_train_positions_rate_limits_not_dict(self) -> None:
         # Arrange
         config = _make_valid_full_config()
-        config["collection"]["rate_limits"] = []
+        config["rate_limits"] = []  # ty:ignore[invalid-assignment]
 
         # Act & Assert
-        with pytest.raises(ValueError, match=r"rate_limits.*dictionary"):
-            validate_config_file_settings(config, required_features=["train_positions"])
+        with pytest.raises(TypeError, match=r"rate_limits.*must be a dictionary"):
+            _validate_config_file_settings(
+                config, required_features=["train_positions"]
+            )
 
     def test_train_positions_missing_cta_in_rate_limits(self) -> None:
         # Arrange
         config = _make_valid_full_config()
-        config["collection"]["rate_limits"] = {"other": {}}
+        config["rate_limits"] = {"other": {}}
 
         # Act & Assert
-        with pytest.raises(ValueError, match=r"rate_limits.cta"):
-            validate_config_file_settings(config, required_features=["train_positions"])
+        with pytest.raises(
+            ValueError,
+            match=r"rate_limits.*must contain 'cta' key",
+        ):
+            _validate_config_file_settings(
+                config, required_features=["train_positions"]
+            )
 
     def test_train_positions_cta_max_per_second_not_float(self) -> None:
         # Arrange
         config = _make_valid_full_config()
-        config["collection"]["rate_limits"]["cta"]["max_per_second"] = "0.1"
+        config["rate_limits"]["cta"]["max_per_second"] = "0.1"  # ty:ignore[invalid-assignment]
 
         # Act & Assert
         with pytest.raises(ValueError, match=r"max_per_second.*float"):
-            validate_config_file_settings(config, required_features=["train_positions"])
+            _validate_config_file_settings(
+                config, required_features=["train_positions"]
+            )
 
     def test_train_positions_cta_max_at_once_not_int(self) -> None:
         # Arrange
         config = _make_valid_full_config()
-        config["collection"]["rate_limits"]["cta"]["max_at_once"] = 3.0
+        config["rate_limits"]["cta"]["max_at_once"] = 3.0  # ty:ignore[invalid-assignment]
 
         # Act & Assert
         with pytest.raises(ValueError, match=r"max_at_once.*integer"):
-            validate_config_file_settings(config, required_features=["train_positions"])
+            _validate_config_file_settings(
+                config, required_features=["train_positions"]
+            )
 
     def test_weather_collection_missing_rate_limits(self) -> None:
         # Arrange
@@ -1047,7 +1056,7 @@ class TestValidateConfigFileSettings:
 
         # Act & Assert
         with pytest.raises(ValueError, match="nws"):
-            validate_config_file_settings(
+            _validate_config_file_settings(
                 config, required_features=["weather_collection"]
             )
 
@@ -1058,7 +1067,7 @@ class TestValidateConfigFileSettings:
 
         # Act & Assert
         with pytest.raises(TypeError, match=r"rate_limits.*must be a dictionary"):
-            validate_config_file_settings(
+            _validate_config_file_settings(
                 config, required_features=["weather_collection"]
             )
 
@@ -1071,7 +1080,7 @@ class TestValidateConfigFileSettings:
 
         # Act & Assert
         with pytest.raises(ValueError, match=r"nws"):
-            validate_config_file_settings(
+            _validate_config_file_settings(
                 config, required_features=["weather_collection"]
             )
 
@@ -1081,7 +1090,7 @@ class TestValidateConfigFileSettings:
         config["rate_limits"]["nws"]["max_per_second"] = 5
 
         # Act & Assert
-        validate_config_file_settings(config, required_features=["weather_collection"])
+        _validate_config_file_settings(config, required_features=["weather_collection"])
 
     def test_weather_collection_nws_max_per_second_missing(self) -> None:
         # Arrange
@@ -1090,7 +1099,7 @@ class TestValidateConfigFileSettings:
 
         # Act & Assert
         with pytest.raises(ValueError, match=r"nws.max_per_second"):
-            validate_config_file_settings(
+            _validate_config_file_settings(
                 config, required_features=["weather_collection"]
             )
 
@@ -1101,7 +1110,7 @@ class TestValidateConfigFileSettings:
 
         # Act & Assert
         with pytest.raises(ValueError, match=r"nws.max_per_second"):
-            validate_config_file_settings(
+            _validate_config_file_settings(
                 config, required_features=["weather_collection"]
             )
 
@@ -1112,7 +1121,7 @@ class TestValidateConfigFileSettings:
 
         # Act & Assert
         with pytest.raises(ValueError, match=r"nws.max_at_once.*integer"):
-            validate_config_file_settings(
+            _validate_config_file_settings(
                 config, required_features=["weather_collection"]
             )
 
@@ -1123,7 +1132,7 @@ class TestValidateConfigFileSettings:
 
         # Act & Assert
         with pytest.raises(TypeError, match=r"rate_limits.*must be a dictionary"):
-            validate_config_file_settings(
+            _validate_config_file_settings(
                 config, required_features=["weather_collection_fallback"]
             )
 
@@ -1134,7 +1143,7 @@ class TestValidateConfigFileSettings:
 
         # Act & Assert
         with pytest.raises(ValueError, match=r"openweathermap"):
-            validate_config_file_settings(
+            _validate_config_file_settings(
                 config, required_features=["weather_collection_fallback"]
             )
 
@@ -1147,7 +1156,7 @@ class TestValidateConfigFileSettings:
 
         # Act & Assert
         with pytest.raises(ValueError, match=r"openweathermap\.max_per_second"):
-            validate_config_file_settings(
+            _validate_config_file_settings(
                 config, required_features=["weather_collection_fallback"]
             )
 
@@ -1160,7 +1169,7 @@ class TestValidateConfigFileSettings:
 
         # Act & Assert
         with pytest.raises(ValueError, match=r"openweathermap\.max_per_second"):
-            validate_config_file_settings(
+            _validate_config_file_settings(
                 config, required_features=["weather_collection_fallback"]
             )
 
@@ -1173,7 +1182,7 @@ class TestValidateConfigFileSettings:
 
         # Act & Assert
         with pytest.raises(ValueError, match=r"openweathermap\.max_at_once"):
-            validate_config_file_settings(
+            _validate_config_file_settings(
                 config, required_features=["weather_collection_fallback"]
             )
 
@@ -1255,8 +1264,124 @@ class TestValidateConfigFull:
             "weather_collection_fallback": True,
         }
 
-        # Act & Assert: validate_config calls validate_config_secrets first
+        # Act & Assert: validate_config calls _validate_config_secrets first
         with pytest.raises(ValueError, match="Missing required credentials"):
+            validate_config(config, required_features=None)
+
+
+class TestAdditionalSectionsValidation:
+    """Tests for validation of logging/diagnostics/alerting sections."""
+
+    def test_logging_section_valid(self) -> None:
+        # Arrange
+        config: dict[str, dict[str, Any]] = {
+            "logging": {
+                "log_level": "INFO",
+                "json_format": True,
+                "console_output": False,
+            },
+            "features": {},
+        }
+
+        # Act & Assert
+        validate_config(config, required_features=None)
+
+    def test_logging_invalid_level_raises(self) -> None:
+        # Arrange
+        config: dict[str, dict[str, Any]] = {
+            "logging": {"log_level": "NOTALEVEL"},
+            "features": {},
+        }
+
+        # Act & Assert
+        with pytest.raises(ValueError, match="log_level.*must be one of"):
+            validate_config(config, required_features=None)
+
+    def test_logging_invalid_bool_fields_raise(self) -> None:
+        # Arrange
+        config: dict[str, dict[str, Any]] = {
+            "logging": {
+                "log_level": "INFO",
+                "json_format": "yes",  # type: ignore[assignment]
+            },
+            "features": {},
+        }
+
+        # Act & Assert
+        with pytest.raises(ValueError, match="json_format.*boolean"):
+            validate_config(config, required_features=None)
+
+    def test_diagnostics_section_valid_structure(self) -> None:
+        # Arrange
+        config: dict[str, dict[str, Any]] = {
+            "diagnostics": {
+                "TrainPositionDaemon": {"enabled": True},
+                "WeatherDaemon": {"enabled": False},
+            },
+            "features": {},
+        }
+
+        # Act & Assert
+        validate_config(config, required_features=None)
+
+    def test_diagnostics_section_not_dict_raises(self) -> None:
+        # Arrange
+        config: dict[str, dict[str, Any]] = {
+            "diagnostics": {},  # type: ignore[assignment]
+            "features": {},
+        }
+        # Force wrong type at runtime
+        config_raw: dict[str, Any] = dict(config)
+        config_raw["diagnostics"] = "not a dict"
+
+        # Act & Assert
+        with pytest.raises(
+            TypeError,
+            match=r"Configuration path 'diagnostics': section 'diagnostics' must be a dictionary",
+        ):
+            validate_config(config_raw, required_features=None)
+
+    def test_alerting_section_valid(self) -> None:
+        # Arrange
+        config: dict[str, dict[str, Any]] = {
+            "alerting": {
+                "enabled": True,
+                "cooldown_hours": 4,
+                "last_alert_state": ".daemon_state/last_alert.json",
+                "email_provider": "mailjet",
+            },
+            "features": {},
+        }
+
+        # Act & Assert
+        validate_config(config, required_features=None)
+
+    def test_alerting_section_not_dict_raises(self) -> None:
+        # Arrange
+        config_raw: dict[str, Any] = {
+            "alerting": "not a dict",
+            "features": {},
+        }
+
+        # Act & Assert
+        with pytest.raises(
+            TypeError,
+            match=r"Configuration path 'alerting': section 'alerting' must be a dictionary",
+        ):
+            validate_config(config_raw, required_features=None)
+
+    def test_alerting_invalid_cooldown_type_raises(self) -> None:
+        # Arrange
+        config: dict[str, dict[str, Any]] = {
+            "alerting": {
+                "enabled": True,
+                "cooldown_hours": "4",  # type: ignore[assignment]
+            },
+            "features": {},
+        }
+
+        # Act & Assert
+        with pytest.raises(ValueError, match="cooldown_hours.*integer"):
             validate_config(config, required_features=None)
 
 
