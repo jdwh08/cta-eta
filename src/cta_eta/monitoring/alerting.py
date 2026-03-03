@@ -20,7 +20,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 MAILJET_SEND_URL = "https://api.mailjet.com/v3.1/send"
-HTTP_OK = 200
 
 
 def load_last_alert_time(last_alert_path: Path) -> float | None:
@@ -153,14 +152,10 @@ def _send_via_mailjet(config: dict[str, Any], subject: str, body: str) -> bool:
                 json=payload,
                 timeout=30.0,
             )
-    except httpx.HTTPError:
-        logger.exception("Mailjet request failed")
-        return False
-    if resp.status_code != HTTP_OK:
-        logger.error(
-            "Mailjet send failed status=%s body=%s",
-            resp.status_code,
-            resp.text[:500] if resp.text else "",
+            resp.raise_for_status()
+    except httpx.HTTPStatusError:
+        logger.exception(
+            "Mailjet send failed: %s", resp.text[:500] if resp.text else ""
         )
         return False
     logger.info("Mailjet alert sent to %s: %s", to_addrs, subject)

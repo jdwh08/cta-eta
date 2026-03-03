@@ -46,11 +46,6 @@ config = load_config()
 retry_config = config.get("retry", {})
 _MAX_RETRY_ATTEMPTS: Final[int] = int(retry_config.get("max_retry_attempts", 10))
 
-# NOTE(jdwh08): Keep discovery retries bounded:
-# ? Discovery is a cold-start/cache-miss path where we
-# ? may fan out across many stations. A few transient failures should not stall the
-# ? whole cycle for minutes.
-_DISCOVERY_ATTEMPTS: Final[int] = min(3, _MAX_RETRY_ATTEMPTS)
 _CURRENT_ATTEMPTS: Final[int] = min(5, _MAX_RETRY_ATTEMPTS)
 
 _RETRY_ON: Final[tuple[type[Exception], ...]] = (
@@ -58,72 +53,6 @@ _RETRY_ON: Final[tuple[type[Exception], ...]] = (
     httpx.RequestError,
 )
 
-
-def _parse_discover_grid_response(data: dict[str, object]) -> str:
-    """Extract grid ID (lat,lon) from Open-Meteo Current Weather response.
-
-    Caller is responsible for catching KeyError, TypeError, ValueError and
-    logging or re-raising with context.
-    """
-    # Extract actual coordinates used by API
-    actual_lat = safe_get_nested(data, "latitude", api_name="Open-Meteo")
-    actual_lon = safe_get_nested(data, "longitude", api_name="Open-Meteo")
-
-    if not isinstance(actual_lat, (int, float)) or not isinstance(
-        actual_lon, (int, float)
-    ):
-        msg = (
-            "Open-Meteo API response 'latitude' or 'longitude' is not numeric. "
-            f"Got types: {type(actual_lat).__name__}, {type(actual_lon).__name__}"
-        )
-        raise APIResponseError(msg)
-    return f"{actual_lat},{actual_lon}"
-
-
-@stamina.retry(
-    on=_RETRY_ON,
-    attempts=_DISCOVERY_ATTEMPTS,
-)
-@log_api_call(logger)
-async def discover_open_meteo_grid(
-    client: httpx.AsyncClient, latitude: float, longitude: float
-) -> str:
-    """Discover Open-Meteo grid identifier from API response.
-
-    Makes minimal API request to Open-Meteo and extracts the actual
-    coordinates used by the API (they round/snap to their grid).
-
-    Args:
-        client: HTTP client for API requests
-        latitude: Coordinate latitude (must be between -90 and 90)
-        longitude: Coordinate longitude (must be between -180 and 180)
-
-    Returns:
-        Open-Meteo grid identifier (e.g., "41.88,-87.63")
-
-    Raises:
-        httpx.HTTPStatusError: If API request fails after retries
-        ValueError: If latitude or longitude is out of valid range
-
-    """
-    validate_lat_lon(latitude, longitude)
-    response = await client.get(
-        OPEN_METEO_URL,
-        params={
-            "latitude": latitude,
-            "longitude": longitude,
-            "current": "temperature_2m",  # Minimal parameter
-            "timezone": "America/Chicago",
-        },
-    )
-    response.raise_for_status()
-    data = response.json()
-
-    try:
-        return _parse_discover_grid_response(data)
-    except (KeyError, TypeError, ValueError):
-        logger.exception("Failed to parse Open-Meteo grid discovery response")
-        raise
 
 
 def _parse_current_weather_response(

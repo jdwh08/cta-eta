@@ -154,7 +154,7 @@ def get_required_credentials(
             if config.get("features", {}).get(feature, False)
         ]
     required_credentials: list[str] = []
-    if "station_data" in required_features:
+    if "station_data" in required_features or "weather_collection" in required_features:
         required_credentials.append("chidata_app_token")
         required_credentials.append("chidata_app_secret")
     if "train_positions" in required_features:
@@ -211,9 +211,13 @@ def validate_config_secrets(
         or "chidata_app_secret" in required_credentials
     ):
         if not secrets.get("chidata_app_token"):
-            missing_credentials.add("CHIDATA_APP_TOK (required for station_data)")
+            missing_credentials.add(
+                "CHIDATA_APP_TOK (required for station_data in weather_collection)"
+            )
         if not secrets.get("chidata_app_secret"):
-            missing_credentials.add("CHIDATA_APP_SECRET (required for station_data)")
+            missing_credentials.add(
+                "CHIDATA_APP_SECRET (required for station_data in weather_collection)"
+            )
 
     if missing_credentials:
         msg = (

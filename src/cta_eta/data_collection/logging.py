@@ -228,7 +228,7 @@ def log_api_call(
                     logger,
                     func_name=func_name,
                     args=args,
-                    kwargs=cast("dict[str, object]", dict(kwargs)),
+                    kwargs=kwargs,
                 )
 
                 try:
@@ -259,7 +259,7 @@ def log_api_call(
                 logger,
                 func_name=func_name,
                 args=args,
-                kwargs=cast("dict[str, object]", dict(kwargs)),
+                kwargs=kwargs,
             )
 
             try:

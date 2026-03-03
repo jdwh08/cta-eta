@@ -1,10 +1,29 @@
 # CTA ETA Deployment Guide
 
-Production deployment for the CTA train position and weather data collection system on Debian/Ubuntu.
+Production deployment for the CTA train position and weather data collection system on Debian/Ubuntu or Oracle Linux 9.
 
 ---
 
-## Prerequisites
+## Oracle Linux 9 (e.g. Oracle Cloud) — cloud-init
+
+Use the provided cloud-init script when launching an OL9 instance so the box is provisioned at first boot.
+
+1. **In the Oracle Cloud Console** (or OCI CLI), when creating the instance, set "Add SSH keys" and "Paste cloud-init script" (or equivalent). Paste the contents of `deploy/cloud-init-ol9.yaml`.
+
+2. **After first boot**, SSH in and fill credentials:
+   ```bash
+   sudo -u cta-eta nano /opt/cta-eta/.env
+   ```
+   Then start the services:
+   ```bash
+   sudo systemctl start cta-train-daemon cta-weather-daemon cta-alerts.timer
+   ```
+
+The script uses **dnf** for packages, installs **uv** to `/usr/local/bin`, and relies on **uv** to fetch Python 3.13 when syncing the project (OL9 default Python is 3.9). The rest (systemd, logrotate, paths) matches the Debian layout below.
+
+---
+
+## Debian/Ubuntu (i.e., local WSL2 development)
 
 - Debian/Ubuntu server (tested on Debian 12+)
 - Python 3.13+
@@ -15,10 +34,6 @@ Production deployment for the CTA train position and weather data collection sys
   sudo mkdir -p /opt/cta-eta
   sudo chown cta-eta:cta-eta /opt/cta-eta
   ```
-
----
-
-## Installation
 
 1. **Clone the repository** into the service home directory:
    ```bash

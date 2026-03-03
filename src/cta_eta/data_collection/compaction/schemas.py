@@ -22,7 +22,7 @@ import pyarrow as pa
 TRAIN_POSITION_SCHEMA: pa.Schema = pa.schema(
     [
         # Client-side poll timestamp (datetime from daemon)
-        pa.field("poll_timestamp", pa.timestamp("us", tz="UTC")),
+        pa.field("poll_timestamp", pa.timestamp("us", tz="America/Chicago")),
         # API-provided timestamp string (ISO format from CTA)
         pa.field("api_timestamp", pa.string()),
         # Train line name (red, blue, brn, g, org, p, pink, y)

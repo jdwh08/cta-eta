@@ -88,8 +88,11 @@ def _build_email_config(alerting_cfg: dict[str, object]) -> dict[str, object]:
     """
     load_dotenv()
     provider = str(alerting_cfg.get("email_provider", "mailjet")).strip().lower()
-    from_addr = str(alerting_cfg.get("smtp_from", ""))
-    to_addrs = list(alerting_cfg.get("smtp_to", []))
+    from_addr = str(os.getenv("SMTP_FROM"))
+    to_addrs: list[str] = (
+        os.getenv("SMTP_TO", "").split(",") if os.getenv("SMTP_TO") else []
+    )
+    to_addrs = [addr.strip() for addr in to_addrs]
 
     if provider == "mailjet":
         return {

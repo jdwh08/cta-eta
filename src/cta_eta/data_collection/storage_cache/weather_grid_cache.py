@@ -53,12 +53,12 @@ class WeatherGridCache:
 
     """
 
-    def __init__(self, cache_file: Path, ttl: int) -> None:
+    def __init__(self, cache_file: Path, ttl: int | None) -> None:
         """Initialize grid cache with file path and TTL.
 
         Args:
             cache_file: Path to JSON cache file for persistence
-            ttl: Per-entry time-to-live in seconds before re-discovery
+            ttl: Per-entry time-to-live in seconds before re-discovery, or None for permanent storage
 
         """
         self._ttl = ttl
@@ -99,12 +99,12 @@ class NWSGridCache(WeatherGridCache):
 
     """
 
-    def __init__(self, cache_file: Path, ttl: int) -> None:
+    def __init__(self, cache_file: Path, ttl: int | None) -> None:
         """Initialize NWS grid cache.
 
         Args:
             cache_file: Path to JSON cache file (nws_grid_mapping.json)
-            ttl: Time-to-live in seconds before refresh needed
+            ttl: Time-to-live in seconds before refresh needed, or None for permanent storage
 
         """
         super().__init__(cache_file, ttl)
@@ -215,9 +215,8 @@ def get_nws_grid_cache(config: dict) -> NWSGridCache:
         msg = "config['cache']['directory'] is required but missing or empty"
         raise ValueError(msg)
 
-    ttl = cache_config.get("weather_mapping_ttl", 604800)  # Default: 7 days
     cache_file = Path(str(cache_dir)) / "nws_grid_mapping.json"
-    return NWSGridCache(cache_file, int(ttl))
+    return NWSGridCache(cache_file, ttl=None)
 
 
 def get_open_meteo_grid_cache(config: dict) -> OpenMeteoGridCache:
@@ -239,9 +238,8 @@ def get_open_meteo_grid_cache(config: dict) -> OpenMeteoGridCache:
         msg = "config['cache']['directory'] is required but missing or empty"
         raise ValueError(msg)
 
-    ttl = cache_config.get("weather_mapping_ttl", 604800)  # Default: 7 days
     cache_file = Path(str(cache_dir)) / "open_meteo_grid_mapping.json"
-    return OpenMeteoGridCache(cache_file, int(ttl))
+    return OpenMeteoGridCache(cache_file, ttl=None)
 
 
 def get_openweathermap_grid_cache(config: dict) -> OpenWeatherMapGridCache:
@@ -263,6 +261,5 @@ def get_openweathermap_grid_cache(config: dict) -> OpenWeatherMapGridCache:
         msg = "config['cache']['directory'] is required but missing or empty"
         raise ValueError(msg)
 
-    ttl = cache_config.get("weather_mapping_ttl", 604800)  # Default: 7 days
     cache_file = Path(str(cache_dir)) / "openweathermap_grid_mapping.json"
-    return OpenWeatherMapGridCache(cache_file, int(ttl))
+    return OpenWeatherMapGridCache(cache_file, ttl=None)
