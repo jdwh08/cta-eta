@@ -102,15 +102,10 @@ class TrainPositionDaemon(AsyncBaseDaemon):
         """
         if config is None:
             config = load_config()
+        collection_config = config.get("collection", {})
 
         # Initialize storage backend for IPC journal writes
         self.storage = create_journal_writer(config)
-
-        # Extract train polling interval from config
-        collection_config = config.get("collection", {})
-        self.train_poll_interval = int(
-            collection_config.get("train_poll_interval_seconds", 15)
-        )
 
         # Load CTA rate limits from config
         cta_rate_limit_config = get_config_section("rate_limits.cta")
@@ -140,9 +135,17 @@ class TrainPositionDaemon(AsyncBaseDaemon):
         )
         self.storage_backoff_until = 0.0
         self.gap_reason_override = None
+        self.train_poll_interval = 0
 
         # Set up remaining attributes from base class
         super().__init__(config, logger)
+
+        # Special case: Override prior state polling interval if present in config
+        self.train_poll_interval = (
+            int(collection_config.get("train_poll_interval_seconds", 15))
+            if self.train_poll_interval == 0
+            else self.train_poll_interval
+        )
 
         # Check for restart gaps after state has been applied
         self._check_restart_gap()

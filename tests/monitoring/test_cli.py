@@ -900,9 +900,19 @@ class TestCmdCompaction:
         assert "1 repaired" in captured.out
 
     def test_compaction_journals_skipped_display(
-        self, compaction_dir: Path, capsys: pytest.CaptureFixture[str]
+        self,
+        compaction_dir: Path,
+        capsys: pytest.CaptureFixture[str],
+        mocker: MockerFixture,
     ) -> None:
         """Journals column shows (N skipped) when journals_skipped > 0."""
+        # Patch datetime.now to return a fixed date
+        mocker_dt = mocker.patch(
+            "cta_eta.monitoring.cli.datetime",
+        )
+        mocker_dt.now.return_value = datetime(2026, 2, 21, tzinfo=UTC)
+        mocker_dt.fromisoformat = datetime.fromisoformat
+
         (compaction_dir / "compaction-2026-02-23.json").write_text(
             json.dumps(
                 {

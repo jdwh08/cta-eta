@@ -148,13 +148,6 @@ class WeatherDaemon(AsyncBaseDaemon):
         # Initialize storage backend for IPC journal writes
         self.storage = create_journal_writer(config)
 
-        # Extract weather collection interval from config (convert minutes to seconds)
-        collection_config = config.get("collection", {})
-        weather_poll_interval_minutes = int(
-            collection_config.get("weather_poll_interval_minutes", 30)
-        )
-        self.weather_poll_interval = weather_poll_interval_minutes * 60
-
         # Load rate limits from config with fallback defaults
 
         # NWS API: https://api.weather.gov/
@@ -188,6 +181,17 @@ class WeatherDaemon(AsyncBaseDaemon):
 
         # Set up remaining attributes from base class
         super().__init__(config, logger)
+
+        # Special case: Override prior state polling interval if present in config
+        collection_config = config.get("collection", {})
+        weather_poll_interval_minutes = int(
+            collection_config.get("weather_interval_minutes", 30)
+        )
+        self.weather_poll_interval = int(
+            collection_config.get(
+                "weather_poll_interval_minutes", weather_poll_interval_minutes * 60
+            )
+        )
 
         # Check for restart gaps after state has been applied
         self._check_restart_gap()

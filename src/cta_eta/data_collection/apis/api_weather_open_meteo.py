@@ -54,7 +54,6 @@ _RETRY_ON: Final[tuple[type[Exception], ...]] = (
 )
 
 
-
 def _parse_current_weather_response(
     data: dict[str, object],
 ) -> dict[str, str | float | None]:

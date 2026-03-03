@@ -11,9 +11,9 @@ from typing import TYPE_CHECKING, override
 from unittest.mock import MagicMock
 
 import pytest
-from cta_eta.data_collection.orchestration.daemon import AsyncBaseDaemon
 
 from cta_eta.data_collection.exceptions import DaemonNotStartedError
+from cta_eta.data_collection.orchestration.daemon import AsyncBaseDaemon
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -34,12 +34,19 @@ def mock_logger() -> MagicMock:
 
 
 @pytest.fixture
-def sample_config() -> dict[str, dict[str, str | int | float | bool]]:
+def sample_config() -> dict[
+    str, dict[str, str | int | float | bool | dict[str, str | int | float]]
+]:
     """Create sample configuration for testing."""
     return {
         "collection": {"train_interval_seconds": 15},
         "retry": {"max_retry_attempts": 10},
-        "diagnostics": {"summary_interval_seconds": 10},
+        "diagnostics": {
+            "ConcreteAsyncDaemon": {
+                "summary_interval_seconds": 10,
+                "enabled": True,
+            }
+        },
     }
 
 
@@ -274,7 +281,17 @@ class TestAsyncBaseDaemonRunMain:
     ) -> None:
         """If stop() is called before start, shutdown event is set on entry."""
         # Arrange
-        daemon = ConcreteAsyncDaemon(sample_config, mock_logger)
+        del sample_config["diagnostics"]["ConcreteAsyncDaemon"]
+        sample_config_with_diagnostics = {
+            **sample_config,
+            "diagnostics": {
+                "ConcreteAsyncDaemon": {
+                    "enabled": True,
+                    "summary_interval_seconds": 10,
+                }
+            },
+        }
+        daemon = ConcreteAsyncDaemon(sample_config_with_diagnostics, mock_logger)
         daemon.stop()
         mocker.patch.object(daemon, "_register_signal_handlers", autospec=True)
 
@@ -596,11 +613,14 @@ class TestAsyncBaseDaemonDiagnostics:
     ) -> None:
         """Diagnostics task is created when diagnostics are enabled."""
         # Arrange
+        del sample_config["diagnostics"]["ConcreteAsyncDaemon"]
         config_with_diagnostics = {
             **sample_config,
             "diagnostics": {
-                "enabled": True,
-                "summary_interval_seconds": 5.0,
+                "ConcreteAsyncDaemon": {
+                    "enabled": True,
+                    "summary_interval_seconds": 5.0,
+                }
             },
         }
         daemon = ConcreteAsyncDaemon(config_with_diagnostics, mock_logger)
@@ -622,11 +642,14 @@ class TestAsyncBaseDaemonDiagnostics:
     ) -> None:
         """Diagnostics task is not created when diagnostics are disabled."""
         # Arrange
+        del sample_config["diagnostics"]["ConcreteAsyncDaemon"]
         config_without_diagnostics = {
             **sample_config,
             "diagnostics": {
-                "enabled": False,
-                "summary_interval_seconds": 5.0,
+                "ConcreteAsyncDaemon": {
+                    "enabled": False,
+                    "summary_interval_seconds": 5.0,
+                }
             },
         }
         daemon = ConcreteAsyncDaemon(config_without_diagnostics, mock_logger)
@@ -648,11 +671,14 @@ class TestAsyncBaseDaemonDiagnostics:
     ) -> None:
         """Diagnostics loop calls maybe_log_summary periodically."""
         # Arrange
+        del sample_config["diagnostics"]["ConcreteAsyncDaemon"]
         config_with_diagnostics = {
             **sample_config,
             "diagnostics": {
-                "enabled": True,
-                "summary_interval_seconds": 0.1,  # Fast interval for testing
+                "ConcreteAsyncDaemon": {
+                    "enabled": True,
+                    "summary_interval_seconds": 0.1,
+                }
             },
         }
         daemon = ConcreteAsyncDaemon(config_with_diagnostics, mock_logger)
@@ -701,11 +727,14 @@ class TestAsyncBaseDaemonDiagnostics:
     ) -> None:
         """_save_diagnostics_snapshot writes diagnostics snapshot to file."""
         # Arrange
+        del sample_config["diagnostics"]["ConcreteAsyncDaemon"]
         config_with_diagnostics = {
             **sample_config,
             "diagnostics": {
-                "enabled": True,
-                "summary_interval_seconds": 5.0,
+                "ConcreteAsyncDaemon": {
+                    "enabled": True,
+                    "summary_interval_seconds": 5.0,
+                }
             },
         }
         daemon = ConcreteAsyncDaemon(config_with_diagnostics, mock_logger)
@@ -730,11 +759,14 @@ class TestAsyncBaseDaemonDiagnostics:
     ) -> None:
         """_save_diagnostics_snapshot logs exceptions and does not raise."""
         # Arrange
+        del sample_config["diagnostics"]["ConcreteAsyncDaemon"]
         config_with_diagnostics = {
             **sample_config,
             "diagnostics": {
-                "enabled": True,
-                "summary_interval_seconds": 5.0,
+                "ConcreteAsyncDaemon": {
+                    "enabled": True,
+                    "summary_interval_seconds": 5.0,
+                }
             },
         }
         daemon = ConcreteAsyncDaemon(config_with_diagnostics, mock_logger)
@@ -762,11 +794,14 @@ class TestAsyncBaseDaemonDiagnostics:
     ) -> None:
         """stop() calls diagnostics summary and snapshot when diagnostics enabled."""
         # Arrange
+        del sample_config["diagnostics"]["ConcreteAsyncDaemon"]
         config_with_diagnostics = {
             **sample_config,
             "diagnostics": {
-                "enabled": True,
-                "summary_interval_seconds": 5.0,
+                "ConcreteAsyncDaemon": {
+                    "enabled": True,
+                    "summary_interval_seconds": 5.0,
+                }
             },
         }
         daemon = ConcreteAsyncDaemon(config_with_diagnostics, mock_logger)
@@ -795,11 +830,14 @@ class TestAsyncBaseDaemonDiagnostics:
     ) -> None:
         """stop() skips diagnostics when diagnostics are disabled."""
         # Arrange
+        del sample_config["diagnostics"]["ConcreteAsyncDaemon"]
         config_without_diagnostics = {
             **sample_config,
             "diagnostics": {
-                "enabled": False,
-                "summary_interval_seconds": 5.0,
+                "ConcreteAsyncDaemon": {
+                    "enabled": False,
+                    "summary_interval_seconds": 5.0,
+                }
             },
         }
         daemon = ConcreteAsyncDaemon(config_without_diagnostics, mock_logger)
@@ -975,13 +1013,14 @@ class TestAsyncBaseDaemonRunMainEdgeCases:
         daemon = ConcreteAsyncDaemon(sample_config, mock_logger)
         mocker.patch.object(daemon, "_register_signal_handlers", autospec=True)
 
+        never_ending_event = asyncio.Event()
+        never_ending_event.set()
+
         async def long_running_run() -> None:
             """Simulate a long-running run that would block shutdown."""
             daemon.run_called = True
-            while daemon.running:
-                await asyncio.sleep(0.1)
+            await never_ending_event.wait()
 
-        original_run = daemon.run
         daemon.run = long_running_run
 
         # Act
@@ -998,6 +1037,8 @@ class TestAsyncBaseDaemonRunMainEdgeCases:
         assert daemon.running is False
         assert daemon.run_called is True
 
+        never_ending_event.clear()
+
     @pytest.mark.usefixtures("cleanup_state_files")
     @pytest.mark.asyncio
     async def test_run_main_cancels_diagnostics_task_on_shutdown(
@@ -1011,8 +1052,10 @@ class TestAsyncBaseDaemonRunMainEdgeCases:
         config_with_diagnostics = {
             **sample_config,
             "diagnostics": {
-                "enabled": True,
-                "summary_interval_seconds": 5.0,
+                "ConcreteAsyncDaemon": {
+                    "enabled": True,
+                    "summary_interval_seconds": 5.0,
+                }
             },
         }
         daemon = ConcreteAsyncDaemon(config_with_diagnostics, mock_logger)

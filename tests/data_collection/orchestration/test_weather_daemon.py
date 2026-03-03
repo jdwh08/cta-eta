@@ -36,11 +36,21 @@ def sample_config() -> dict[
     """Minimal config for WeatherDaemon initialization (deps are mocked)."""
     return {
         "collection": {"weather_interval_minutes": 15},
-        "diagnostics": {"summary_interval_seconds": 10},
+        "diagnostics": {
+            "WeatherDaemon": {
+                "summary_interval_seconds": 10,
+                "enabled": False,
+            },
+        },
         "rate_limits": {
             "nws": {"max_per_second": 10, "max_at_once": 1},
             "open_meteo": {"max_per_second": 10, "max_at_once": 1},
             "openweathermap": {"max_per_second": 10, "max_at_once": 1},
+        },
+        "cache": {
+            "stations_ttl": 604800,
+            "track_geometry_ttl": 2592000,
+            "directory": "data/cache",
         },
         "storage": {
             "immediate": {
@@ -55,6 +65,10 @@ def sample_config() -> dict[
                 "archive_path": "data/archive",
                 "journal_retention_days": 7,
             },
+        },
+        "secrets": {
+            "chidata_app_token": "chidata_app_token",
+            "chidata_app_secret": "chidata_app_secret",
         },
     }
 
@@ -141,7 +155,7 @@ class TestWeatherDaemonInit:
         assert daemon.nws_grid_cache is nws_cache
         assert daemon.om_grid_cache is om_cache
         assert daemon.storage is storage
-        assert daemon.weather_interval == 15 * 60
+        assert daemon.weather_poll_interval == 15 * 60
         assert daemon.last_collection_time == 0.0
         assert daemon.records_stored_last_cycle == 0
 
@@ -661,7 +675,6 @@ class TestWeatherDaemonRunLoop:
         assert cycle_count == 2
 
 
-
 class TestWeatherDaemonErrorHandling:
     """Tests for improved error handling."""
 
@@ -782,9 +795,7 @@ class TestWeatherDaemonErrorHandling:
         )
 
         # Act
-        result = asyncio.run(
-            daemon._fetch_open_meteo_by_grid(mock_client, [mapping])
-        )
+        result = asyncio.run(daemon._fetch_open_meteo_by_grid(mock_client, [mapping]))
 
         # Assert
         assert result == {}

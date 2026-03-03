@@ -26,7 +26,6 @@ def open_meteo_client(mocker: MockerFixture) -> AsyncMock:
     return mocker.AsyncMock(spec=httpx.AsyncClient)
 
 
-
 async def test_get_open_meteo_current_defaults_missing_fields_and_converts_visibility(
     open_meteo_client: AsyncMock,
     httpx_json_response: Callable[[dict, int, str], httpx.Response],
@@ -122,7 +121,6 @@ async def test_get_open_meteo_current_rejects_grid_id_with_too_many_commas(
         )
 
 
-
 async def test_get_open_meteo_current_propagates_http_errors_without_retry_delay(
     open_meteo_client: AsyncMock,
     httpx_json_response: Callable[[dict, int, str], httpx.Response],
@@ -141,7 +139,6 @@ async def test_get_open_meteo_current_propagates_http_errors_without_retry_delay
     # Act / Assert
     with pytest.raises(httpx.HTTPStatusError):
         await fn_no_retry(open_meteo_client, "41.88,-87.63")
-
 
 
 async def test_get_open_meteo_current_parse_error_current_not_dict(

@@ -452,3 +452,9 @@ class AsyncBaseDaemon(ABC):
                 await asyncio.wait_for(shutdown.wait(), timeout=interval)
             self.diagnostics.maybe_log_summary()
             self._write_heartbeat()
+
+            # Break out of any potential infinite loop
+            # This can happen if we have diagnostics
+            # AND accidentally call stop() before running
+            # which enables shutdown without the chance to
+            await asyncio.sleep(0)
