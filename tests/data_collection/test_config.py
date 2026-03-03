@@ -739,11 +739,15 @@ class TestValidateConfigSecrets:
         ):
             validate_config_secrets(config, required_features=["weather_collection"])
 
-    def test_weather_collection_ok(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_weather_collection_ok(self) -> None:
         # Arrange
-        monkeypatch.setenv("NWS_APP_NAME", "app")
-        monkeypatch.setenv("NWS_EMAIL", "e@x.com")
-        config = {"secrets": {}, "features": {}}
+        config = {
+            "secrets": {
+                "chidata_app_token": "chidata_app_token",
+                "chidata_app_secret": "chidata_app_secret",
+            },
+            "features": {},
+        }
 
         # Act & Assert
         validate_config_secrets(config, required_features=["weather_collection"])

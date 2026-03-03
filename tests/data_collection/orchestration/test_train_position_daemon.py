@@ -42,7 +42,12 @@ def sample_config() -> dict[
     """Minimal config for TrainPositionDaemon (deps mocked)."""
     return {
         "collection": {"train_poll_interval_seconds": 15},
-        "diagnostics": {"summary_interval_seconds": 10, "enabled": False},
+        "diagnostics": {
+            "TrainPositionDaemon": {
+                "summary_interval_seconds": 10,
+                "enabled": False,
+            },
+        },
         "rate_limits": {"cta": {"max_per_second": 0.1, "max_at_once": 3}},
     }
 
@@ -132,7 +137,12 @@ class TestTrainPositionDaemonInit:
         # Arrange
         config = {
             "collection": {},
-            "diagnostics": {"summary_interval_seconds": 10, "enabled": False},
+            "diagnostics": {
+                "TrainPositionDaemon": {
+                    "summary_interval_seconds": 10,
+                    "enabled": False,
+                },
+            },
             "rate_limits": {"cta": {"max_per_second": 0.1, "max_at_once": 3}},
         }
         mocker.patch(
@@ -162,7 +172,12 @@ class TestTrainPositionDaemonInit:
         # Arrange
         config = {
             "collection": {"train_poll_interval_seconds": 30},
-            "diagnostics": {"summary_interval_seconds": 10, "enabled": False},
+            "diagnostics": {
+                "TrainPositionDaemon": {
+                    "summary_interval_seconds": 10,
+                    "enabled": False,
+                },
+            },
             "rate_limits": {"cta": {"max_per_second": 0.1, "max_at_once": 3}},
         }
         mocker.patch(
@@ -1654,7 +1669,12 @@ class TestTrainPositionDaemonProbeConfig:
         # Arrange
         config = {
             "collection": {"train_poll_interval_seconds": 15},
-            "diagnostics": {"summary_interval_seconds": 10, "enabled": False},
+            "diagnostics": {
+                "TrainPositionDaemon": {
+                    "summary_interval_seconds": 10,
+                    "enabled": False,
+                },
+            },
             "rate_limits": {"cta": {"max_per_second": 0.1, "max_at_once": 3}},
         }
         mocker.patch(
@@ -1689,7 +1709,12 @@ class TestTrainPositionDaemonProbeConfig:
                 "probe_102_attempts": 3,
                 "probe_102_intervals": [100, 200, 300],
             },
-            "diagnostics": {"summary_interval_seconds": 10, "enabled": False},
+            "diagnostics": {
+                "TrainPositionDaemon": {
+                    "summary_interval_seconds": 10,
+                    "enabled": False,
+                },
+            },
             "rate_limits": {"cta": {"max_per_second": 0.1, "max_at_once": 3}},
         }
         mocker.patch(
@@ -1723,7 +1748,12 @@ class TestTrainPositionDaemonProbeConfig:
                 "train_poll_interval_seconds": 15,
                 "probe_102_intervals": "not a list",
             },
-            "diagnostics": {"summary_interval_seconds": 10, "enabled": False},
+            "diagnostics": {
+                "TrainPositionDaemon": {
+                    "summary_interval_seconds": 10,
+                    "enabled": False,
+                },
+            },
             "rate_limits": {"cta": {"max_per_second": 0.1, "max_at_once": 3}},
         }
         mocker.patch(
