@@ -54,7 +54,7 @@ def safe_get_nested(
             )
             raise APIResponseError(msg)
 
-        current = current[key]
+        current = current.get(key)
 
     return current
 

@@ -32,6 +32,27 @@ cd /opt/cta-eta
 uv sync
 ```
 
+To update from github, run:
+```bash
+cd /opt/cta-eta
+git pull
+uv sync
+sudo systemctl restart cta-train-daemon cta-weather-daemon cta-alerts.timer cta-compaction.timer
+```
+
+### Monitoring
+To monitor the services, run:
+```bash
+sudo -iu cta-eta
+cd /opt/cta-eta
+cta-monitor status
+cta-monitor errors
+cta-monitor gaps
+cta-monitor metrics
+cta-monitor compaction
+```
+or view the .daemon_state files if you want to see the raw data.
+
 ---
 
 ## Debian/Ubuntu (i.e., local WSL2 development)
