@@ -34,12 +34,10 @@ except ImportError:
 
 
 @pytest.fixture
-def daemon_state_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def daemon_state_dir(tmp_path: Path, mocker: MockerFixture) -> Path:
     """Create temporary daemon state directory and patch module constant."""
-    state_dir = tmp_path / ".daemon_state"
-    state_dir.mkdir(exist_ok=True)
-    monkeypatch.setattr(cli, "_DAEMON_STATE_DIR", state_dir)
-    return state_dir
+    mocker.patch("cta_eta.monitoring.cli._daemon_state_dir", return_value=tmp_path)
+    return tmp_path
 
 
 @pytest.fixture
@@ -107,31 +105,31 @@ def error_events(daemon_state_dir: Path) -> None:
 
 
 @pytest.fixture
-def data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def data_dir(tmp_path: Path, mocker: MockerFixture) -> Path:
     """Temporary data directory; patches cli._DEFAULT_DATA_DIR."""
     data = tmp_path / "data"
-    data.mkdir(exist_ok=True)
-    monkeypatch.setattr(cli, "_DEFAULT_DATA_DIR", data)
+    data.mkdir(parents=True, exist_ok=True)
+    mocker.patch("cta_eta.monitoring.cli._data_dir", return_value=data)
     return data
 
 
 @pytest.fixture
-def compaction_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def compaction_dir(tmp_path: Path, mocker: MockerFixture) -> Path:
     """Temporary compaction directory; patches cli._DEFAULT_COMPACTION_DIR."""
-    comp = tmp_path / "compaction"
-    comp.mkdir(exist_ok=True)
-    monkeypatch.setattr(cli, "_DEFAULT_COMPACTION_DIR", comp)
+    comp = tmp_path / "data" / "compaction"
+    comp.mkdir(parents=True, exist_ok=True)
+    mocker.patch("cta_eta.monitoring.cli._compaction_dir", return_value=comp)
     return comp
 
 
 class TestDiscoverDaemons:
     """Tests for _discover_daemons function."""
 
-    def test_no_state_dir(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_no_state_dir(self, mocker: MockerFixture) -> None:
         """When state directory does not exist, returns empty list."""
-        monkeypatch.setattr(cli, "_DAEMON_STATE_DIR", tmp_path / ".daemon_state")
+        mocker.patch(
+            "cta_eta.monitoring.cli._daemon_state_dir", return_value=Path.cwd()
+        )
         result = cli._discover_daemons()
         assert result == []
 
@@ -935,9 +933,19 @@ class TestCmdCompaction:
         assert "50 (3 skipped)" in captured.out
 
     def test_compaction_json_output_and_exit_on_failure(
-        self, compaction_dir: Path, capsys: pytest.CaptureFixture[str]
+        self,
+        compaction_dir: Path,
+        capsys: pytest.CaptureFixture[str],
+        mocker: MockerFixture,
     ) -> None:
         """With --json, outputs JSON array; exit 1 if any run has status failed."""
+        # Patch datetime.now to return a fixed date
+        mocker_dt = mocker.patch(
+            "cta_eta.monitoring.cli.datetime",
+        )
+        mocker_dt.now.return_value = datetime(2026, 2, 24, tzinfo=UTC)
+        mocker_dt.fromisoformat = datetime.fromisoformat
+
         (compaction_dir / "compaction-2026-02-24.json").write_text(
             json.dumps(
                 {
@@ -988,8 +996,18 @@ class TestCmdCompaction:
         assert out == []
 
     def test_compaction_invalid_sidecar_skipped(
-        self, compaction_dir: Path, capsys: pytest.CaptureFixture[str]
+        self,
+        compaction_dir: Path,
+        capsys: pytest.CaptureFixture[str],
+        mocker: MockerFixture,
     ) -> None:
+        # Patch datetime.now to return a fixed date
+        mocker_dt = mocker.patch(
+            "cta_eta.monitoring.cli.datetime",
+        )
+        mocker_dt.now.return_value = datetime(2026, 2, 25, tzinfo=UTC)
+        mocker_dt.fromisoformat = datetime.fromisoformat
+
         """Sidecar that fails to parse or has invalid date is skipped."""
         (compaction_dir / "compaction-2026-02-25.json").write_text(
             json.dumps(
@@ -1048,8 +1066,17 @@ class TestMain:
         """Main compaction dispatches to cmd_compaction."""
         cli.main(["compaction"])
 
-    def test_compaction_json_exit_on_failure(self, compaction_dir: Path) -> None:
+    def test_compaction_json_exit_on_failure(
+        self, compaction_dir: Path, mocker: MockerFixture
+    ) -> None:
         """Main compaction --json exits 1 when any run has status failed."""
+        # Patch datetime.now to return a fixed date
+        mocker_dt = mocker.patch(
+            "cta_eta.monitoring.cli.datetime",
+        )
+        mocker_dt.now.return_value = datetime(2026, 2, 25, tzinfo=UTC)
+        mocker_dt.fromisoformat = datetime.fromisoformat
+
         (compaction_dir / "compaction-2026-02-25.json").write_text(
             json.dumps(
                 {
@@ -1118,9 +1145,19 @@ class TestCompactionSchemaColumn:
         return parquet_path
 
     def test_schema_column_ok(
-        self, compaction_dir: Path, capsys: pytest.CaptureFixture[str]
+        self,
+        compaction_dir: Path,
+        capsys: pytest.CaptureFixture[str],
+        mocker: MockerFixture,
     ) -> None:
         """Schema column shows OK for a Parquet file with no schema_drift metadata."""
+        # Patch datetime.now to return a fixed date
+        mocker_dt = mocker.patch(
+            "cta_eta.monitoring.cli.datetime",
+        )
+        mocker_dt.now.return_value = datetime(2026, 2, 25, tzinfo=UTC)
+        mocker_dt.fromisoformat = datetime.fromisoformat
+
         daemon = "train_positions"
         date_str = "2026-02-25"
         self._write_sidecar(compaction_dir, daemon, date_str)
@@ -1133,9 +1170,19 @@ class TestCompactionSchemaColumn:
         assert "OK" in captured.out
 
     def test_schema_column_drift(
-        self, compaction_dir: Path, capsys: pytest.CaptureFixture[str]
+        self,
+        compaction_dir: Path,
+        capsys: pytest.CaptureFixture[str],
+        mocker: MockerFixture,
     ) -> None:
         """Schema column shows DRIFT for a Parquet file annotated with schema_drift=true."""
+        # Patch datetime.now to return a fixed date
+        mocker_dt = mocker.patch(
+            "cta_eta.monitoring.cli.datetime",
+        )
+        mocker_dt.now.return_value = datetime(2026, 2, 25, tzinfo=UTC)
+        mocker_dt.fromisoformat = datetime.fromisoformat
+
         daemon = "train_positions"
         date_str = "2026-02-25"
         self._write_sidecar(compaction_dir, daemon, date_str)
@@ -1148,9 +1195,19 @@ class TestCompactionSchemaColumn:
         assert "DRIFT" in captured.out
 
     def test_schema_column_missing_file(
-        self, compaction_dir: Path, capsys: pytest.CaptureFixture[str]
+        self,
+        compaction_dir: Path,
+        capsys: pytest.CaptureFixture[str],
+        mocker: MockerFixture,
     ) -> None:
         """Schema column shows ? when no local Parquet exists for the record."""
+        # Patch datetime.now to return a fixed date
+        mocker_dt = mocker.patch(
+            "cta_eta.monitoring.cli.datetime",
+        )
+        mocker_dt.now.return_value = datetime(2026, 2, 25, tzinfo=UTC)
+        mocker_dt.fromisoformat = datetime.fromisoformat
+
         daemon = "train_positions"
         date_str = "2026-02-25"
         self._write_sidecar(compaction_dir, daemon, date_str)
