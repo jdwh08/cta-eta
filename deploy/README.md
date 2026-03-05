@@ -4,22 +4,54 @@ Production deployment for the CTA train position and weather data collection sys
 
 ---
 
-## Oracle Linux 9 (e.g. Oracle Cloud) — cloud-init
+## Oracle Linux 9 (e.g. Oracle Cloud)
 
+### Cloud Init
 Use the provided cloud-init script when launching an OL9 instance so the box is provisioned at first boot.
 
 1. **In the Oracle Cloud Console** (or OCI CLI), when creating the instance, set "Add SSH keys" and "Paste cloud-init script" (or equivalent). Paste the contents of `deploy/cloud-init-ol9.yaml`.
 
 2. **After first boot**, SSH in and fill credentials:
    ```bash
-   sudo -u cta-eta nano /opt/cta-eta/.env
+   sudo -u cta-eta vim /opt/cta-eta/.env
    ```
    Then start the services:
    ```bash
-   sudo systemctl start cta-train-daemon cta-weather-daemon cta-alerts.timer
+   sudo systemctl start cta-train-daemon cta-weather-daemon cta-alerts.timer cta-compaction.timer
    ```
 
 The script uses **dnf** for packages, installs **uv** to `/usr/local/bin`, and relies on **uv** to fetch Python 3.13 when syncing the project (OL9 default Python is 3.9). The rest (systemd, logrotate, paths) matches the Debian layout below.
+
+### Maintenance
+Access OCI via the Bastion, create a terminal session, and then run the ssh command in console. 
+Since we made a dedicated service user, consider switching to that user.
+```bash
+ssh ...
+sudo -iu cta-eta
+cd /opt/cta-eta
+uv sync
+```
+
+To update from github, run:
+```bash
+cd /opt/cta-eta
+git pull
+uv sync
+sudo systemctl restart cta-train-daemon cta-weather-daemon cta-alerts.timer cta-compaction.timer
+```
+
+### Monitoring
+To monitor the services, run:
+```bash
+sudo -iu cta-eta
+cd /opt/cta-eta
+cta-monitor status
+cta-monitor errors
+cta-monitor gaps
+cta-monitor metrics
+cta-monitor compaction
+```
+or view the .daemon_state files if you want to see the raw data.
 
 ---
 

@@ -2,6 +2,12 @@
 # Operational settings (version-controlled)
 # Secrets stored in .env (git-ignored)
 
+[paths]
+# Project root / deployment root for CLI tools and state directories.
+# - Local Development: "." (repo root) is okay
+# - Oracle Cloud Infrastructure: "/opt/cta-eta"
+project_root = "/opt/cta-eta"
+
 [features]
 # Feature flags to enable/disable parts of the pipeline
 # Only credentials for enabled features will be validated at startup

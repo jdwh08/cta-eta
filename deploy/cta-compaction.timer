@@ -3,7 +3,7 @@ Description=CTA Data Compaction Timer
 Requires=cta-compaction.service
 
 [Timer]
-OnCalendar=America/Chicago *-*-* 03:00:00
+OnCalendar=*-*-* 3:00:00 America/Chicago
 Persistent=true
 Unit=cta-compaction.service
 

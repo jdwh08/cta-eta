@@ -2,11 +2,6 @@
 
 [project.urls]
 Repository = "https://github.com/jdwh08/cta-eta"
-
-[project.optional-dependencies]
-eda = [
-    "marimo>=0.19.4",
-]
 # Homepage = "https://..."
 # Documentation = "https://..."
 
@@ -25,9 +20,9 @@ dynamic = ["version"]
 # https://pypi.org/classifiers/
 # Adjust as needed:
 classifiers = [
-    "Development Status :: 1 - Planning",
+    # "Development Status :: 1 - Planning",
     # "Development Status :: 2 - Pre-Alpha",
-    # "Development Status :: 3  - Alpha",
+    "Development Status :: 3 - Alpha",
     # "Development Status :: 4 - Beta",
     # "Development Status :: 5 - Production/Stable",
 

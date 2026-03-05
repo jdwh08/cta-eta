@@ -24,6 +24,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from cta_eta.data_collection.config import get_project_root
+
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
@@ -32,13 +34,24 @@ try:
 except ImportError:
     pq = None  # type: ignore[assignment]
 
-# Constants
-_DAEMON_STATE_DIR = Path(".daemon_state")
+# Base directory for state/data paths; set in main() from --base-dir or config.toml.
+_base_dir: Path = Path.cwd()
+
 _STALE_THRESHOLD_SECONDS = 300.0  # 5 minutes
-_DEFAULT_DATA_DIR = Path("data")
 _DEFAULT_DATASET = "train_positions"
 _DEFAULT_DAYS_WINDOW = 7
-_DEFAULT_COMPACTION_DIR = Path("data/compaction")
+
+
+def _daemon_state_dir() -> Path:
+    return _base_dir / ".daemon_state"
+
+
+def _data_dir() -> Path:
+    return _base_dir / "data"
+
+
+def _compaction_dir() -> Path:
+    return _base_dir / "data" / "compaction"
 
 
 def _discover_daemons() -> list[str]:
@@ -48,11 +61,11 @@ def _discover_daemons() -> list[str]:
         List of daemon names (e.g., ["TrainPositionDaemon", "WeatherDaemon"])
 
     """
-    if not _DAEMON_STATE_DIR.exists():
+    if not _daemon_state_dir().exists():
         return []
 
     daemon_names = set()
-    for path in _DAEMON_STATE_DIR.glob("*.json"):
+    for path in _daemon_state_dir().glob("*.json"):
         # Skip diagnostics files
         if path.stem.endswith(".diagnostics"):
             continue
@@ -73,7 +86,7 @@ def _read_daemon_state(daemon_name: str) -> dict[str, object] | None:
         Dictionary with state data, or None if file doesn't exist or can't be read
 
     """
-    state_file = _DAEMON_STATE_DIR / f"{daemon_name}.json"
+    state_file = _daemon_state_dir() / f"{daemon_name}.json"
     if not state_file.exists():
         return None
 
@@ -136,7 +149,7 @@ def _read_diagnostic_events(daemon_name: str) -> list[dict[str, object]]:
         List of event dictionaries, sorted by timestamp descending
 
     """
-    events_file = _DAEMON_STATE_DIR / f"{daemon_name}.events.jsonl"
+    events_file = _daemon_state_dir() / f"{daemon_name}.events.jsonl"
     if not events_file.exists():
         return []
 
@@ -365,7 +378,7 @@ def cmd_gaps(args: argparse.Namespace) -> None:
     cutoff_date = datetime.now(tz=UTC) - timedelta(days=days)
 
     # Find Parquet files in dataset directory
-    dataset_dir = _DEFAULT_DATA_DIR / dataset
+    dataset_dir = _data_dir() / dataset
     if not dataset_dir.exists():
         print(f"Dataset directory not found: {dataset_dir}")
         print(f"No gaps found for dataset '{dataset}'")
@@ -467,7 +480,7 @@ def cmd_metrics(args: argparse.Namespace) -> None:
     overall_status = "healthy"
 
     for daemon_name in daemons:
-        metrics_file = _DAEMON_STATE_DIR / f"{daemon_name}.metrics.jsonl"
+        metrics_file = _daemon_state_dir() / f"{daemon_name}.metrics.jsonl"
 
         if not metrics_file.exists():
             continue
@@ -690,7 +703,7 @@ def cmd_compaction(args: argparse.Namespace) -> None:
     days = args.days
     json_output = args.json
 
-    compaction_dir = _DEFAULT_COMPACTION_DIR
+    compaction_dir = _compaction_dir()
 
     # Glob all sidecar JSON files, most recent first
     sidecars = sorted(
@@ -832,6 +845,14 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="cta-monitor", description="CTA data collection monitoring CLI"
     )
+    parser.add_argument(
+        "--base-dir",
+        type=Path,
+        help=(
+            "Override base directory for .daemon_state, data, etc. "
+            "Defaults to [paths.project_root] in config.toml, or the project root."
+        ),
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # Add subcommands
@@ -842,6 +863,14 @@ def main(argv: Sequence[str] | None = None) -> None:
     _add_compaction_command(subparsers)
 
     args = parser.parse_args(argv)
+
+    if args.base_dir is not None:
+        effective_base_dir = args.base_dir
+    else:
+        effective_base_dir = get_project_root()
+
+    global _base_dir  # noqa: PLW0603
+    _base_dir = effective_base_dir.resolve()
 
     # Route to handler
     if hasattr(args, "func"):

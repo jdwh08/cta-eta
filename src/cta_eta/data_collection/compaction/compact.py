@@ -42,7 +42,7 @@ from cta_eta.data_collection.compaction.schemas import (
     WEATHER_SCHEMA,
 )
 from cta_eta.data_collection.compaction.uploader import upload_parquet
-from cta_eta.data_collection.config import load_config
+from cta_eta.data_collection.config import get_project_root, load_config
 from cta_eta.data_collection.storage_cache.storage import create_storage_backend
 from cta_eta.monitoring.alerting import send_email_alert
 from cta_eta.monitoring.run_alerts import _build_email_config
@@ -171,17 +171,29 @@ def _compact_one_daemon(
 
     """
     t0 = time.monotonic()
+    project_root = get_project_root(config)
     immediate = config.get("storage", {}).get("immediate", {})
     if not isinstance(immediate, dict):
         immediate = {}
-    data_path = Path(str(immediate.get("data_path", "data/journals")))
+    data_path_cfg = Path(str(immediate.get("data_path", "data/journals")))
+    data_path = (
+        data_path_cfg if data_path_cfg.is_absolute() else project_root / data_path_cfg
+    )
     compaction_cfg = config.get("storage", {}).get("compaction", {})
     if not isinstance(compaction_cfg, dict):
         compaction_cfg = {}
-    archive_base = Path(str(compaction_cfg.get("archive_path", "data/archive")))
+    archive_cfg = Path(str(compaction_cfg.get("archive_path", "data/archive")))
+    archive_base = (
+        archive_cfg if archive_cfg.is_absolute() else project_root / archive_cfg
+    )
     retention_days = int(compaction_cfg.get("journal_retention_days", 7))
-    compaction_dir_base = Path(
+    compaction_dir_cfg = Path(
         str(compaction_cfg.get("staging_path", "data/compaction"))
+    )
+    compaction_dir_base = (
+        compaction_dir_cfg
+        if compaction_dir_cfg.is_absolute()
+        else project_root / compaction_dir_cfg
     )
 
     expected_schema = _DATASET_SCHEMAS.get(daemon_name)
@@ -616,6 +628,7 @@ def main(argv: list[str] | None = None) -> None:
     # Default behavior: no subcommand or "run" subcommand → run compaction
     # (systemd service uses 'cta-compact' with no args — backward compatible)
     config = load_config()
+    project_root = get_project_root(config)
     reprocess_date: date | None = getattr(args, "reprocess", None)
     target_date = reprocess_date or (datetime.now(tz=UTC) - timedelta(days=1)).date()
     is_reprocess = reprocess_date is not None
@@ -629,7 +642,14 @@ def main(argv: list[str] | None = None) -> None:
     compaction_cfg = config.get("storage", {}).get("compaction", {})
     if not isinstance(compaction_cfg, dict):
         compaction_cfg = {}
-    compaction_dir = Path(str(compaction_cfg.get("staging_path", "data/compaction")))
+    compaction_dir_cfg = Path(
+        str(compaction_cfg.get("staging_path", "data/compaction"))
+    )
+    compaction_dir = (
+        compaction_dir_cfg
+        if compaction_dir_cfg.is_absolute()
+        else project_root / compaction_dir_cfg
+    )
     compaction_dir.mkdir(parents=True, exist_ok=True)
 
     for daemon_name in datasets:
