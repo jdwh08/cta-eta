@@ -626,3 +626,25 @@ def get_config_section(
         )
         raise TypeError(msg)
     return val
+
+
+def get_project_root(
+    config: dict[str, dict[str, str | int | float | bool]] | None = None,
+) -> Path:
+    """Return the project/deployment root path for this installation.
+
+    The value is taken from ``[paths].project_root`` in ``config.toml`` when set.
+    If that section or key is missing, the path falls back to the directory
+    containing ``config.toml`` (the project root determined relative to this file).
+    """
+    if config is None:
+        config = load_config()
+
+    paths_cfg = config.get("paths")
+    if isinstance(paths_cfg, dict):
+        raw = paths_cfg.get("project_root")
+        if isinstance(raw, str) and raw:
+            return Path(raw).expanduser().resolve()
+
+    # Default: four levels up from this file, matching ``load_config()``.
+    return Path(__file__).resolve().parents[3]

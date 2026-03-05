@@ -2,6 +2,26 @@
 
 Machine Learning Model + Data Collection for predicting estimated time of arrival (ETA) for trains from the Chicago Transit Authority (CTA).
 
+## Monitoring CLI
+
+The monitoring CLI is installed as `cta-monitor` via the project script entry point.
+
+- **From the project directory:** `uv run cta-monitor [--base-dir /override/path] status|errors|gaps|metrics|compaction`
+- **From any directory:** `uv run --project /path/to/cta-eta cta-monitor status`
+
+Paths (`.daemon_state`, `data`, etc.) are resolved relative to the base directory. By default this comes from `[paths].project_root` in `config.toml` (falling back to the project root). On a deployed host (e.g. Oracle Cloud with app at `/opt/cta-eta`), set in `config.toml`:
+
+```toml
+[paths]
+project_root = "/opt/cta-eta"
+```
+
+Then you can run with:
+
+```bash
+uv run --project /opt/cta-eta cta-monitor status
+```
+
 ## Project Plan
 
 ### 1. Data Collection.
