@@ -25,6 +25,17 @@ The script uses **dnf** for packages, installs **uv** to `/usr/local/bin`, and r
 ### Maintenance
 Access OCI via the Bastion, create a terminal session, and then run the ssh command in console. 
 Since we made a dedicated service user, consider switching to that user.
+
+Create bastion session:
+- username: opc (allows sysadmin like access)
+- ssh key: your public one from `cat ~/.ssh/cta_eta_oci_key.pub`
+- create the instance
+- three dots on right; copy SSH command
+- paste into terminal; replace <privateKey> with path to private key file `~/.ssh/cta_eta_oci_key`
+- check to confirm this is `opc` instead of the service user `cta-eta`. you can always switch into the service user with `sudo -iu cta-eta`.
+- sudo password for the service user is the awful default one. yeah. it's been there for a long time.
+
+Access bastion session:
 ```bash
 ssh ...
 sudo -iu cta-eta
@@ -45,13 +56,16 @@ To monitor the services, run:
 ```bash
 sudo -iu cta-eta
 cd /opt/cta-eta
-cta-monitor status
-cta-monitor errors
-cta-monitor gaps
-cta-monitor metrics
-cta-monitor compaction
+uv run cta-monitor status
+uv run cta-monitor errors
+uv run cta-monitor gaps
+uv run cta-monitor metrics
+uv run cta-monitor compaction
 ```
 or view the .daemon_state files if you want to see the raw data.
+
+### Exit
+You can exit the service user with exit, to return back to root with sudo permissions.
 
 ---
 

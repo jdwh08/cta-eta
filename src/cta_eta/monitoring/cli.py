@@ -69,6 +69,8 @@ def _discover_daemons() -> list[str]:
         # Skip diagnostics files
         if path.stem.endswith(".diagnostics"):
             continue
+        if path.stem.endswith(".heartbeat"):
+            continue
         # Extract daemon name (e.g., "TrainPositionDaemon.json" -> "TrainPositionDaemon")
         daemon_name = path.stem
         daemon_names.add(daemon_name)
